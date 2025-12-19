@@ -232,14 +232,14 @@ cellvit-optimus/
 | 1.1 | Setup WSL2 + Docker + CUDA | `nvidia-smi` fonctionne | ✅ FAIT |
 | 1.2 | Conda + PyTorch | `torch.cuda.is_available()` = True | ✅ FAIT |
 | 1.3 | Télécharger CellViT-256 | Fichier 187 MB présent | ✅ FAIT (manuel) |
-| 1.4 | Télécharger PanNuke | 3 folds présents | ⏳ À FAIRE (manuel) |
+| 1.4 | Télécharger PanNuke | 3 folds présents | ✅ FAIT (manuel) |
 | 1.5 | Inférence CellViT-256 | Détection cellules sur image test | ✅ FAIT |
-| 1.6 | Valider métriques | Dice > 0.7 sur PanNuke fold3 | ⏳ À FAIRE |
+| 1.6 | Valider métriques | Dice > 0.7 sur PanNuke fold3 | ✅ FAIT (Dice=0.8733) |
 
 **Critères de passage Phase 2 :**
-- [ ] CellViT-256 fonctionne sur GPU
-- [ ] Détection visible sur image réelle
-- [ ] Métriques de base calculées
+- [x] CellViT-256 fonctionne sur GPU
+- [x] Détection visible sur image réelle
+- [x] Métriques de base calculées
 
 ### Phase 2 : Intégration H-optimus-0 (Semaines 3-4)
 
@@ -276,9 +276,9 @@ cellvit-optimus/
 
 ## Statut Actuel
 
-**Phase en cours :** Phase 3 (étape 3.2 validée)
+**Phase en cours :** Phase 3 (étapes 1.6 et 3.2 validées)
 **Blocage actuel :** Aucun
-**Prochaine action :** Étape 1.6 (métriques PanNuke) ou 3.5 (Docker packaging)
+**Prochaine action :** Étape 2.6 (entraînement UNETR) ou 3.5 (Docker packaging)
 
 ---
 
@@ -474,6 +474,20 @@ Total cellules détectées: 25
 ```
 
 **Résultat :** Détection cohérente — majorité néoplasique sur image de carcinome prostatique.
+
+### 2025-12-19 — Validation métriques PanNuke ✅ VALIDÉE (Étape 1.6 POC)
+- **Dataset PanNuke** : 3 folds téléchargés et réorganisés (structure Warwick → CellViT)
+- **Script d'évaluation créé** : `scripts/validation/evaluate_pannuke.py`
+- **Tests unitaires créés** : `tests/unit/test_metrics.py`, `test_ood.py`, `test_calibration.py`
+- **Tests intégration** : `tests/integration/test_pipeline_e2e.py`
+
+**Résultats sur PanNuke (2722 images) :**
+```
+Binary-Cell-Dice:    0.8733 ± 0.1048
+Binary-Cell-Jaccard: 0.7859
+```
+
+**Critère POC :** Dice 0.8733 > 0.7 ✅
 
 ---
 
