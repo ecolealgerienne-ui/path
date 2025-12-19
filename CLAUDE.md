@@ -259,14 +259,14 @@ cellvit-optimus/
 | Étape | Description | Validation | Statut |
 |-------|-------------|------------|--------|
 | 3.1 | Interface Gradio basique | Upload image → résultat | ✅ FAIT |
-| 3.2 | Intégration UNETR dans démo | Inférence H-optimus-0 + UNETR | ✅ FAIT |
+| 3.2 | Intégration HoVer-Net dans démo | Inférence H-optimus-0 + HoVer-Net | ✅ FAIT |
 | 3.3 | Rapport avec couleurs/emojis | Correspondance visuelle | ✅ FAIT |
 | 3.4 | Scripts OOD/calibration | Utilitaires prêts | ✅ FAIT |
 | 3.5 | Docker packaging | `docker-compose up` fonctionne | ⏳ À FAIRE |
 | 3.6 | Documentation utilisateur | README complet | ⏳ À FAIRE |
 
 **Critères de livraison POC :**
-- [x] Démo fonctionnelle avec architecture cible (H-optimus-0 + UNETR)
+- [x] Démo fonctionnelle avec architecture cible (H-optimus-0 + HoVer-Net, Dice 0.9587)
 - [ ] Docker déployable
 - [ ] Documentation claire
 
@@ -494,17 +494,39 @@ Binary-Cell-Jaccard: 0.7859
 | 4 | **Early stopping** | Arrêter quand val_loss stagne |
 | 5 | **Temperature scaling** | Calibrer les probabilités post-entraînement |
 
-**Commande pour entraîner sur 3 folds :**
-```bash
-# Extraire features fold 1 et 2
-python scripts/preprocessing/extract_features.py --data_dir /home/amar/data/PanNuke --fold 1
-python scripts/preprocessing/extract_features.py --data_dir /home/amar/data/PanNuke --fold 2
+### 2025-12-19 — Migration UNETR → HoVer-Net ✅ VALIDÉ
 
-# Entraîner avec validation croisée
-python scripts/training/train_unetr.py --train_fold 0 --val_fold 1 --epochs 100
-python scripts/training/train_unetr.py --train_fold 1 --val_fold 2 --epochs 100
-python scripts/training/train_unetr.py --train_fold 2 --val_fold 0 --epochs 100
+**Problème identifié :** L'architecture UNETR n'était pas adaptée à H-optimus-0 car :
+- UNETR attend des skip connections multi-résolution
+- H-optimus-0 sort toutes les couches à 16x16 (même résolution)
+- Résultats UNETR décevants : Dice 0.6935, classifications déséquilibrées
+
+**Solution adoptée :** Décodeur HoVer-Net style (basé sur littérature CellViT)
+
+**Architecture HoVer-Net :**
 ```
+H-optimus-0 (16x16 @ 1536)
+        ↓
+Bottleneck 1x1 (1536 → 256)  ← Économie VRAM
+        ↓
+Tronc Commun (upsampling partagé 16→224)
+        ↓
+   ┌────┴────┬────────┐
+   ↓         ↓        ↓
+  NP        HV       NT
+```
+
+**Résultats comparatifs :**
+| Métrique | UNETR | HoVer-Net | Amélioration |
+|----------|-------|-----------|--------------|
+| Dice | 0.6935 | **0.9587** | +38% |
+| Val Loss | 1.0297 | 0.7469 | -27% |
+
+**Fichiers créés :**
+- `src/models/hovernet_decoder.py` — Décodeur avec bottleneck partagé
+- `scripts/training/train_hovernet.py` — Script d'entraînement
+- `src/inference/hoptimus_hovernet.py` — Wrapper inférence
+- `models/checkpoints/hovernet_best.pth` — Checkpoint entraîné
 
 ---
 
@@ -514,12 +536,13 @@ python scripts/training/train_unetr.py --train_fold 2 --val_fold 0 --epochs 100
 src/
 ├── models/
 │   ├── __init__.py
-│   └── unetr_decoder.py          # Décodeur UNETR pour H-optimus-0
+│   ├── unetr_decoder.py          # Décodeur UNETR (obsolète)
+│   └── hovernet_decoder.py       # Décodeur HoVer-Net (architecture cible)
 └── inference/
     ├── __init__.py
-    ├── cellvit_inference.py       # Wrapper CellViT-256 simplifié
-    ├── cellvit256_model.py        # Architecture CellViT-256 locale
-    └── cellvit_official.py        # Wrapper pour repo officiel TIO-IKIM
+    ├── hoptimus_hovernet.py      # Wrapper H-optimus-0 + HoVer-Net (cible)
+    ├── hoptimus_unetr.py         # Wrapper H-optimus-0 + UNETR (fallback)
+    └── cellvit_official.py       # Wrapper pour repo officiel TIO-IKIM
 
 scripts/
 ├── setup/
@@ -540,7 +563,8 @@ scripts/
 │   ├── latent_distance.py
 │   └── entropy_scoring.py
 ├── training/
-│   └── train_unetr.py
+│   ├── train_unetr.py            # Entraînement UNETR (obsolète)
+│   └── train_hovernet.py         # Entraînement HoVer-Net (cible)
 ├── utils/
 │   └── inspect_checkpoint.py
 ├── validation/
@@ -551,8 +575,10 @@ scripts/
     └── visualize_cells.py         # Fonctions visualisation
 
 models/
-└── pretrained/
-    └── CellViT-256.pth            # 187 MB (téléchargé manuellement)
+├── pretrained/
+│   └── CellViT-256.pth            # 187 MB (baseline)
+└── checkpoints/
+    └── hovernet_best.pth          # HoVer-Net entraîné (Dice 0.9587)
 ```
 
 ---
