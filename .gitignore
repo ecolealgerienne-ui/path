@@ -71,3 +71,6 @@ Thumbs.db
 .env
 *.key
 credentials.json
+
+# External repos (cloned, not managed)
+CellViT/

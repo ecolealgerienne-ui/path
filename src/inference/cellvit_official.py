@@ -15,6 +15,7 @@ Usage:
 import sys
 from pathlib import Path
 import torch
+import torch.nn.functional as F
 import numpy as np
 import cv2
 from typing import Dict, List, Tuple, Optional
@@ -90,36 +91,6 @@ class CellViTOfficial:
         """Charge le modèle CellViT depuis le repo officiel."""
         print(f"Chargement CellViT depuis {self.checkpoint_path}...")
 
-        try:
-            # Importer depuis le repo cloné
-            from cell_segmentation.inference.inference_cellvit_experiment_pannuke import (
-                InferenceCellViT
-            )
-
-            # Utiliser le loader officiel
-            # Note: InferenceCellViT attend un dossier d'expérience
-            # On va charger le modèle directement
-            raise ImportError("Utiliser chargement direct")
-
-        except ImportError:
-            # Fallback: charger le modèle directement
-            return self._load_model_direct()
-
-    def _load_model_direct(self):
-        """Charge le modèle directement depuis le checkpoint."""
-        print("Chargement direct du checkpoint...")
-
-        try:
-            # Importer l'architecture depuis le repo
-            from cell_segmentation.trainer.trainer_cellvit import CellViT256
-        except ImportError:
-            # Essayer un autre chemin
-            try:
-                from cellvit.models.cellvit import CellViT256
-            except ImportError:
-                print("Import CellViT échoué, utilisation architecture locale")
-                return self._load_with_local_architecture()
-
         # Charger le checkpoint
         checkpoint = torch.load(
             self.checkpoint_path,
@@ -127,20 +98,49 @@ class CellViTOfficial:
             weights_only=False
         )
 
-        # Créer le modèle
+        # Vérifier la structure du checkpoint
+        arch = checkpoint.get('arch', 'CellViT256')
+        print(f"Architecture: {arch}")
+
+        # Extraire la config depuis le checkpoint
+        config = checkpoint.get('config', {})
+
+        # Importer CellViT256 depuis le repo officiel
+        try:
+            from models.segmentation.cell_segmentation.cellvit import CellViT256
+        except ImportError:
+            print("Import depuis models/ échoué, utilisation architecture locale")
+            return self._load_with_local_architecture()
+
+        # Extraire les paramètres de configuration
+        if config:
+            from utils.tools import unflatten_dict
+            run_conf = unflatten_dict(config, ".")
+            num_nuclei_classes = run_conf.get("data", {}).get("num_nuclei_classes", 6)
+            num_tissue_classes = run_conf.get("data", {}).get("num_tissue_classes", 19)
+        else:
+            # Valeurs par défaut PanNuke
+            num_nuclei_classes = 6
+            num_tissue_classes = 19
+
+        print(f"Création modèle: {num_nuclei_classes} classes noyaux, {num_tissue_classes} classes tissus")
+
+        # Créer le modèle (model256_path=None car on charge les poids complets)
         model = CellViT256(
-            num_nuclei_classes=6,
-            num_tissue_classes=0,  # Pas de classification tissu
+            model256_path=None,
+            num_nuclei_classes=num_nuclei_classes,
+            num_tissue_classes=num_tissue_classes,
         )
 
         # Charger les poids
         state_dict = checkpoint.get('model_state_dict', checkpoint)
-        model.load_state_dict(state_dict)
+        msg = model.load_state_dict(state_dict, strict=True)
+        print(f"Chargement poids: {msg}")
 
         model = model.to(self.device)
         model.eval()
 
-        print(f"Modèle chargé sur {self.device}")
+        print(f"Modèle chargé sur {self.device}, {sum(p.numel() for p in model.parameters()):,} params")
         return model
 
     def _load_with_local_architecture(self):
@@ -156,8 +156,10 @@ class CellViTOfficial:
                 self.device
             )
         except ImportError:
-            # Dernier fallback: charger partiellement
-            return self._load_partial()
+            raise RuntimeError(
+                "Impossible de charger CellViT. Vérifiez que le repo est cloné: "
+                "git clone https://github.com/TIO-IKIM/CellViT.git"
+            )
 
     def preprocess(self, image: np.ndarray) -> torch.Tensor:
         """
@@ -208,22 +210,23 @@ class CellViTOfficial:
     def postprocess(self, outputs: Dict, original_size: Tuple[int, int]) -> Dict:
         """Post-traitement des sorties."""
 
-        # Extraire les prédictions selon la structure CellViT
+        # Extraire les prédictions selon la structure CellViT officiel
+        # Le modèle officiel utilise 'nuclei_type_map' (pas 'nuclei_type_maps')
         if isinstance(outputs, dict):
-            np_logits = outputs.get('nuclei_binary_map', outputs.get('np'))
-            hv_map = outputs.get('hv_map', outputs.get('hv'))
-            type_logits = outputs.get('nuclei_type_maps', outputs.get('type'))
+            np_logits = outputs.get('nuclei_binary_map')
+            hv_map = outputs.get('hv_map')
+            type_logits = outputs.get('nuclei_type_map')  # Nom officiel
         else:
             # Si tuple/list
             np_logits, hv_map, type_logits = outputs[:3]
 
-        # Convertir en numpy
-        np_probs = torch.softmax(np_logits, dim=1).cpu().numpy()[0]
+        # Convertir en numpy avec softmax
+        np_probs = F.softmax(np_logits, dim=1).cpu().numpy()[0]
         np_mask = np_probs[1] > 0.5  # Canal 1 = noyau
 
         hv = hv_map.cpu().numpy()[0].transpose(1, 2, 0)
 
-        type_probs = torch.softmax(type_logits, dim=1).cpu().numpy()[0]
+        type_probs = F.softmax(type_logits, dim=1).cpu().numpy()[0]
         type_mask = type_probs.argmax(axis=0)
 
         # Resize si nécessaire

@@ -427,31 +427,36 @@ Scripts créés conformément aux specs :
 - `scripts/ood_detection/entropy_scoring.py` — Incertitude → Fiable/À revoir/Hors domaine
 - `scripts/training/train_unetr.py` — Entraînement UNETR sur PanNuke
 
-### 2025-12-19 — Intégration CellViT-256 🔄 EN COURS
-- **Module d'inférence créé** : `src/inference/cellvit_inference.py`
-- **Script inspection checkpoint** : `scripts/utils/inspect_checkpoint.py`
-- **CellViT-256 téléchargé** : `models/pretrained/CellViT-256.pth` (187 MB)
-- **Démo mise à jour** : Détecte automatiquement CellViT-256 si présent
-- **Wrapper officiel créé** : `src/inference/cellvit_official.py`
-- **Architecture locale créée** : `src/inference/cellvit256_model.py`
-- **Test validation créé** : `scripts/validation/test_cellvit256_inference.py`
+### 2025-12-19 — Intégration CellViT-256 ✅ ARCHITECTURE VALIDÉE
+- **Repo officiel cloné** : `CellViT/` (TIO-IKIM/CellViT)
+- **Dépendances installées** : ujson, einops, shapely, geojson, colorama, natsort
+- **Wrapper officiel mis à jour** : `src/inference/cellvit_official.py`
+- **Test validation créé** : `scripts/validation/test_cellvit_official.py`
 
-**Architecture validée (sans poids) :**
+**Architecture CellViT-256 (via repo officiel) :**
+| Attribut | Valeur |
+|----------|--------|
+| Paramètres | 46,750,349 |
+| embed_dim | 384 |
+| depth | 12 |
+| num_heads | 6 |
+| extract_layers | [3, 6, 9, 12] |
+
+**Sorties validées :**
 ```
+✅ tissue_types: torch.Size([1, 19])
 ✅ nuclei_binary_map: torch.Size([1, 2, 256, 256])
 ✅ hv_map: torch.Size([1, 2, 256, 256])
-✅ nuclei_type_maps: torch.Size([1, 6, 256, 256])
+✅ nuclei_type_map: torch.Size([1, 6, 256, 256])
 ```
 
-**Prochaine étape :** Télécharger CellViT-256.pth manuellement et tester inférence réelle.
+**Action requise :** Télécharger manuellement `CellViT-256.pth` (~187 MB) depuis Google Drive:
+- URL: https://drive.google.com/uc?id=1tVYAapUo1Xt8QgCN22Ne1urbbCZkah8q
+- Destination: `models/pretrained/CellViT-256.pth`
 
-**Téléchargement CellViT-256.pth :**
+**Test validation :**
 ```bash
-# URL Google Drive
-https://drive.google.com/uc?export=download&id=1tVYAapUo1Xt8QgCN22Ne1urbbCZkah8q
-
-# Placer dans
-models/pretrained/CellViT-256.pth
+python scripts/validation/test_cellvit_official.py
 ```
 
 ---
