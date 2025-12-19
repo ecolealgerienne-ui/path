@@ -26,8 +26,8 @@ PROJECT_ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 sys.path.insert(0, str(PROJECT_ROOT / "CellViT"))
 
-from torchmetrics.functional import dice
-from torchmetrics.functional.classification import binary_jaccard_index
+# Utiliser nos propres métriques
+from scripts.evaluation.metrics_segmentation import dice_score, iou_score
 
 
 def load_model(checkpoint_path: str, device: str = "cuda"):
@@ -119,17 +119,17 @@ def evaluate(
 
             # Binary map prediction
             nuclei_binary_map = F.softmax(predictions["nuclei_binary_map"], dim=1)
-            pred_binary = torch.argmax(nuclei_binary_map[0], dim=0).cpu()
+            pred_binary = torch.argmax(nuclei_binary_map[0], dim=0).cpu().numpy()
 
             # Ground truth binary
-            gt_binary = torch.from_numpy((inst_map_gt > 0).astype(np.int64))
+            gt_binary = (inst_map_gt > 0).astype(np.uint8)
 
-            # Calcul Dice
-            cell_dice = dice(preds=pred_binary, target=gt_binary, ignore_index=0)
+            # Calcul Dice (utilise notre fonction numpy)
+            cell_dice = dice_score(pred_binary, gt_binary)
             binary_dice_scores.append(float(cell_dice))
 
-            # Calcul Jaccard
-            cell_jaccard = binary_jaccard_index(preds=pred_binary, target=gt_binary)
+            # Calcul Jaccard/IoU
+            cell_jaccard = iou_score(pred_binary, gt_binary)
             binary_jaccard_scores.append(float(cell_jaccard))
 
             # Identifier le tissu depuis le nom du fichier
