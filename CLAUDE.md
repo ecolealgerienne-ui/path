@@ -290,13 +290,76 @@ cellvit-optimus/
 | Composant | POC (actuel) | Cible (production) |
 |-----------|--------------|-------------------|
 | Segmentation | CellViT-256 pré-entraîné | UNETR sur H-optimus-0 |
-| Backbone | CellViT encoder | H-optimus-0 (1.1B params) |
+| Backbone | CellViT encoder (ViT-256, 46M params) | H-optimus-0 (1.1B params) |
 | Données démo | Synthétiques | PanNuke + images réelles |
 | Détection cellules | Seuillage simple (fallback) | Modèle entraîné |
 | Incertitude | Non implémenté | Conformal Prediction |
 | OOD | Scripts prêts (non intégrés) | Pipeline complet |
 
 **Objectif POC :** Valider la faisabilité technique, pas l'architecture finale.
+
+---
+
+## Décisions Techniques & Justifications
+
+### Décision 1: Utiliser le repo CellViT officiel (TIO-IKIM)
+
+**Date:** 2025-12-19
+**Contexte:** Le checkpoint CellViT-256.pth (187 MB) a une architecture complexe qui ne correspondait pas à notre wrapper custom.
+
+**Problèmes rencontrés:**
+- Incompatibilité `pos_embed`: [1, 197, 384] (checkpoint) vs [1, 257, 384] (notre modèle)
+- Structure décodeurs différente: `decoder.X.block.Y` vs `decoder.X.Y`
+- Têtes de sortie avec `bottleneck_upsampler`, `decoderX_upsampler`, `decoder0_header`
+- Seulement 149/439 paramètres compatibles
+
+**Décision:** Cloner le repo officiel `TIO-IKIM/CellViT` et utiliser leur code pour charger le modèle.
+
+**Pourquoi cette décision pour le POC:**
+- ✅ Gain de temps: Pas besoin de reverse-engineer l'architecture exacte
+- ✅ Fiabilité: Code testé par les auteurs originaux
+- ✅ Baseline fiable: Permet de valider le pipeline end-to-end rapidement
+
+**Impact sur l'architecture cible:**
+- ⚠️ CellViT-256 n'est PAS l'architecture cible
+- L'architecture cible utilise **H-optimus-0 + UNETR** (specs section 2.3)
+- CellViT-256 sert uniquement de **baseline de comparaison**
+
+### Chemin vers l'Architecture Cible
+
+```
+POC (actuel)                          CIBLE (production)
+─────────────────────────────────     ─────────────────────────────────
+CellViT-256 pré-entraîné              H-optimus-0 backbone (gelé)
+    │                                     │
+    │ encoder ViT-256                     │ ViT-Giant/14 (1.1B params)
+    │ (46M params)                        │ Embeddings 1536-dim
+    │                                     │
+    ▼                                     ▼
+Décodeur intégré CellViT              Décodeur UNETR custom
+    │                                     │
+    │                                     │ Skip connections couches 6/12/18/24
+    │                                     │
+    ▼                                     ▼
+3 têtes: NP, HV, NT                   3 têtes: NP, HV, NT
+```
+
+### Étapes pour passer à l'architecture cible
+
+1. **Phase POC (actuelle):** Valider pipeline avec CellViT-256 comme baseline
+2. **Phase 2.6:** Entraîner notre décodeur UNETR sur PanNuke avec H-optimus-0 gelé
+3. **Validation:** Comparer métriques UNETR vs CellViT-256 baseline
+4. **Production:** Remplacer CellViT-256 par UNETR entraîné
+
+### Pourquoi ne pas utiliser CellViT-256 en production?
+
+| Critère | CellViT-256 | H-optimus-0 + UNETR |
+|---------|-------------|---------------------|
+| Taille backbone | 46M params | 1.1B params |
+| Features | 384-dim | 1536-dim |
+| Pré-entraînement | PanNuke uniquement | 500k+ lames H&E multi-centres |
+| Généralisation | Limitée | Excellente (foundation model) |
+| Conformité specs | ❌ Non | ✅ Oui |
 
 ---
 
