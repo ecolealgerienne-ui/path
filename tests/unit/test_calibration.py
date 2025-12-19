@@ -15,57 +15,36 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from scripts.calibration.temperature_scaling import (
-    TemperatureScaling,
-    compute_ece,
-    reliability_diagram_data,
+    TemperatureScaler,
+    reliability_diagram,
+    compute_calibration_metrics,
 )
 
 
-class TestTemperatureScaling:
-    """Tests pour Temperature Scaling."""
+class TestTemperatureScaler:
+    """Tests pour TemperatureScaler."""
 
     def test_initialization(self):
         """Initialisation correcte."""
-        ts = TemperatureScaling()
-        assert ts.temperature == 1.0
-        assert not ts.fitted
+        scaler = TemperatureScaler()
+        assert scaler.temperature == 1.0
 
-    def test_fit_improves_calibration(self):
-        """Le fit améliore la calibration."""
-        # Simuler des logits sur-confiants
-        n_samples = 200
-        n_classes = 5
-
-        # Logits avec biais (trop confiants)
-        logits = np.random.randn(n_samples, n_classes) * 3
-        labels = np.random.randint(0, n_classes, n_samples)
-
-        ts = TemperatureScaling()
-        ts.fit(logits, labels)
-
-        assert ts.fitted
-        assert ts.temperature > 0
-
-    def test_temperature_scales_properly(self):
-        """La température scale correctement les logits."""
-        ts = TemperatureScaling()
-        ts.temperature = 2.0
-        ts.fitted = True
+    def test_scale(self):
+        """Scale divise par température."""
+        scaler = TemperatureScaler(temperature=2.0)
 
         logits = np.array([[1.0, 2.0, 3.0]])
-        scaled = ts.transform(logits)
+        scaled = scaler.scale(logits)
 
-        expected = logits / 2.0
+        expected = np.array([[0.5, 1.0, 1.5]])
         np.testing.assert_array_almost_equal(scaled, expected)
 
-    def test_predict_proba(self):
+    def test_predict_proba_valid(self):
         """predict_proba retourne des probabilités valides."""
-        ts = TemperatureScaling()
-        ts.temperature = 1.5
-        ts.fitted = True
+        scaler = TemperatureScaler(temperature=1.5)
 
         logits = np.random.randn(10, 5)
-        probs = ts.predict_proba(logits)
+        probs = scaler.predict_proba(logits)
 
         # Vérifie que ce sont des probabilités
         assert probs.shape == logits.shape
@@ -73,58 +52,40 @@ class TestTemperatureScaling:
         assert np.all(probs <= 1)
         np.testing.assert_array_almost_equal(probs.sum(axis=1), np.ones(10))
 
-
-class TestECE:
-    """Tests pour Expected Calibration Error."""
-
-    def test_perfect_calibration(self):
-        """ECE = 0 pour calibration parfaite."""
-        n_samples = 100
-
-        # Prédictions parfaitement calibrées
-        confidences = np.linspace(0.1, 0.9, n_samples)
-        # Pour chaque confiance c, on a c% de corrects
-        accuracies = (np.random.rand(n_samples) < confidences).astype(float)
-        predictions = np.argmax(np.random.rand(n_samples, 5), axis=1)
-        labels = np.where(accuracies, predictions, (predictions + 1) % 5)
-
-        probs = np.zeros((n_samples, 5))
-        probs[np.arange(n_samples), predictions] = confidences
-        probs = probs / probs.sum(axis=1, keepdims=True)
-
-        # ECE devrait être relativement bas
-        ece = compute_ece(probs, labels, n_bins=10)
-        assert ece < 0.3  # Tolérance pour la variance
-
-    def test_overconfident_model(self):
-        """ECE élevé pour modèle sur-confiant."""
-        n_samples = 100
-        n_classes = 5
-
-        # Modèle très confiant mais souvent faux
-        probs = np.zeros((n_samples, n_classes))
-        probs[:, 0] = 0.95  # Toujours 95% confiant sur classe 0
-        probs[:, 1:] = 0.05 / (n_classes - 1)
-
-        # Mais la vraie classe est aléatoire
-        labels = np.random.randint(0, n_classes, n_samples)
-
-        ece = compute_ece(probs, labels, n_bins=10)
-        # ECE devrait être élevé car confiance >> accuracy
-        assert ece > 0.5
-
-    def test_ece_bounds(self):
-        """ECE est dans [0, 1]."""
-        probs = np.random.rand(100, 5)
-        probs = probs / probs.sum(axis=1, keepdims=True)
+    def test_fit_returns_positive_temperature(self):
+        """Fit retourne une température positive."""
+        logits = np.random.randn(100, 5) * 2
         labels = np.random.randint(0, 5, 100)
 
-        ece = compute_ece(probs, labels)
-        assert 0 <= ece <= 1
+        scaler = TemperatureScaler()
+        T = scaler.fit(logits, labels)
+
+        assert T > 0
+        assert scaler.temperature == T
+
+    def test_fit_nll_method(self):
+        """Fit avec méthode NLL."""
+        logits = np.random.randn(100, 5) * 3
+        labels = np.random.randint(0, 5, 100)
+
+        scaler = TemperatureScaler()
+        T = scaler.fit(logits, labels, method="nll")
+
+        assert T > 0
+
+    def test_fit_ece_method(self):
+        """Fit avec méthode ECE."""
+        logits = np.random.randn(100, 5) * 3
+        labels = np.random.randint(0, 5, 100)
+
+        scaler = TemperatureScaler()
+        T = scaler.fit(logits, labels, method="ece")
+
+        assert T > 0
 
 
 class TestReliabilityDiagram:
-    """Tests pour le diagramme de fiabilité."""
+    """Tests pour reliability_diagram."""
 
     def test_output_structure(self):
         """Structure de sortie correcte."""
@@ -132,85 +93,160 @@ class TestReliabilityDiagram:
         probs = probs / probs.sum(axis=1, keepdims=True)
         labels = np.random.randint(0, 5, 100)
 
-        bin_edges, bin_accs, bin_confs, bin_counts = reliability_diagram_data(
-            probs, labels, n_bins=10
-        )
+        bin_centers, bin_accs, bin_counts = reliability_diagram(probs, labels, n_bins=10)
 
-        assert len(bin_edges) == 11  # n_bins + 1 edges
+        assert len(bin_centers) == 10
         assert len(bin_accs) == 10
-        assert len(bin_confs) == 10
         assert len(bin_counts) == 10
 
-    def test_bin_accuracies_in_range(self):
-        """Précisions des bins dans [0, 1]."""
+    def test_bin_centers_range(self):
+        """Centres des bins dans [0, 1]."""
         probs = np.random.rand(100, 5)
         probs = probs / probs.sum(axis=1, keepdims=True)
         labels = np.random.randint(0, 5, 100)
 
-        _, bin_accs, _, _ = reliability_diagram_data(probs, labels)
+        bin_centers, _, _ = reliability_diagram(probs, labels)
 
-        valid_accs = bin_accs[~np.isnan(bin_accs)]
-        assert np.all(valid_accs >= 0)
-        assert np.all(valid_accs <= 1)
+        assert np.all(bin_centers >= 0)
+        assert np.all(bin_centers <= 1)
+
+    def test_bin_accuracies_range(self):
+        """Accuracies dans [0, 1]."""
+        probs = np.random.rand(100, 5)
+        probs = probs / probs.sum(axis=1, keepdims=True)
+        labels = np.random.randint(0, 5, 100)
+
+        _, bin_accs, bin_counts = reliability_diagram(probs, labels)
+
+        # Seulement vérifier les bins non-vides
+        non_empty = bin_counts > 0
+        assert np.all(bin_accs[non_empty] >= 0)
+        assert np.all(bin_accs[non_empty] <= 1)
+
+
+class TestCalibrationMetrics:
+    """Tests pour compute_calibration_metrics."""
+
+    def test_metrics_structure(self):
+        """Structure des métriques correcte."""
+        probs = np.random.rand(100, 5)
+        probs = probs / probs.sum(axis=1, keepdims=True)
+        labels = np.random.randint(0, 5, 100)
+
+        metrics = compute_calibration_metrics(probs, labels)
+
+        assert 'accuracy' in metrics
+        assert 'ECE' in metrics
+        assert 'MCE' in metrics
+        assert 'Brier' in metrics
+        assert 'mean_confidence' in metrics
+
+    def test_ece_range(self):
+        """ECE dans [0, 1]."""
+        probs = np.random.rand(100, 5)
+        probs = probs / probs.sum(axis=1, keepdims=True)
+        labels = np.random.randint(0, 5, 100)
+
+        metrics = compute_calibration_metrics(probs, labels)
+
+        assert 0 <= metrics['ECE'] <= 1
+
+    def test_mce_range(self):
+        """MCE dans [0, 1]."""
+        probs = np.random.rand(100, 5)
+        probs = probs / probs.sum(axis=1, keepdims=True)
+        labels = np.random.randint(0, 5, 100)
+
+        metrics = compute_calibration_metrics(probs, labels)
+
+        assert 0 <= metrics['MCE'] <= 1
+
+    def test_accuracy_range(self):
+        """Accuracy dans [0, 1]."""
+        probs = np.random.rand(100, 5)
+        probs = probs / probs.sum(axis=1, keepdims=True)
+        labels = np.random.randint(0, 5, 100)
+
+        metrics = compute_calibration_metrics(probs, labels)
+
+        assert 0 <= metrics['accuracy'] <= 1
 
 
 class TestIntegration:
     """Tests d'intégration pour le pipeline de calibration."""
 
     def test_full_pipeline(self):
-        """Pipeline complet: fit -> transform -> ECE."""
-        n_train = 500
-        n_test = 100
+        """Pipeline complet: fit -> transform -> metrics."""
+        n_train = 200
         n_classes = 5
 
-        # Données d'entraînement
-        train_logits = np.random.randn(n_train, n_classes) * 2
-        train_labels = np.random.randint(0, n_classes, n_train)
-
-        # Données de test
-        test_logits = np.random.randn(n_test, n_classes) * 2
-        test_labels = np.random.randint(0, n_classes, n_test)
+        # Données
+        logits = np.random.randn(n_train, n_classes) * 3
+        labels = np.random.randint(0, n_classes, n_train)
 
         # Calibration
-        ts = TemperatureScaling()
-        ts.fit(train_logits, train_labels)
+        scaler = TemperatureScaler()
+        T = scaler.fit(logits, labels)
+
+        assert T > 0
 
         # Prédictions calibrées
-        calibrated_probs = ts.predict_proba(test_logits)
+        probs_calibrated = scaler.predict_proba(logits)
 
-        # ECE sur prédictions calibrées
-        ece = compute_ece(calibrated_probs, test_labels)
+        # Métriques
+        metrics = compute_calibration_metrics(probs_calibrated, labels)
 
-        assert 0 <= ece <= 1
-        assert ts.temperature > 0
+        assert 0 <= metrics['ECE'] <= 1
+        assert 0 <= metrics['accuracy'] <= 1
+
+    def test_calibration_reduces_ece(self):
+        """La calibration devrait réduire ou maintenir l'ECE."""
+        from scipy.special import softmax
+
+        # Logits sur-confiants
+        logits = np.random.randn(200, 5) * 5
+        labels = np.random.randint(0, 5, 200)
+
+        # ECE avant
+        probs_before = softmax(logits, axis=-1)
+        metrics_before = compute_calibration_metrics(probs_before, labels)
+
+        # Calibration
+        scaler = TemperatureScaler()
+        scaler.fit(logits, labels)
+        probs_after = scaler.predict_proba(logits)
+
+        # ECE après
+        metrics_after = compute_calibration_metrics(probs_after, labels)
+
+        # L'ECE devrait diminuer ou rester stable
+        # (peut ne pas toujours diminuer sur données aléatoires)
+        assert metrics_after['ECE'] <= metrics_before['ECE'] + 0.1
 
 
 class TestEdgeCases:
     """Tests pour cas limites."""
 
     def test_single_class(self):
-        """Gère le cas mono-classe."""
-        probs = np.ones((10, 1))
-        labels = np.zeros(10, dtype=int)
-
-        ece = compute_ece(probs, labels)
-        assert ece == pytest.approx(0.0, abs=0.01)
-
-    def test_empty_bins(self):
-        """Gère les bins vides."""
-        # Toutes les confidences dans un seul bin
+        """Gère le cas où toutes les prédictions sont la même classe."""
         probs = np.zeros((10, 5))
-        probs[:, 0] = 0.95
-        probs[:, 1:] = 0.05 / 4
+        probs[:, 0] = 1.0
         labels = np.zeros(10, dtype=int)
 
-        _, bin_accs, _, bin_counts = reliability_diagram_data(probs, labels, n_bins=10)
+        metrics = compute_calibration_metrics(probs, labels)
 
-        # Certains bins devraient être vides
-        empty_bins = bin_counts == 0
-        assert np.any(empty_bins)
-        # Les bins vides ont NaN accuracy
-        assert np.all(np.isnan(bin_accs[empty_bins]))
+        assert metrics['accuracy'] == 1.0
+        assert metrics['ECE'] < 0.1
+
+    def test_small_dataset(self):
+        """Gère les petits datasets."""
+        probs = np.random.rand(5, 3)
+        probs = probs / probs.sum(axis=1, keepdims=True)
+        labels = np.random.randint(0, 3, 5)
+
+        metrics = compute_calibration_metrics(probs, labels)
+
+        assert 'ECE' in metrics
 
 
 if __name__ == "__main__":

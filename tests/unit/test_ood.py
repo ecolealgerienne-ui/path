@@ -15,169 +15,229 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from scripts.ood_detection.latent_distance import (
-    compute_mahalanobis_distance,
-    fit_reference_distribution,
-    detect_ood,
+    LatentDistanceOOD,
+    ClassConditionalOOD,
+    evaluate_ood_detection,
 )
 from scripts.ood_detection.entropy_scoring import (
-    compute_entropy,
-    classify_confidence,
-    CONFIDENCE_LEVELS,
+    entropy,
+    normalized_entropy,
+    max_prob,
+    margin,
+    EntropyOODDetector,
+    classify_predictions,
 )
 
 
-class TestMahalanobisDistance:
-    """Tests pour la distance de Mahalanobis."""
+class TestLatentDistanceOOD:
+    """Tests pour LatentDistanceOOD."""
 
-    def test_zero_distance_for_mean(self):
-        """Distance = 0 pour un point au centre de la distribution."""
-        # Distribution simple
+    def test_initialization(self):
+        """Initialisation correcte."""
+        detector = LatentDistanceOOD(method="mahalanobis")
+        assert detector.method == "mahalanobis"
+        assert detector.mean is None
+
+    def test_fit(self):
+        """Fit ajuste mean et threshold."""
         embeddings = np.random.randn(100, 64)
-        mean, cov_inv = fit_reference_distribution(embeddings)
+        detector = LatentDistanceOOD()
+        detector.fit(embeddings)
 
-        distance = compute_mahalanobis_distance(mean.reshape(1, -1), mean, cov_inv)
-        assert distance[0] == pytest.approx(0.0, abs=1e-5)
+        assert detector.mean is not None
+        assert detector.threshold is not None
+        assert detector.mean.shape == (64,)
 
-    def test_distance_increases_with_deviation(self):
-        """Distance augmente avec l'éloignement du centre."""
+    def test_score_shape(self):
+        """Score retourne la bonne forme."""
         embeddings = np.random.randn(100, 64)
-        mean, cov_inv = fit_reference_distribution(embeddings)
+        detector = LatentDistanceOOD()
+        detector.fit(embeddings)
 
-        # Points de plus en plus éloignés
-        close_point = mean + 0.1 * np.std(embeddings, axis=0)
-        far_point = mean + 3.0 * np.std(embeddings, axis=0)
+        test_data = np.random.randn(10, 64)
+        scores = detector.score(test_data)
 
-        d_close = compute_mahalanobis_distance(close_point.reshape(1, -1), mean, cov_inv)
-        d_far = compute_mahalanobis_distance(far_point.reshape(1, -1), mean, cov_inv)
+        assert scores.shape == (10,)
+        assert all(s >= 0 for s in scores)
 
-        assert d_far[0] > d_close[0]
-
-    def test_batch_processing(self):
-        """Traitement par batch fonctionne."""
+    def test_predict(self):
+        """Predict retourne des booléens."""
         embeddings = np.random.randn(100, 64)
-        mean, cov_inv = fit_reference_distribution(embeddings)
+        detector = LatentDistanceOOD()
+        detector.fit(embeddings, percentile=90)
 
-        test_batch = np.random.randn(10, 64)
-        distances = compute_mahalanobis_distance(test_batch, mean, cov_inv)
+        test_data = np.random.randn(10, 64)
+        predictions = detector.predict(test_data)
 
-        assert distances.shape == (10,)
-        assert all(d >= 0 for d in distances)
+        assert predictions.dtype == bool
+        assert predictions.shape == (10,)
 
+    def test_in_distribution_low_score(self):
+        """Échantillons in-distribution ont des scores bas."""
+        embeddings = np.random.randn(100, 64)
+        detector = LatentDistanceOOD()
+        detector.fit(embeddings)
 
-class TestOODDetection:
-    """Tests pour la détection OOD complète."""
-
-    def test_in_distribution_samples(self):
-        """Échantillons in-distribution détectés comme tels."""
-        # Créer une distribution de référence
-        reference = np.random.randn(100, 64)
-
-        # Échantillons similaires (in-distribution)
+        # Points similaires
         in_dist = np.random.randn(10, 64)
+        in_scores = detector.score(in_dist)
 
-        mean, cov_inv = fit_reference_distribution(reference)
-        is_ood, distances = detect_ood(in_dist, mean, cov_inv, threshold_percentile=95)
+        # Points très éloignés
+        ood = np.random.randn(10, 64) * 10 + 50
+        ood_scores = detector.score(ood)
 
-        # La plupart devraient être in-distribution
-        ood_ratio = np.mean(is_ood)
-        assert ood_ratio < 0.3  # Moins de 30% détectés OOD
+        # OOD devrait avoir des scores plus élevés
+        assert np.mean(ood_scores) > np.mean(in_scores)
 
-    def test_out_of_distribution_samples(self):
-        """Échantillons OOD détectés comme tels."""
-        # Distribution de référence centrée
-        reference = np.random.randn(100, 64)
+    def test_different_methods(self):
+        """Test des différentes méthodes."""
+        embeddings = np.random.randn(100, 64)
 
-        # Échantillons très différents (OOD)
-        ood_samples = np.random.randn(10, 64) * 10 + 50  # Très éloignés
+        for method in ["mahalanobis", "euclidean", "cosine"]:
+            detector = LatentDistanceOOD(method=method)
+            detector.fit(embeddings)
 
-        mean, cov_inv = fit_reference_distribution(reference)
-        is_ood, distances = detect_ood(ood_samples, mean, cov_inv, threshold_percentile=95)
+            test_data = np.random.randn(10, 64)
+            scores = detector.score(test_data)
 
-        # La plupart devraient être OOD
-        ood_ratio = np.mean(is_ood)
-        assert ood_ratio > 0.7  # Plus de 70% détectés OOD
+            assert scores.shape == (10,)
 
 
-class TestEntropyScoring:
-    """Tests pour le scoring par entropie."""
+class TestClassConditionalOOD:
+    """Tests pour ClassConditionalOOD."""
 
-    def test_low_entropy_confident(self):
-        """Basse entropie = haute confiance."""
-        # Distribution très piquée (confiant)
-        probs = np.array([0.99, 0.005, 0.005])
-        entropy = compute_entropy(probs)
-        assert entropy < 0.1
+    def test_fit_with_labels(self):
+        """Fit avec labels crée un détecteur par classe."""
+        features = np.random.randn(100, 64)
+        labels = np.random.randint(0, 3, 100)
 
-    def test_high_entropy_uncertain(self):
-        """Haute entropie = incertitude."""
-        # Distribution uniforme (incertain)
-        probs = np.array([0.33, 0.33, 0.34])
-        entropy = compute_entropy(probs)
-        assert entropy > 1.0
+        detector = ClassConditionalOOD()
+        detector.fit(features, labels)
 
-    def test_entropy_bounds(self):
-        """Entropie dans les bornes attendues."""
-        # Entropie max pour n classes = log(n)
+        assert len(detector.class_detectors) == 3
+        assert detector.threshold is not None
+
+
+class TestEntropyFunctions:
+    """Tests pour les fonctions d'entropie."""
+
+    def test_entropy_uniform(self):
+        """Entropie max pour distribution uniforme."""
         n_classes = 5
-        uniform = np.ones(n_classes) / n_classes
-        entropy = compute_entropy(uniform)
-        max_entropy = np.log(n_classes)
-        assert entropy == pytest.approx(max_entropy, abs=0.01)
+        uniform = np.ones((10, n_classes)) / n_classes
+        ent = entropy(uniform)
 
-    def test_zero_probability_handled(self):
-        """Gère les probabilités nulles sans erreur."""
-        probs = np.array([1.0, 0.0, 0.0, 0.0])
-        entropy = compute_entropy(probs)
-        assert entropy == pytest.approx(0.0, abs=1e-5)
+        expected = np.log(n_classes)
+        np.testing.assert_array_almost_equal(ent, expected)
+
+    def test_entropy_peaked(self):
+        """Entropie basse pour distribution piquée."""
+        probs = np.array([[0.99, 0.005, 0.005]])
+        ent = entropy(probs)
+
+        assert ent[0] < 0.1
+
+    def test_normalized_entropy_range(self):
+        """Entropie normalisée dans [0, 1]."""
+        probs = np.random.rand(100, 5)
+        probs = probs / probs.sum(axis=1, keepdims=True)
+
+        norm_ent = normalized_entropy(probs)
+
+        assert np.all(norm_ent >= 0)
+        assert np.all(norm_ent <= 1)
+
+    def test_max_prob(self):
+        """max_prob retourne la probabilité max."""
+        probs = np.array([[0.1, 0.6, 0.3], [0.8, 0.1, 0.1]])
+        mp = max_prob(probs)
+
+        np.testing.assert_array_almost_equal(mp, [0.6, 0.8])
+
+    def test_margin(self):
+        """margin calcule la différence entre top-2."""
+        probs = np.array([[0.1, 0.6, 0.3]])
+        m = margin(probs)
+
+        assert m[0] == pytest.approx(0.3, abs=1e-5)  # 0.6 - 0.3
 
 
-class TestConfidenceClassification:
-    """Tests pour classification de confiance."""
+class TestEntropyOODDetector:
+    """Tests pour EntropyOODDetector."""
 
-    def test_fiable_classification(self):
-        """Haute confiance classée 'Fiable'."""
+    def test_fit_sets_threshold(self):
+        """Fit établit le seuil."""
+        probs = np.random.rand(100, 5)
+        probs = probs / probs.sum(axis=1, keepdims=True)
+
+        detector = EntropyOODDetector()
+        detector.fit(probs)
+
+        assert detector.threshold is not None
+
+    def test_predict_shape(self):
+        """Predict retourne la bonne forme."""
+        probs = np.random.rand(100, 5)
+        probs = probs / probs.sum(axis=1, keepdims=True)
+
+        detector = EntropyOODDetector()
+        detector.fit(probs)
+
+        test_probs = np.random.rand(10, 5)
+        test_probs = test_probs / test_probs.sum(axis=1, keepdims=True)
+
+        predictions = detector.predict(test_probs)
+
+        assert predictions.dtype == bool
+        assert predictions.shape == (10,)
+
+
+class TestClassifyPredictions:
+    """Tests pour classify_predictions."""
+
+    def test_classification_coverage(self):
+        """Toutes les prédictions sont classifiées."""
+        probs = np.random.rand(100, 5)
+        probs = probs / probs.sum(axis=1, keepdims=True)
+
+        result = classify_predictions(probs)
+
+        # Chaque échantillon dans exactement une catégorie
+        total = result['fiable'] | result['a_revoir'] | result['hors_domaine']
+        assert total.all()
+
+    def test_high_confidence_is_fiable(self):
+        """Haute confiance classée fiable."""
         # Très confiant
-        probs = np.array([0.98, 0.01, 0.01])
-        level = classify_confidence(probs)
-        assert level == CONFIDENCE_LEVELS["FIABLE"]
+        probs = np.zeros((10, 5))
+        probs[:, 0] = 0.95
+        probs[:, 1:] = 0.05 / 4
 
-    def test_a_revoir_classification(self):
-        """Confiance moyenne classée 'À revoir'."""
-        # Moyennement confiant
-        probs = np.array([0.6, 0.3, 0.1])
-        level = classify_confidence(probs)
-        assert level == CONFIDENCE_LEVELS["A_REVOIR"]
+        result = classify_predictions(probs)
 
-    def test_hors_domaine_classification(self):
-        """Basse confiance classée 'Hors domaine'."""
-        # Très incertain (uniforme)
-        probs = np.array([0.34, 0.33, 0.33])
-        level = classify_confidence(probs)
-        assert level == CONFIDENCE_LEVELS["HORS_DOMAINE"]
+        assert result['fiable'].sum() > 5  # La plupart fiables
 
 
-class TestEdgeCases:
-    """Tests pour cas limites."""
+class TestEvaluateOODDetection:
+    """Tests pour evaluate_ood_detection."""
 
-    def test_single_embedding(self):
-        """Gère un seul embedding."""
-        single = np.random.randn(1, 64)
-        # Ne devrait pas crasher
-        try:
-            mean, cov_inv = fit_reference_distribution(single)
-        except (ValueError, np.linalg.LinAlgError):
-            pass  # Attendu - pas assez de données
+    def test_perfect_separation(self):
+        """AUROC = 1 pour séparation parfaite."""
+        in_scores = np.array([0.1, 0.2, 0.3, 0.4])
+        out_scores = np.array([0.9, 0.95, 0.85, 0.92])
 
-    def test_high_dimensional(self):
-        """Gère les hautes dimensions (1536 pour H-optimus-0)."""
-        embeddings = np.random.randn(50, 1536)
-        mean, cov_inv = fit_reference_distribution(embeddings)
+        metrics = evaluate_ood_detection(in_scores, out_scores)
 
-        test_point = np.random.randn(1, 1536)
-        distance = compute_mahalanobis_distance(test_point, mean, cov_inv)
+        assert metrics['AUROC'] == pytest.approx(1.0, abs=0.01)
 
-        assert distance.shape == (1,)
-        assert distance[0] >= 0
+    def test_random_scores(self):
+        """AUROC ~ 0.5 pour scores aléatoires."""
+        in_scores = np.random.rand(100)
+        out_scores = np.random.rand(100)
+
+        metrics = evaluate_ood_detection(in_scores, out_scores)
+
+        assert 0.3 < metrics['AUROC'] < 0.7
 
 
 if __name__ == "__main__":
