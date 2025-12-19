@@ -110,13 +110,15 @@ model = timm.create_model(
 | Composant | Version |
 |-----------|---------|
 | OS | WSL2 Ubuntu 24.04.2 LTS |
-| GPU | RTX 4070 Super (12 GB VRAM) |
+| GPU | RTX 4070 SUPER (12.9 GB VRAM) |
 | NVIDIA Driver | 566.36 |
-| CUDA | 12.7 |
+| CUDA | 12.7 (système) / 12.4 (PyTorch) |
 | Docker | 29.1.3 (natif, pas Docker Desktop) |
 | NVIDIA Container Toolkit | Installé |
 | Python | 3.10 (via Miniconda) |
 | Conda | 25.11.1 |
+| PyTorch | 2.6.0+cu124 |
+| Environnement conda | `cellvit` |
 
 ### Contraintes VRAM (12 GB)
 | Tâche | VRAM estimée | Faisabilité |
@@ -218,12 +220,23 @@ cellvit-optimus/
 
 ## Journal de Développement
 
-### 2024-12-19 — Setup environnement
+### 2025-12-19 — Setup environnement ✅ VALIDÉ
 - **Environnement WSL2 configuré** : Ubuntu 24.04.2 LTS
 - **Docker Engine natif installé** (pas Docker Desktop) — meilleure performance, pas de licence
 - **NVIDIA Container Toolkit** configuré — Docker peut accéder au GPU
-- **Miniconda installé** — prêt pour environnement Python isolé
+- **Miniconda installé** — environnement `cellvit` créé
+- **PyTorch 2.6.0+cu124 installé** — GPU RTX 4070 SUPER détecté et fonctionnel
+- **Test GPU matmul** : OK
 - **Décision** : Utiliser Python 3.10 pour compatibilité optimale avec PyTorch/CUDA
+
+**Commandes de vérification rapide :**
+```bash
+# Activer l'environnement
+conda activate cellvit
+
+# Vérifier GPU
+python -c "import torch; print(torch.cuda.is_available(), torch.cuda.get_device_name(0))"
+```
 
 ---
 
