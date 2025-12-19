@@ -261,7 +261,7 @@ cellvit-optimus/
 | Étape | Description | Validation | Statut |
 |-------|-------------|------------|--------|
 | 3.1 | Interface Gradio basique | Upload image → résultat | ✅ FAIT |
-| 3.2 | Intégration CellViT-256 dans démo | Inférence réelle | 🔄 EN COURS |
+| 3.2 | Intégration CellViT-256 dans démo | Inférence réelle | ✅ FAIT |
 | 3.3 | Rapport avec couleurs/emojis | Correspondance visuelle | ✅ FAIT |
 | 3.4 | Scripts OOD/calibration | Utilitaires prêts | ✅ FAIT |
 | 3.5 | Docker packaging | `docker-compose up` fonctionne | ⏳ À FAIRE |
@@ -276,9 +276,9 @@ cellvit-optimus/
 
 ## Statut Actuel
 
-**Phase en cours :** Phase 1 (étape 1.5)
-**Blocage actuel :** Validation inférence CellViT-256 sur données réelles
-**Prochaine action :** Tester CellViT-256 sur image PanNuke après téléchargement
+**Phase en cours :** Phase 3 (étape 3.2 validée)
+**Blocage actuel :** Aucun
+**Prochaine action :** Étape 1.6 (métriques PanNuke) ou 3.5 (Docker packaging)
 
 ---
 
@@ -459,6 +459,21 @@ Scripts créés conformément aux specs :
 ```bash
 python scripts/validation/test_cellvit_official.py -c models/pretrained/CellViT-256.pth
 ```
+
+### 2025-12-19 — Démo Gradio avec CellViT-256 ✅ VALIDÉE (Étape 3.2 POC)
+- **Wrapper officiel intégré** dans `scripts/demo/gradio_demo.py`
+- **Import mis à jour** : `CellViTOfficial` remplace `CellViTInference`
+- **Validation checkpoint** : Vérification taille > 1MB avant chargement
+
+**Test sur image réelle (cancer prostate) :**
+```
+✅ MODÈLE CELLVIT-256 ACTIF
+Total cellules détectées: 25
+  🔴 Neoplastic: 17 (68.0%)
+  🔵 Connective: 8 (32.0%)
+```
+
+**Résultat :** Détection cohérente — majorité néoplasique sur image de carcinome prostatique.
 
 ---
 
