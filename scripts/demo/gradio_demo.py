@@ -26,6 +26,85 @@ from scripts.demo.visualize_cells import (
 from scripts.demo.synthetic_cells import generate_synthetic_tissue, TISSUE_CONFIGS
 
 
+def detect_nuclei_simple(image: np.ndarray) -> np.ndarray:
+    """
+    Détection simple de noyaux par seuillage.
+    Utilisé comme placeholder en attendant le vrai modèle.
+    """
+    # Convertir en niveaux de gris
+    if len(image.shape) == 3:
+        gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
+    else:
+        gray = image.copy()
+
+    # Inverser (noyaux sombres -> blancs)
+    gray = 255 - gray
+
+    # Seuillage adaptatif
+    binary = cv2.adaptiveThreshold(
+        gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+        cv2.THRESH_BINARY, 21, 5
+    )
+
+    # Opérations morphologiques pour nettoyer
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+    binary = cv2.morphologyEx(binary, cv2.MORPH_OPEN, kernel)
+    binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel)
+
+    # Trouver les composantes connexes
+    n_labels, labels = cv2.connectedComponents(binary)
+
+    return labels, n_labels - 1  # -1 pour exclure le fond
+
+
+def create_mask_from_labels(
+    labels: np.ndarray,
+    n_cells: int,
+    tissue_type: str = "Breast"
+) -> np.ndarray:
+    """
+    Crée un masque 6-canaux à partir des labels détectés.
+    Assigne des types cellulaires selon la distribution du tissu.
+    """
+    h, w = labels.shape
+    mask = np.zeros((h, w, 6), dtype=np.uint8)
+    mask[:, :, 0] = 255  # Background par défaut
+
+    if n_cells == 0:
+        return mask
+
+    # Distribution selon le type de tissu
+    config = TISSUE_CONFIGS.get(tissue_type, TISSUE_CONFIGS["Breast"])
+    type_names = list(config.keys())
+    type_probs = [config[t] for t in type_names]
+
+    # Mapping des noms vers les indices
+    name_to_idx = {
+        "Neoplastic": 1,
+        "Inflammatory": 2,
+        "Connective": 3,
+        "Dead": 4,
+        "Epithelial": 5
+    }
+
+    # Assigner un type à chaque cellule
+    np.random.seed(42)
+    cell_types = np.random.choice(type_names, size=n_cells, p=type_probs)
+
+    for cell_id in range(1, n_cells + 1):
+        cell_mask = labels == cell_id
+        if not np.any(cell_mask):
+            continue
+
+        cell_type = cell_types[cell_id - 1] if cell_id <= len(cell_types) else "Epithelial"
+        type_idx = name_to_idx.get(cell_type, 5)
+
+        mask[:, :, 0][cell_mask] = 0  # Retirer du background
+        mask[:, :, type_idx][cell_mask] = 255
+
+    return mask
+
+
 class CellVitDemo:
     """Interface de démonstration CellViT-Optimus."""
 
@@ -138,6 +217,42 @@ class CellVitDemo:
 
         return "\n".join(stats)
 
+    def analyze_uploaded_image(self, image, tissue_type: str):
+        """Analyse une image uploadée par l'utilisateur."""
+        if image is None:
+            return None, None, "⚠️ Veuillez uploader une image"
+
+        # Redimensionner si nécessaire
+        h, w = image.shape[:2]
+        max_size = 512
+        if max(h, w) > max_size:
+            scale = max_size / max(h, w)
+            new_w, new_h = int(w * scale), int(h * scale)
+            image = cv2.resize(image, (new_w, new_h))
+
+        # Détecter les noyaux (méthode simple)
+        labels, n_cells = detect_nuclei_simple(image)
+
+        # Créer le masque avec types cellulaires
+        mask = create_mask_from_labels(labels, n_cells, tissue_type)
+
+        # Visualisation
+        overlay = overlay_mask(image, mask, 0.4)
+        result = draw_contours(overlay, mask, thickness=2)
+
+        # Rapport
+        report = f"""
+⚠️ MODE DÉMONSTRATION
+La classification des cellules est simulée.
+En production, le modèle H-optimus-0 + UNETR sera utilisé.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+"""
+        report += generate_report(mask, tissue_type)
+
+        return image, result, report
+
 
 def create_demo_interface():
     """Crée l'interface Gradio complète."""
@@ -215,7 +330,57 @@ def create_demo_interface():
                     outputs=[output_image, report_output]
                 )
 
-            # Tab 2: Générer de nouveaux tissus
+            # Tab 2: Analyser une image uploadée
+            with gr.TabItem("📤 Analyser votre Image"):
+                gr.Markdown("""
+                ### Analysez votre propre image histopathologique
+
+                Uploadez une image de tissu coloré H&E pour obtenir une analyse cellulaire.
+
+                **Note:** En mode démo, la classification des cellules est simulée.
+                Le vrai modèle utilisera H-optimus-0 pour une analyse précise.
+                """)
+
+                with gr.Row():
+                    with gr.Column(scale=1):
+                        upload_image = gr.Image(
+                            label="Uploader une image",
+                            type="numpy",
+                            sources=["upload", "clipboard"]
+                        )
+                        upload_tissue = gr.Dropdown(
+                            choices=list(TISSUE_CONFIGS.keys()),
+                            value="Breast",
+                            label="Type de tissu (pour simulation)"
+                        )
+                        analyze_btn = gr.Button(
+                            "🔬 Analyser",
+                            variant="primary"
+                        )
+
+                    with gr.Column(scale=2):
+                        with gr.Row():
+                            upload_original = gr.Image(
+                                label="Image originale",
+                                type="numpy"
+                            )
+                            upload_result = gr.Image(
+                                label="Analyse",
+                                type="numpy"
+                            )
+
+                upload_report = gr.Textbox(
+                    label="Rapport d'analyse",
+                    lines=15
+                )
+
+                analyze_btn.click(
+                    fn=demo.analyze_uploaded_image,
+                    inputs=[upload_image, upload_tissue],
+                    outputs=[upload_original, upload_result, upload_report]
+                )
+
+            # Tab 3: Générer de nouveaux tissus
             with gr.TabItem("🧬 Générateur de Tissus"):
                 gr.Markdown("""
                 ### Génération de tissus synthétiques
@@ -273,7 +438,7 @@ def create_demo_interface():
                     outputs=[gen_original, gen_segmented, gen_report]
                 )
 
-            # Tab 3: À propos
+            # Tab 4: À propos
             with gr.TabItem("ℹ️ À propos"):
                 gr.Markdown("""
                 ## CellViT-Optimus
