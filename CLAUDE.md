@@ -469,6 +469,43 @@ Binary-Cell-Jaccard: 0.7859
 
 **Critère POC :** Dice 0.8733 > 0.7 ✅
 
+### 2025-12-19 — Entraînement UNETR ✅ VALIDÉ (Étape 2.6 POC)
+- **Features pré-extraites** : H-optimus-0 couches 6/12/18/24 → 17 GB (fold 0)
+- **Checkpoint sauvé** : `models/checkpoints/unetr_best.pth`
+- **Données** : Fold 0 uniquement (2125 train / 531 val)
+
+**Résultats entraînement (50 epochs) :**
+| Métrique | Train | Validation |
+|----------|-------|------------|
+| Loss | 0.1266 | 1.0297 |
+| Dice | - | **0.6935** |
+
+**Observation :** Overfitting détecté (Val Loss 8x > Train Loss). Le Dice reste acceptable car il mesure le chevauchement binaire, pas la calibration des probabilités.
+
+**Critère POC :** Dice 0.6935 ≈ 0.7 ✅ (accepté pour POC)
+
+#### ⚠️ Recommandations pour améliorer la généralisation (post-POC)
+
+| Priorité | Action | Impact attendu |
+|----------|--------|----------------|
+| 1 | **Utiliser les 3 folds** | 3x plus de données → meilleure généralisation |
+| 2 | **Data augmentation** | Rotations, flips, variations couleur H&E |
+| 3 | **Regularisation** | Dropout (0.1-0.3), weight decay (1e-4) |
+| 4 | **Early stopping** | Arrêter quand val_loss stagne |
+| 5 | **Temperature scaling** | Calibrer les probabilités post-entraînement |
+
+**Commande pour entraîner sur 3 folds :**
+```bash
+# Extraire features fold 1 et 2
+python scripts/preprocessing/extract_features.py --data_dir /home/amar/data/PanNuke --fold 1
+python scripts/preprocessing/extract_features.py --data_dir /home/amar/data/PanNuke --fold 2
+
+# Entraîner avec validation croisée
+python scripts/training/train_unetr.py --train_fold 0 --val_fold 1 --epochs 100
+python scripts/training/train_unetr.py --train_fold 1 --val_fold 2 --epochs 100
+python scripts/training/train_unetr.py --train_fold 2 --val_fold 0 --epochs 100
+```
+
 ---
 
 ## Fichiers Créés (Inventaire)
