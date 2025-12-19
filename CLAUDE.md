@@ -259,14 +259,14 @@ cellvit-optimus/
 | Étape | Description | Validation | Statut |
 |-------|-------------|------------|--------|
 | 3.1 | Interface Gradio basique | Upload image → résultat | ✅ FAIT |
-| 3.2 | Intégration UNETR dans démo | Inférence H-optimus-0 + UNETR | ⏳ À FAIRE |
+| 3.2 | Intégration UNETR dans démo | Inférence H-optimus-0 + UNETR | ✅ FAIT |
 | 3.3 | Rapport avec couleurs/emojis | Correspondance visuelle | ✅ FAIT |
 | 3.4 | Scripts OOD/calibration | Utilitaires prêts | ✅ FAIT |
 | 3.5 | Docker packaging | `docker-compose up` fonctionne | ⏳ À FAIRE |
 | 3.6 | Documentation utilisateur | README complet | ⏳ À FAIRE |
 
 **Critères de livraison POC :**
-- [ ] Démo fonctionnelle avec architecture cible (H-optimus-0 + UNETR)
+- [x] Démo fonctionnelle avec architecture cible (H-optimus-0 + UNETR)
 - [ ] Docker déployable
 - [ ] Documentation claire
 
@@ -274,9 +274,9 @@ cellvit-optimus/
 
 ## Statut Actuel
 
-**Phase en cours :** Phase 3 (étapes 2.1-2.6 validées)
+**Phase en cours :** Phase 3 (étapes 3.1-3.4 validées)
 **Blocage actuel :** Aucun
-**Prochaine action :** Étape 3.2 (intégration UNETR dans démo Gradio)
+**Prochaine action :** Étape 3.5 (Docker packaging)
 
 ---
 
