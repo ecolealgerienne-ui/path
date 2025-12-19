@@ -68,14 +68,21 @@ class FeatureProjector(nn.Module):
     def forward(self, x: torch.Tensor, h: int, w: int):
         """
         Args:
-            x: (B, N, D) features du ViT (N = h*w patches)
+            x: (B, N, D) features du ViT (N peut inclure CLS + patches + registers)
             h, w: dimensions en patches
         Returns:
             (B, C, H, W) features spatiales
         """
         B, N, D = x.shape
-        x = self.proj(x)  # (B, N, C)
-        x = x.transpose(1, 2)  # (B, C, N)
+        n_patches = h * w  # 256 pour H-optimus-0
+
+        # H-optimus-0: 261 tokens = 1 CLS + 256 patches + 4 registers
+        # On garde seulement les patch tokens (indices 1 à 257)
+        if N > n_patches:
+            x = x[:, 1:n_patches+1, :]  # Exclure CLS et registers
+
+        x = self.proj(x)  # (B, n_patches, C)
+        x = x.transpose(1, 2)  # (B, C, n_patches)
         x = x.reshape(B, -1, h, w)  # (B, C, h, w)
         return x
 
