@@ -238,6 +238,30 @@ conda activate cellvit
 python -c "import torch; print(torch.cuda.is_available(), torch.cuda.get_device_name(0))"
 ```
 
+### 2025-12-19 — H-optimus-0 + PanNuke ✅ VALIDÉ
+- **H-optimus-0 chargé** : 1.13B paramètres, embeddings 1536-dim
+- **PanNuke Fold 1 téléchargé** : 2656 images, 19 organes, 256×256 pixels
+- **Script d'extraction créé** : `scripts/preprocessing/extract_features.py`
+- **Script de visualisation créé** : `scripts/evaluation/visualize_embeddings.py`
+
+**Performances mesurées :**
+| Métrique | Valeur |
+|----------|--------|
+| Temps par image | 13.6 ms |
+| Throughput | 73.4 img/s |
+| Pic mémoire GPU | 4.59 GB |
+
+**Commandes d'extraction :**
+```bash
+# Extraction stratifiée (tous les organes)
+python scripts/preprocessing/extract_features.py --num_images 500 --batch_size 16 --stratified
+
+# Visualisation t-SNE
+python scripts/evaluation/visualize_embeddings.py
+```
+
+**Résultat t-SNE** : Les embeddings montrent une structure (pas aléatoire), avec quelques clusters par organe. Validation que H-optimus-0 capture de l'information sémantique utile.
+
 ---
 
 ## Problèmes Connus & Solutions
