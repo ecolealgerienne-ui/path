@@ -4,6 +4,8 @@ Interface Gradio pour la démonstration CellViT-Optimus.
 
 Permet de visualiser interactivement les segmentations cellulaires
 et d'explorer les différents types de tissus.
+
+Conforme aux specs CellViT-Optimus_Specifications.md section 3.2.
 """
 
 import gradio as gr
@@ -13,7 +15,8 @@ import cv2
 import sys
 
 # Ajouter le chemin du projet
-sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+PROJECT_ROOT = Path(__file__).parent.parent.parent
+sys.path.insert(0, str(PROJECT_ROOT))
 
 from scripts.demo.visualize_cells import (
     overlay_mask,
@@ -24,6 +27,26 @@ from scripts.demo.visualize_cells import (
     CELL_TYPE_INDICES
 )
 from scripts.demo.synthetic_cells import generate_synthetic_tissue, TISSUE_CONFIGS
+
+# Tenter de charger CellViT-256 si disponible
+CELLVIT_AVAILABLE = False
+cellvit_model = None
+
+CELLVIT_MODEL_PATH = PROJECT_ROOT / "models" / "pretrained" / "CellViT-256.pth"
+
+try:
+    from src.inference.cellvit_inference import CellViTInference
+    if CELLVIT_MODEL_PATH.exists():
+        print(f"Chargement CellViT-256 depuis {CELLVIT_MODEL_PATH}...")
+        cellvit_model = CellViTInference(str(CELLVIT_MODEL_PATH))
+        CELLVIT_AVAILABLE = True
+        print("CellViT-256 chargé avec succès!")
+    else:
+        print(f"CellViT-256 non trouvé: {CELLVIT_MODEL_PATH}")
+        print("Mode démonstration avec détection simulée.")
+except Exception as e:
+    print(f"Impossible de charger CellViT-256: {e}")
+    print("Mode démonstration avec détection simulée.")
 
 
 def detect_nuclei_simple(image: np.ndarray) -> np.ndarray:
@@ -230,10 +253,37 @@ class CellVitDemo:
             new_w, new_h = int(w * scale), int(h * scale)
             image = cv2.resize(image, (new_w, new_h))
 
-        # Détecter les noyaux (méthode simple)
-        labels, n_cells = detect_nuclei_simple(image)
+        # Utiliser CellViT-256 si disponible
+        if CELLVIT_AVAILABLE and cellvit_model is not None:
+            try:
+                # Inférence avec le vrai modèle
+                result_data = cellvit_model.predict(image)
 
-        # Créer le masque avec types cellulaires
+                # Visualisation
+                result = cellvit_model.visualize(
+                    image, result_data,
+                    show_contours=True,
+                    show_types=True,
+                    alpha=0.4
+                )
+
+                # Rapport
+                report = cellvit_model.generate_report(result_data)
+                report = f"""
+✅ MODÈLE CELLVIT-256 ACTIF
+Analyse réelle avec le modèle pré-entraîné.
+
+{report}
+"""
+                return image, result, report
+
+            except Exception as e:
+                print(f"Erreur CellViT-256: {e}")
+                # Fallback vers simulation
+                pass
+
+        # Fallback: détection simulée
+        labels, n_cells = detect_nuclei_simple(image)
         mask = create_mask_from_labels(labels, n_cells, tissue_type)
 
         # Visualisation
@@ -244,7 +294,7 @@ class CellVitDemo:
         report = f"""
 ⚠️ MODE DÉMONSTRATION
 La classification des cellules est simulée.
-En production, le modèle H-optimus-0 + UNETR sera utilisé.
+CellViT-256 non disponible ou erreur.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -260,13 +310,18 @@ def create_demo_interface():
 
     with gr.Blocks(title="CellViT-Optimus Demo") as interface:
 
-        gr.Markdown("""
+        # Statut du modèle
+        model_status = "✅ CellViT-256 actif" if CELLVIT_AVAILABLE else "⚠️ Mode simulation"
+
+        gr.Markdown(f"""
         # 🔬 CellViT-Optimus — Démonstration
 
         **Système d'assistance au triage histopathologique**
 
         Ce démo permet de visualiser la segmentation et classification des cellules
         dans des images de tissus histopathologiques.
+
+        **Statut modèle:** {model_status}
 
         ---
         """)
@@ -332,14 +387,25 @@ def create_demo_interface():
 
             # Tab 2: Analyser une image uploadée
             with gr.TabItem("📤 Analyser votre Image"):
-                gr.Markdown("""
-                ### Analysez votre propre image histopathologique
+                if CELLVIT_AVAILABLE:
+                    gr.Markdown("""
+                    ### Analysez votre propre image histopathologique
 
-                Uploadez une image de tissu coloré H&E pour obtenir une analyse cellulaire.
+                    Uploadez une image de tissu coloré H&E pour obtenir une analyse cellulaire.
 
-                **Note:** En mode démo, la classification des cellules est simulée.
-                Le vrai modèle utilisera H-optimus-0 pour une analyse précise.
-                """)
+                    **✅ CellViT-256 est actif** — L'analyse utilise le modèle pré-entraîné
+                    pour une segmentation et classification précise des cellules.
+                    """)
+                else:
+                    gr.Markdown("""
+                    ### Analysez votre propre image histopathologique
+
+                    Uploadez une image de tissu coloré H&E pour obtenir une analyse cellulaire.
+
+                    **⚠️ Mode simulation** — CellViT-256 non disponible.
+                    Pour activer le modèle réel, placez `CellViT-256.pth` dans
+                    `models/pretrained/`.
+                    """)
 
                 with gr.Row():
                     with gr.Column(scale=1):
