@@ -10,9 +10,12 @@ Valide:
 
 Usage:
     python scripts/validation/test_cellvit_official.py
+    python scripts/validation/test_cellvit_official.py --checkpoint /path/to/CellViT-256.pth
+    python scripts/validation/test_cellvit_official.py -c models/pretrained/CellViT-256.pth
 """
 
 import sys
+import argparse
 from pathlib import Path
 
 # Ajouter le projet au path
@@ -23,6 +26,20 @@ sys.path.insert(0, str(PROJECT_ROOT / "CellViT"))
 import torch
 import numpy as np
 import cv2
+
+
+def parse_args():
+    """Parse command line arguments."""
+    parser = argparse.ArgumentParser(
+        description="Test CellViT-256 avec le code officiel TIO-IKIM"
+    )
+    parser.add_argument(
+        "-c", "--checkpoint",
+        type=str,
+        default=None,
+        help="Chemin vers le checkpoint CellViT-256.pth (défaut: models/pretrained/CellViT-256.pth)"
+    )
+    return parser.parse_args()
 
 
 def test_import():
@@ -111,13 +128,18 @@ def test_forward(model):
         return False
 
 
-def test_checkpoint():
+def test_checkpoint(checkpoint_path=None):
     """Test 4: Chargement du checkpoint."""
     print("\n" + "=" * 60)
     print("TEST 4: Chargement du checkpoint")
     print("=" * 60)
 
-    checkpoint_path = PROJECT_ROOT / "models" / "pretrained" / "CellViT-256.pth"
+    if checkpoint_path is None:
+        checkpoint_path = PROJECT_ROOT / "models" / "pretrained" / "CellViT-256.pth"
+    else:
+        checkpoint_path = Path(checkpoint_path)
+
+    print(f"Chemin checkpoint: {checkpoint_path}")
 
     if not checkpoint_path.exists():
         print(f"⏭️  Checkpoint non trouvé: {checkpoint_path}")
@@ -253,7 +275,7 @@ Alternative via gdown (si pas de proxy):
     print("-" * 50)
 
 
-def main():
+def main(checkpoint_path=None):
     """Exécute tous les tests."""
     print("\n" + "=" * 60)
     print("  VALIDATION CELLVIT-256 OFFICIEL")
@@ -274,7 +296,7 @@ def main():
     results['forward'] = test_forward(model)
 
     # Test 4: Checkpoint
-    checkpoint = test_checkpoint()
+    checkpoint = test_checkpoint(checkpoint_path)
     results['checkpoint'] = checkpoint is not None
 
     # Test 5: Load weights
@@ -316,5 +338,6 @@ def main():
 
 
 if __name__ == "__main__":
-    success = main()
+    args = parse_args()
+    success = main(checkpoint_path=args.checkpoint)
     sys.exit(0 if success else 1)
