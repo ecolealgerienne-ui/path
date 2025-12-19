@@ -1,5 +1,19 @@
 # CellViT-Optimus — Contexte Projet
 
+> **IMPORTANT : Ce fichier est la source de vérité du projet.**
+>
+> Claude doit maintenir ce fichier à jour avec toute information importante :
+> - Décisions techniques prises durant le développement
+> - Problèmes rencontrés et solutions appliquées
+> - Changements d'architecture ou de stratégie
+> - Dépendances ajoutées et leurs versions
+> - Bugs connus et workarounds
+> - Toute information qui serait utile pour reprendre le contexte
+>
+> **Si une information est jugée importante pour la continuité du projet, elle doit être ajoutée ici.**
+
+---
+
 ## Vue d'ensemble
 
 **CellViT-Optimus** est un système d'assistance au triage histopathologique. Il ne remplace pas le pathologiste mais l'aide à :
@@ -199,3 +213,54 @@ cellvit-optimus/
 - **Priorité** : Validation technique avant expansion
 - **Approche** : Explorer le domaine médical via ce projet, rester ouvert aux pivots
 - **Hardware limité** : Toujours considérer les contraintes 12GB VRAM dans les suggestions
+
+---
+
+## Journal de Développement
+
+### 2024-12-19 — Setup environnement
+- **Environnement WSL2 configuré** : Ubuntu 24.04.2 LTS
+- **Docker Engine natif installé** (pas Docker Desktop) — meilleure performance, pas de licence
+- **NVIDIA Container Toolkit** configuré — Docker peut accéder au GPU
+- **Miniconda installé** — prêt pour environnement Python isolé
+- **Décision** : Utiliser Python 3.10 pour compatibilité optimale avec PyTorch/CUDA
+
+---
+
+## Problèmes Connus & Solutions
+
+| Problème | Solution |
+|----------|----------|
+| Conda ToS non acceptées | `conda tos accept --override-channels --channel <url>` |
+| Docker "command not found" dans WSL | Installer Docker Engine natif, pas Docker Desktop |
+
+---
+
+## Dépendances Clés (à installer)
+
+```
+# Core ML
+torch>=2.0
+torchvision
+timm
+transformers
+
+# Histopathologie
+openslide-python
+tifffile
+staintools  # ou torchstain
+
+# Évaluation
+scikit-learn
+scipy
+pandas
+matplotlib
+
+# Calibration & Incertitude
+netcal
+mapie
+
+# API/Démo
+fastapi
+gradio  # ou streamlit
+```
