@@ -92,7 +92,11 @@ class HOptimusUNETRInference:
         self.decoder.eval()
         self.decoder.to(device)
 
-        print(f"✅ Modèle chargé (Dice: {checkpoint.get('best_dice', 'N/A'):.4f})")
+        best_dice = checkpoint.get('best_dice', None)
+        if best_dice is not None:
+            print(f"✅ Modèle chargé (Dice: {best_dice:.4f})")
+        else:
+            print("✅ Modèle chargé")
 
     def _register_hooks(self):
         """Enregistre des hooks pour extraire les features."""
