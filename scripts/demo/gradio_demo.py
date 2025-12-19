@@ -5,8 +5,8 @@ Interface Gradio pour la démonstration CellViT-Optimus.
 Permet de visualiser interactivement les segmentations cellulaires
 et d'explorer les différents types de tissus.
 
-Architecture cible: H-optimus-0 (backbone gelé) + UNETR (décodeur entraîné)
-Conforme aux specs CellViT-Optimus_Specifications.md section 3.2.
+Architecture cible: H-optimus-0 (backbone gelé) + HoVer-Net decoder
+Basé sur la littérature: CellViT, HoVer-Net
 """
 
 import gradio as gr
@@ -30,29 +30,43 @@ from scripts.demo.visualize_cells import (
 from scripts.demo.synthetic_cells import generate_synthetic_tissue, TISSUE_CONFIGS
 
 # Configuration des modèles
+HOVERNET_CHECKPOINT = PROJECT_ROOT / "models" / "checkpoints" / "hovernet_best.pth"
 UNETR_CHECKPOINT = PROJECT_ROOT / "models" / "checkpoints" / "unetr_best.pth"
 
-# Tenter de charger H-optimus-0 + UNETR (architecture cible)
+# Tenter de charger les modèles (priorité: HoVer-Net > UNETR > simulation)
 MODEL_AVAILABLE = False
 inference_model = None
-MODEL_NAME = "H-optimus-0 + UNETR"
+MODEL_NAME = "Simulation"
 
+# 1. Essayer HoVer-Net (meilleure architecture)
 try:
-    from src.inference.hoptimus_unetr import HOptimusUNETRInference
+    from src.inference.hoptimus_hovernet import HOptimusHoVerNetInference
 
-    if UNETR_CHECKPOINT.exists():
-        print(f"Chargement {MODEL_NAME} depuis {UNETR_CHECKPOINT}...")
-        inference_model = HOptimusUNETRInference(str(UNETR_CHECKPOINT))
+    if HOVERNET_CHECKPOINT.exists():
+        print(f"Chargement H-optimus-0 + HoVer-Net depuis {HOVERNET_CHECKPOINT}...")
+        inference_model = HOptimusHoVerNetInference(str(HOVERNET_CHECKPOINT))
         MODEL_AVAILABLE = True
+        MODEL_NAME = "H-optimus-0 + HoVer-Net"
         print(f"✅ {MODEL_NAME} chargé avec succès!")
-    else:
-        print(f"⚠️ Checkpoint UNETR non trouvé: {UNETR_CHECKPOINT}")
-        print("Mode démonstration avec détection simulée.")
 except Exception as e:
-    print(f"Impossible de charger {MODEL_NAME}: {e}")
-    import traceback
-    traceback.print_exc()
-    print("Mode démonstration avec détection simulée.")
+    print(f"HoVer-Net non disponible: {e}")
+
+# 2. Sinon essayer UNETR (fallback)
+if not MODEL_AVAILABLE:
+    try:
+        from src.inference.hoptimus_unetr import HOptimusUNETRInference
+
+        if UNETR_CHECKPOINT.exists():
+            print(f"Chargement H-optimus-0 + UNETR depuis {UNETR_CHECKPOINT}...")
+            inference_model = HOptimusUNETRInference(str(UNETR_CHECKPOINT))
+            MODEL_AVAILABLE = True
+            MODEL_NAME = "H-optimus-0 + UNETR"
+            print(f"✅ {MODEL_NAME} chargé avec succès!")
+    except Exception as e:
+        print(f"UNETR non disponible: {e}")
+
+if not MODEL_AVAILABLE:
+    print("⚠️ Aucun modèle disponible - Mode simulation activé")
 
 
 def detect_nuclei_simple(image: np.ndarray) -> np.ndarray:
