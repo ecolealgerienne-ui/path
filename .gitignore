@@ -42,6 +42,7 @@ ENV/
 data/raw/
 data/processed/
 data/cache/
+data/demo/
 *.h5
 *.hdf5
 *.npy
