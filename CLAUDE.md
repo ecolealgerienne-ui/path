@@ -225,21 +225,19 @@ cellvit-optimus/
 > **IMPORTANT** : Suivre ce plan étape par étape. Ne pas passer à l'étape suivante
 > sans avoir validé les critères de l'étape courante.
 
-### Phase 1 : Environnement & Inférence CellViT (Semaines 1-2)
+### Phase 1 : Environnement & Données (Semaines 1-2)
 
 | Étape | Description | Validation | Statut |
 |-------|-------------|------------|--------|
 | 1.1 | Setup WSL2 + Docker + CUDA | `nvidia-smi` fonctionne | ✅ FAIT |
 | 1.2 | Conda + PyTorch | `torch.cuda.is_available()` = True | ✅ FAIT |
-| 1.3 | Télécharger CellViT-256 | Fichier 187 MB présent | ✅ FAIT (manuel) |
-| 1.4 | Télécharger PanNuke | 3 folds présents | ✅ FAIT (manuel) |
-| 1.5 | Inférence CellViT-256 | Détection cellules sur image test | ✅ FAIT |
-| 1.6 | Valider métriques | Dice > 0.7 sur PanNuke fold3 | ✅ FAIT (Dice=0.8733) |
+| 1.3 | Télécharger PanNuke | 3 folds présents | ✅ FAIT (manuel) |
+| 1.4 | Scripts preprocessing | Extraction tuiles, normalisation | ✅ FAIT |
 
 **Critères de passage Phase 2 :**
-- [x] CellViT-256 fonctionne sur GPU
-- [x] Détection visible sur image réelle
-- [x] Métriques de base calculées
+- [x] Environnement GPU fonctionnel
+- [x] Dataset PanNuke disponible
+- [x] Pipeline preprocessing prêt
 
 ### Phase 2 : Intégration H-optimus-0 (Semaines 3-4)
 
@@ -253,22 +251,22 @@ cellvit-optimus/
 | 2.6 | Entraînement UNETR sur PanNuke | Loss converge | ⏳ À FAIRE |
 
 **Critères de passage Phase 3 :**
-- [ ] UNETR entraîné sur PanNuke (backbone gelé)
-- [ ] Performance proche de CellViT-256 baseline
+- [ ] UNETR entraîné sur PanNuke (backbone H-optimus-0 gelé)
+- [ ] Dice > 0.7 sur PanNuke validation
 
 ### Phase 3 : Interface Démo & Packaging (Semaines 5-6)
 
 | Étape | Description | Validation | Statut |
 |-------|-------------|------------|--------|
 | 3.1 | Interface Gradio basique | Upload image → résultat | ✅ FAIT |
-| 3.2 | Intégration CellViT-256 dans démo | Inférence réelle | ✅ FAIT |
+| 3.2 | Intégration UNETR dans démo | Inférence H-optimus-0 + UNETR | ⏳ À FAIRE |
 | 3.3 | Rapport avec couleurs/emojis | Correspondance visuelle | ✅ FAIT |
 | 3.4 | Scripts OOD/calibration | Utilitaires prêts | ✅ FAIT |
 | 3.5 | Docker packaging | `docker-compose up` fonctionne | ⏳ À FAIRE |
 | 3.6 | Documentation utilisateur | README complet | ⏳ À FAIRE |
 
 **Critères de livraison POC :**
-- [ ] Démo fonctionnelle end-to-end
+- [ ] Démo fonctionnelle avec architecture cible (H-optimus-0 + UNETR)
 - [ ] Docker déployable
 - [ ] Documentation claire
 
@@ -276,27 +274,9 @@ cellvit-optimus/
 
 ## Statut Actuel
 
-**Phase en cours :** Phase 3 (étapes 1.6 et 3.2 validées)
+**Phase en cours :** Phase 2 (étapes 2.1-2.5 validées)
 **Blocage actuel :** Aucun
-**Prochaine action :** Étape 2.6 (entraînement UNETR) ou 3.5 (Docker packaging)
-
----
-
-## Architecture POC vs Cible
-
-> **ATTENTION** : L'implémentation actuelle est un POC de validation.
-> Certains choix ne correspondent pas à l'architecture cible.
-
-| Composant | POC (actuel) | Cible (production) |
-|-----------|--------------|-------------------|
-| Segmentation | CellViT-256 pré-entraîné | UNETR sur H-optimus-0 |
-| Backbone | CellViT encoder (ViT-256, 46M params) | H-optimus-0 (1.1B params) |
-| Données démo | Synthétiques | PanNuke + images réelles |
-| Détection cellules | Seuillage simple (fallback) | Modèle entraîné |
-| Incertitude | Non implémenté | Conformal Prediction |
-| OOD | Scripts prêts (non intégrés) | Pipeline complet |
-
-**Objectif POC :** Valider la faisabilité technique, pas l'architecture finale.
+**Prochaine action :** Étape 2.6 (entraînement UNETR)
 
 ---
 
