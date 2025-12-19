@@ -200,16 +200,17 @@ def main():
     print(f"Temps total: {elapsed:.1f}s ({elapsed/60:.1f} min)")
     print(f"Temps par image: {elapsed / n_images * 1000:.1f}ms")
 
-    # Sauvegarder les features (format NPZ pour multi-arrays)
+    # Sauvegarder les features (format NPZ sans compression - plus rapide)
     output_path = output_dir / f"fold{args.fold}_features.npz"
-    np.savez_compressed(
+    print(f"\nSauvegarde features (sans compression)...")
+    np.savez(
         output_path,
         layer_6=features['layer_6'],
         layer_12=features['layer_12'],
         layer_18=features['layer_18'],
         layer_24=features['layer_24'],
     )
-    print(f"\nFeatures sauvegardées: {output_path}")
+    print(f"Features sauvegardées: {output_path}")
 
     # Sauvegarder les masks (pour entraînement)
     if masks is not None:
