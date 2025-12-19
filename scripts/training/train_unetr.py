@@ -186,8 +186,10 @@ def main():
                         help="Dossier des features pré-extraites")
     parser.add_argument("--train_fold", type=int, default=0,
                         help="Fold pour entraînement")
-    parser.add_argument("--val_fold", type=int, default=1,
-                        help="Fold pour validation")
+    parser.add_argument("--val_fold", type=int, default=None,
+                        help="Fold pour validation (si None, split interne 80/20)")
+    parser.add_argument("--val_split", type=float, default=0.2,
+                        help="Proportion validation si single fold (défaut: 0.2)")
     parser.add_argument("--epochs", type=int, default=50)
     parser.add_argument("--batch_size", type=int, default=16)
     parser.add_argument("--lr", type=float, default=1e-4)
@@ -200,16 +202,28 @@ def main():
 
     # Datasets
     print("\n📦 Chargement des datasets...")
-    train_dataset = PreExtractedFeaturesDataset(args.features_dir, fold=args.train_fold)
-    val_dataset = PreExtractedFeaturesDataset(args.features_dir, fold=args.val_fold)
+
+    if args.val_fold is not None:
+        # Mode 2 folds séparés
+        train_dataset = PreExtractedFeaturesDataset(args.features_dir, fold=args.train_fold)
+        val_dataset = PreExtractedFeaturesDataset(args.features_dir, fold=args.val_fold)
+        print(f"  Train: {len(train_dataset)} images (fold{args.train_fold})")
+        print(f"  Val: {len(val_dataset)} images (fold{args.val_fold})")
+    else:
+        # Mode single fold avec split interne
+        full_dataset = PreExtractedFeaturesDataset(args.features_dir, fold=args.train_fold)
+        n_val = int(len(full_dataset) * args.val_split)
+        n_train = len(full_dataset) - n_val
+        train_dataset, val_dataset = torch.utils.data.random_split(
+            full_dataset, [n_train, n_val],
+            generator=torch.Generator().manual_seed(42)
+        )
+        print(f"  Fold {args.train_fold} split: {n_train} train / {n_val} val")
 
     train_loader = DataLoader(train_dataset, batch_size=args.batch_size,
                               shuffle=True, num_workers=4, pin_memory=True)
     val_loader = DataLoader(val_dataset, batch_size=args.batch_size,
                             shuffle=False, num_workers=4, pin_memory=True)
-
-    print(f"  Train: {len(train_dataset)} images (fold{args.train_fold})")
-    print(f"  Val: {len(val_dataset)} images (fold{args.val_fold})")
 
     # Modèle UNETR (pas de backbone, features pré-extraites)
     print("\n🔧 Initialisation du décodeur UNETR...")
