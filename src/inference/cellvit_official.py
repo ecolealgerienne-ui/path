@@ -148,11 +148,16 @@ class CellViTOfficial:
         Charge avec une architecture reconstruite localement.
         Fallback si l'import CellViT échoue.
         """
-        from .cellvit256_architecture import build_cellvit256_from_checkpoint
-        return build_cellvit256_from_checkpoint(
-            str(self.checkpoint_path),
-            self.device
-        )
+        # Import absolu pour éviter les erreurs de package
+        try:
+            from src.inference.cellvit256_model import load_cellvit256_from_checkpoint
+            return load_cellvit256_from_checkpoint(
+                str(self.checkpoint_path),
+                self.device
+            )
+        except ImportError:
+            # Dernier fallback: charger partiellement
+            return self._load_partial()
 
     def preprocess(self, image: np.ndarray) -> torch.Tensor:
         """

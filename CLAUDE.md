@@ -432,8 +432,27 @@ Scripts créés conformément aux specs :
 - **Script inspection checkpoint** : `scripts/utils/inspect_checkpoint.py`
 - **CellViT-256 téléchargé** : `models/pretrained/CellViT-256.pth` (187 MB)
 - **Démo mise à jour** : Détecte automatiquement CellViT-256 si présent
+- **Wrapper officiel créé** : `src/inference/cellvit_official.py`
+- **Architecture locale créée** : `src/inference/cellvit256_model.py`
+- **Test validation créé** : `scripts/validation/test_cellvit256_inference.py`
 
-**Prochaine étape :** Valider l'architecture du checkpoint CellViT-256 et adapter le loader.
+**Architecture validée (sans poids) :**
+```
+✅ nuclei_binary_map: torch.Size([1, 2, 256, 256])
+✅ hv_map: torch.Size([1, 2, 256, 256])
+✅ nuclei_type_maps: torch.Size([1, 6, 256, 256])
+```
+
+**Prochaine étape :** Télécharger CellViT-256.pth manuellement et tester inférence réelle.
+
+**Téléchargement CellViT-256.pth :**
+```bash
+# URL Google Drive
+https://drive.google.com/uc?export=download&id=1tVYAapUo1Xt8QgCN22Ne1urbbCZkah8q
+
+# Placer dans
+models/pretrained/CellViT-256.pth
+```
 
 ---
 
@@ -446,7 +465,9 @@ src/
 │   └── unetr_decoder.py          # Décodeur UNETR pour H-optimus-0
 └── inference/
     ├── __init__.py
-    └── cellvit_inference.py       # Wrapper CellViT-256
+    ├── cellvit_inference.py       # Wrapper CellViT-256 simplifié
+    ├── cellvit256_model.py        # Architecture CellViT-256 locale
+    └── cellvit_official.py        # Wrapper pour repo officiel TIO-IKIM
 
 scripts/
 ├── setup/
@@ -470,6 +491,8 @@ scripts/
 │   └── train_unetr.py
 ├── utils/
 │   └── inspect_checkpoint.py
+├── validation/
+│   └── test_cellvit256_inference.py  # Test étape 1.5 POC
 └── demo/
     ├── gradio_demo.py             # Interface principale
     ├── synthetic_cells.py         # Générateur tissus
