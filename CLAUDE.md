@@ -427,11 +427,12 @@ Scripts créés conformément aux specs :
 - `scripts/ood_detection/entropy_scoring.py` — Incertitude → Fiable/À revoir/Hors domaine
 - `scripts/training/train_unetr.py` — Entraînement UNETR sur PanNuke
 
-### 2025-12-19 — Intégration CellViT-256 ✅ ARCHITECTURE VALIDÉE
+### 2025-12-19 — Intégration CellViT-256 ✅ VALIDÉE (Étape 1.5 POC)
 - **Repo officiel cloné** : `CellViT/` (TIO-IKIM/CellViT)
 - **Dépendances installées** : ujson, einops, shapely, geojson, colorama, natsort
 - **Wrapper officiel mis à jour** : `src/inference/cellvit_official.py`
 - **Test validation créé** : `scripts/validation/test_cellvit_official.py`
+- **Checkpoint téléchargé** : `models/pretrained/CellViT-256.pth` (187.2 MB, Epoch 129)
 
 **Architecture CellViT-256 (via repo officiel) :**
 | Attribut | Valeur |
@@ -442,21 +443,21 @@ Scripts créés conformément aux specs :
 | num_heads | 6 |
 | extract_layers | [3, 6, 9, 12] |
 
-**Sorties validées :**
+**Résultats validation complète :**
 ```
-✅ tissue_types: torch.Size([1, 19])
-✅ nuclei_binary_map: torch.Size([1, 2, 256, 256])
-✅ hv_map: torch.Size([1, 2, 256, 256])
-✅ nuclei_type_map: torch.Size([1, 6, 256, 256])
-```
+✅ Import CellViT256 OK
+✅ Architecture: 46.7M params
+✅ Forward pass OK
+✅ Checkpoint chargé (187.2 MB, 439 clés)
+✅ Poids chargés (All keys matched successfully)
+✅ Inférence réussie (NP/Type probs: [0.000, 1.000])
 
-**Action requise :** Télécharger manuellement `CellViT-256.pth` (~187 MB) depuis Google Drive:
-- URL: https://drive.google.com/uc?id=1tVYAapUo1Xt8QgCN22Ne1urbbCZkah8q
-- Destination: `models/pretrained/CellViT-256.pth`
+🎉 TOUS LES TESTS PASSENT - Étape 1.5 validée!
+```
 
 **Test validation :**
 ```bash
-python scripts/validation/test_cellvit_official.py
+python scripts/validation/test_cellvit_official.py -c models/pretrained/CellViT-256.pth
 ```
 
 ---
