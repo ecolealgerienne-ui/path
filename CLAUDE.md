@@ -220,6 +220,86 @@ cellvit-optimus/
 
 ---
 
+## Plan de Développement POC (6 semaines)
+
+> **IMPORTANT** : Suivre ce plan étape par étape. Ne pas passer à l'étape suivante
+> sans avoir validé les critères de l'étape courante.
+
+### Phase 1 : Environnement & Inférence CellViT (Semaines 1-2)
+
+| Étape | Description | Validation | Statut |
+|-------|-------------|------------|--------|
+| 1.1 | Setup WSL2 + Docker + CUDA | `nvidia-smi` fonctionne | ✅ FAIT |
+| 1.2 | Conda + PyTorch | `torch.cuda.is_available()` = True | ✅ FAIT |
+| 1.3 | Télécharger CellViT-256 | Fichier 187 MB présent | ✅ FAIT (manuel) |
+| 1.4 | Télécharger PanNuke | 3 folds présents | ⏳ À FAIRE (manuel) |
+| 1.5 | Inférence CellViT-256 | Détection cellules sur image test | 🔄 EN COURS |
+| 1.6 | Valider métriques | Dice > 0.7 sur PanNuke fold3 | ⏳ À FAIRE |
+
+**Critères de passage Phase 2 :**
+- [ ] CellViT-256 fonctionne sur GPU
+- [ ] Détection visible sur image réelle
+- [ ] Métriques de base calculées
+
+### Phase 2 : Intégration H-optimus-0 (Semaines 3-4)
+
+| Étape | Description | Validation | Statut |
+|-------|-------------|------------|--------|
+| 2.1 | Accès HuggingFace gated | Token configuré | ✅ FAIT |
+| 2.2 | Charger H-optimus-0 | Inférence OK sur 1 image | ✅ FAIT |
+| 2.3 | Extraction features PanNuke | Embeddings 1536-dim sauvés | ✅ FAIT |
+| 2.4 | Visualisation t-SNE | Clusters par organe visibles | ✅ FAIT |
+| 2.5 | Décodeur UNETR skeleton | Architecture compilable | ✅ FAIT |
+| 2.6 | Entraînement UNETR sur PanNuke | Loss converge | ⏳ À FAIRE |
+
+**Critères de passage Phase 3 :**
+- [ ] UNETR entraîné sur PanNuke (backbone gelé)
+- [ ] Performance proche de CellViT-256 baseline
+
+### Phase 3 : Interface Démo & Packaging (Semaines 5-6)
+
+| Étape | Description | Validation | Statut |
+|-------|-------------|------------|--------|
+| 3.1 | Interface Gradio basique | Upload image → résultat | ✅ FAIT |
+| 3.2 | Intégration CellViT-256 dans démo | Inférence réelle | 🔄 EN COURS |
+| 3.3 | Rapport avec couleurs/emojis | Correspondance visuelle | ✅ FAIT |
+| 3.4 | Scripts OOD/calibration | Utilitaires prêts | ✅ FAIT |
+| 3.5 | Docker packaging | `docker-compose up` fonctionne | ⏳ À FAIRE |
+| 3.6 | Documentation utilisateur | README complet | ⏳ À FAIRE |
+
+**Critères de livraison POC :**
+- [ ] Démo fonctionnelle end-to-end
+- [ ] Docker déployable
+- [ ] Documentation claire
+
+---
+
+## Statut Actuel
+
+**Phase en cours :** Phase 1 (étape 1.5)
+**Blocage actuel :** Validation inférence CellViT-256 sur données réelles
+**Prochaine action :** Tester CellViT-256 sur image PanNuke après téléchargement
+
+---
+
+## Architecture POC vs Cible
+
+> **ATTENTION** : L'implémentation actuelle est un POC de validation.
+> Certains choix ne correspondent pas à l'architecture cible.
+
+| Composant | POC (actuel) | Cible (production) |
+|-----------|--------------|-------------------|
+| Segmentation | CellViT-256 pré-entraîné | UNETR sur H-optimus-0 |
+| Backbone | CellViT encoder | H-optimus-0 (1.1B params) |
+| Données démo | Synthétiques | PanNuke + images réelles |
+| Détection cellules | Seuillage simple (fallback) | Modèle entraîné |
+| Incertitude | Non implémenté | Conformal Prediction |
+| OOD | Scripts prêts (non intégrés) | Pipeline complet |
+
+**Objectif POC :** Valider la faisabilité technique, pas l'architecture finale.
+
+---
+
 ## Journal de Développement
 
 ### 2025-12-19 — Setup environnement ✅ VALIDÉ
@@ -263,6 +343,79 @@ python scripts/evaluation/visualize_embeddings.py
 ```
 
 **Résultat t-SNE** : Les embeddings montrent une structure (pas aléatoire), avec quelques clusters par organe. Validation que H-optimus-0 capture de l'information sémantique utile.
+
+### 2025-12-19 — Scripts & Démo Gradio ✅ FAIT
+- **Interface Gradio créée** : `scripts/demo/gradio_demo.py`
+- **Générateur tissus synthétiques** : `scripts/demo/synthetic_cells.py`
+- **Visualisation cellules** : `scripts/demo/visualize_cells.py`
+- **Rapport avec emojis couleur** : 🔴🟢🔵🟡🩵 correspondant aux types
+
+### 2025-12-19 — Scripts utilitaires (specs section 6.1) ✅ FAIT
+Scripts créés conformément aux specs :
+- `scripts/setup/download_models.py` — Téléchargement CellViT, SAM, H-optimus-0
+- `scripts/setup/download_datasets.py` — Téléchargement PanNuke avec vérification
+- `scripts/preprocessing/stain_normalization.py` — Normalisation Macenko H&E
+- `scripts/preprocessing/tile_extraction.py` — Extraction tuiles 224×224
+- `scripts/preprocessing/quality_filter.py` — Détection flou, tissus, artefacts
+- `scripts/preprocessing/tissue_detection.py` — Détection ROI, filtrage background
+- `scripts/evaluation/metrics_segmentation.py` — Dice, IoU, PQ, F1
+- `scripts/calibration/temperature_scaling.py` — Calibration post-hoc, ECE
+- `scripts/ood_detection/latent_distance.py` — Mahalanobis sur embeddings
+- `scripts/ood_detection/entropy_scoring.py` — Incertitude → Fiable/À revoir/Hors domaine
+- `scripts/training/train_unetr.py` — Entraînement UNETR sur PanNuke
+
+### 2025-12-19 — Intégration CellViT-256 🔄 EN COURS
+- **Module d'inférence créé** : `src/inference/cellvit_inference.py`
+- **Script inspection checkpoint** : `scripts/utils/inspect_checkpoint.py`
+- **CellViT-256 téléchargé** : `models/pretrained/CellViT-256.pth` (187 MB)
+- **Démo mise à jour** : Détecte automatiquement CellViT-256 si présent
+
+**Prochaine étape :** Valider l'architecture du checkpoint CellViT-256 et adapter le loader.
+
+---
+
+## Fichiers Créés (Inventaire)
+
+```
+src/
+├── models/
+│   ├── __init__.py
+│   └── unetr_decoder.py          # Décodeur UNETR pour H-optimus-0
+└── inference/
+    ├── __init__.py
+    └── cellvit_inference.py       # Wrapper CellViT-256
+
+scripts/
+├── setup/
+│   ├── download_models.py
+│   └── download_datasets.py
+├── preprocessing/
+│   ├── extract_features.py        # Extraction embeddings H-optimus-0
+│   ├── stain_normalization.py
+│   ├── tile_extraction.py
+│   ├── quality_filter.py
+│   └── tissue_detection.py
+├── evaluation/
+│   ├── visualize_embeddings.py
+│   └── metrics_segmentation.py
+├── calibration/
+│   └── temperature_scaling.py
+├── ood_detection/
+│   ├── latent_distance.py
+│   └── entropy_scoring.py
+├── training/
+│   └── train_unetr.py
+├── utils/
+│   └── inspect_checkpoint.py
+└── demo/
+    ├── gradio_demo.py             # Interface principale
+    ├── synthetic_cells.py         # Générateur tissus
+    └── visualize_cells.py         # Fonctions visualisation
+
+models/
+└── pretrained/
+    └── CellViT-256.pth            # 187 MB (téléchargé manuellement)
+```
 
 ---
 
