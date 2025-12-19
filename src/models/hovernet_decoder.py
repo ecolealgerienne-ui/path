@@ -2,39 +2,20 @@
 """
 Décodeur HoVer-Net style pour H-optimus-0.
 
-Architecture basée sur:
+Architecture corrigée avec bottleneck partagé (tronc commun):
+- Projection 1x1: 1536 → 256 (économie VRAM)
+- Tronc commun partagé entre les 3 branches
+- 3 branches parallèles: NP, HV, NT
+
+Basé sur:
 - HoVer-Net: https://github.com/vqdang/hover_net
 - CellViT: https://github.com/TIO-IKIM/CellViT
-
-Adapté pour les features H-optimus-0 (16x16 @ 1536 dim).
-
-Trois branches parallèles:
-- NP: Nuclei Presence (segmentation binaire)
-- HV: Horizontal-Vertical maps (séparation des noyaux)
-- NT: Nuclei Type (classification 5 classes)
 """
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from typing import Tuple
-
-
-class DenseBlock(nn.Module):
-    """Bloc dense avec residual connection."""
-
-    def __init__(self, in_channels: int, growth_rate: int = 32):
-        super().__init__()
-        self.conv1 = nn.Conv2d(in_channels, growth_rate, 1, bias=False)
-        self.bn1 = nn.BatchNorm2d(growth_rate)
-        self.conv2 = nn.Conv2d(growth_rate, growth_rate, 3, padding=1, bias=False)
-        self.bn2 = nn.BatchNorm2d(growth_rate)
-        self.relu = nn.ReLU(inplace=True)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        out = self.relu(self.bn1(self.conv1(x)))
-        out = self.relu(self.bn2(self.conv2(out)))
-        return torch.cat([x, out], dim=1)
 
 
 class UpsampleBlock(nn.Module):
@@ -57,64 +38,41 @@ class UpsampleBlock(nn.Module):
         return self.conv(x)
 
 
-class DecoderBranch(nn.Module):
+class DecoderHead(nn.Module):
     """
-    Branche de décodage HoVer-Net style.
+    Tête de décodage légère.
 
-    Progressive upsampling: 16x16 → 32 → 64 → 128 → 224
+    Prend les features du tronc commun et prédit la sortie spécifique.
     """
 
-    def __init__(
-        self,
-        in_channels: int = 1536,
-        hidden_channels: list = [512, 256, 128, 64],
-        out_channels: int = 2,
-    ):
+    def __init__(self, in_channels: int, out_channels: int):
         super().__init__()
-
-        # Projection initiale
-        self.proj = nn.Sequential(
-            nn.Conv2d(in_channels, hidden_channels[0], 1, bias=False),
-            nn.BatchNorm2d(hidden_channels[0]),
-            nn.ReLU(inplace=True),
-        )
-
-        # Blocs d'upsampling progressif
-        self.up1 = UpsampleBlock(hidden_channels[0], hidden_channels[1])  # 16→32
-        self.up2 = UpsampleBlock(hidden_channels[1], hidden_channels[2])  # 32→64
-        self.up3 = UpsampleBlock(hidden_channels[2], hidden_channels[3])  # 64→128
-        self.up4 = UpsampleBlock(hidden_channels[3], hidden_channels[3])  # 128→256
-
-        # Tête de sortie
         self.head = nn.Sequential(
-            nn.Conv2d(hidden_channels[3], 32, 3, padding=1),
+            nn.Conv2d(in_channels, in_channels // 2, 3, padding=1, bias=False),
+            nn.BatchNorm2d(in_channels // 2),
             nn.ReLU(inplace=True),
-            nn.Conv2d(32, out_channels, 1),
+            nn.Conv2d(in_channels // 2, out_channels, 1),
         )
 
-    def forward(self, x: torch.Tensor, target_size: int = 224) -> torch.Tensor:
-        x = self.proj(x)
-        x = self.up1(x)  # 32x32
-        x = self.up2(x)  # 64x64
-        x = self.up3(x)  # 128x128
-        x = self.up4(x)  # 256x256
-
-        # Ajuster à la taille cible
-        if x.shape[-1] != target_size:
-            x = F.interpolate(x, size=(target_size, target_size),
-                            mode='bilinear', align_corners=False)
-
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.head(x)
 
 
 class HoVerNetDecoder(nn.Module):
     """
-    Décodeur HoVer-Net pour H-optimus-0.
+    Décodeur HoVer-Net pour H-optimus-0 avec bottleneck partagé.
 
-    Prend les features finales de H-optimus-0 (16x16 @ 1536) et produit:
-    - NP: Nuclei Presence (B, 2, H, W)
-    - HV: Horizontal-Vertical maps (B, 2, H, W)
-    - NT: Nuclei Type (B, 5, H, W)
+    Architecture:
+        H-optimus-0 features (16x16 @ 1536)
+                    ↓
+        Bottleneck 1x1 (1536 → 256)  ← Économie VRAM!
+                    ↓
+        Tronc commun (upsampling partagé)
+                    ↓
+           ┌────────┼────────┐
+           ↓        ↓        ↓
+          NP       HV       NT
+        (binaire) (H+V)  (5 classes)
 
     Usage:
         decoder = HoVerNetDecoder()
@@ -125,10 +83,10 @@ class HoVerNetDecoder(nn.Module):
     def __init__(
         self,
         embed_dim: int = 1536,
+        bottleneck_dim: int = 256,  # Projection 1536 → 256
         patch_size: int = 14,
         img_size: int = 224,
         n_classes: int = 5,
-        hidden_channels: list = [512, 256, 128, 64],
     ):
         super().__init__()
 
@@ -136,10 +94,24 @@ class HoVerNetDecoder(nn.Module):
         self.img_size = img_size
         self.n_patches = img_size // patch_size  # 16 pour 224/14
 
-        # Trois branches parallèles
-        self.np_branch = DecoderBranch(embed_dim, hidden_channels, out_channels=2)
-        self.hv_branch = DecoderBranch(embed_dim, hidden_channels, out_channels=2)
-        self.nt_branch = DecoderBranch(embed_dim, hidden_channels, out_channels=n_classes)
+        # ===== BOTTLENECK PARTAGÉ (économie VRAM) =====
+        self.bottleneck = nn.Sequential(
+            nn.Conv2d(embed_dim, bottleneck_dim, 1, bias=False),
+            nn.BatchNorm2d(bottleneck_dim),
+            nn.ReLU(inplace=True),
+        )
+
+        # ===== TRONC COMMUN (upsampling partagé) =====
+        # 16x16 → 32 → 64 → 128 → 224
+        self.up1 = UpsampleBlock(bottleneck_dim, 128)   # 16→32, 256→128
+        self.up2 = UpsampleBlock(128, 64)               # 32→64, 128→64
+        self.up3 = UpsampleBlock(64, 64)                # 64→128, 64→64
+        self.up4 = UpsampleBlock(64, 64)                # 128→256, 64→64
+
+        # ===== TÊTES SPÉCIALISÉES (légères) =====
+        self.np_head = DecoderHead(64, 2)        # Nuclei Presence (binaire)
+        self.hv_head = DecoderHead(64, 2)        # Horizontal-Vertical maps
+        self.nt_head = DecoderHead(64, n_classes)  # Nuclei Type (5 classes)
 
     def reshape_features(self, x: torch.Tensor) -> torch.Tensor:
         """
@@ -180,10 +152,24 @@ class HoVerNetDecoder(nn.Module):
         # Reshape tokens → spatial
         x = self.reshape_features(features)  # (B, 1536, 16, 16)
 
-        # Trois branches parallèles
-        np_out = self.np_branch(x, self.img_size)
-        hv_out = self.hv_branch(x, self.img_size)
-        nt_out = self.nt_branch(x, self.img_size)
+        # Bottleneck partagé (économie VRAM: 1536 → 256)
+        x = self.bottleneck(x)  # (B, 256, 16, 16)
+
+        # Tronc commun (upsampling partagé)
+        x = self.up1(x)  # (B, 128, 32, 32)
+        x = self.up2(x)  # (B, 64, 64, 64)
+        x = self.up3(x)  # (B, 64, 128, 128)
+        x = self.up4(x)  # (B, 64, 256, 256)
+
+        # Ajuster à la taille cible (224x224)
+        if x.shape[-1] != self.img_size:
+            x = F.interpolate(x, size=(self.img_size, self.img_size),
+                            mode='bilinear', align_corners=False)
+
+        # Têtes spécialisées (légères, partagent les features du tronc)
+        np_out = self.np_head(x)
+        hv_out = self.hv_head(x)
+        nt_out = self.nt_head(x)
 
         return np_out, hv_out, nt_out
 
@@ -253,14 +239,8 @@ class HoVerNetLoss(nn.Module):
         hv_grad = self.gradient_mse(hv_pred, hv_target)
         hv_loss = hv_mse + hv_grad
 
-        # NT loss: CE + Dice (masked by NP)
-        # Masquer les pixels non-noyau pour NT
-        mask = np_target > 0
-        if mask.sum() > 0:
-            nt_ce = self.bce(nt_pred, nt_target.long())
-            nt_loss = nt_ce
-        else:
-            nt_loss = torch.tensor(0.0, device=np_pred.device)
+        # NT loss: CE (sur tous les pixels)
+        nt_loss = self.bce(nt_pred, nt_target.long())
 
         # Total
         total = self.lambda_np * np_loss + self.lambda_hv * hv_loss + self.lambda_nt * nt_loss
@@ -268,13 +248,13 @@ class HoVerNetLoss(nn.Module):
         return total, {
             'np': np_loss.item(),
             'hv': hv_loss.item(),
-            'nt': nt_loss.item() if isinstance(nt_loss, torch.Tensor) else nt_loss,
+            'nt': nt_loss.item(),
         }
 
 
 # Test
 if __name__ == "__main__":
-    print("Test du décodeur HoVer-Net...")
+    print("Test du décodeur HoVer-Net (avec bottleneck partagé)...")
 
     decoder = HoVerNetDecoder()
 
@@ -291,5 +271,16 @@ if __name__ == "__main__":
     # Paramètres
     total_params = sum(p.numel() for p in decoder.parameters())
     print(f"✓ Paramètres: {total_params:,} ({total_params/1e6:.1f}M)")
+
+    # Test mémoire (simule un forward sur GPU)
+    if torch.cuda.is_available():
+        decoder = decoder.cuda()
+        features = features.cuda()
+
+        torch.cuda.reset_peak_memory_stats()
+        with torch.no_grad():
+            _ = decoder(features)
+        peak_mem = torch.cuda.max_memory_allocated() / 1e9
+        print(f"✓ Pic mémoire GPU: {peak_mem:.2f} GB")
 
     print("\n✅ Test réussi!")

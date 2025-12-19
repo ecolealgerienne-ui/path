@@ -56,8 +56,15 @@ class PanNukeHoVerDataset(Dataset):
         print(f"Chargement features fold {fold}...")
         data = np.load(features_path)
 
-        # On utilise layer_24 (features finales)
-        self.features = data['layer_24']  # (N, 261, 1536)
+        # On utilise SEULEMENT layer_24 (features finales)
+        # Pas besoin des couches intermédiaires grâce au bottleneck partagé
+        if 'layer_24' in data:
+            self.features = data['layer_24']  # (N, 261, 1536)
+        elif 'layer_23' in data:
+            # Compatibilité avec l'ancien format (0-indexed)
+            self.features = data['layer_23']
+        else:
+            raise KeyError("Features layer_24 non trouvées dans le fichier")
         print(f"  Features: {self.features.shape}")
 
         # Charger les masques PanNuke
