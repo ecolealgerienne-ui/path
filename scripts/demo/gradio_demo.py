@@ -5,6 +5,7 @@ Interface Gradio pour la démonstration CellViT-Optimus.
 Permet de visualiser interactivement les segmentations cellulaires
 et d'explorer les différents types de tissus.
 
+Architecture cible: H-optimus-0 (backbone gelé) + UNETR (décodeur entraîné)
 Conforme aux specs CellViT-Optimus_Specifications.md section 3.2.
 """
 
@@ -28,32 +29,27 @@ from scripts.demo.visualize_cells import (
 )
 from scripts.demo.synthetic_cells import generate_synthetic_tissue, TISSUE_CONFIGS
 
-# Tenter de charger CellViT-256 si disponible
-CELLVIT_AVAILABLE = False
-cellvit_model = None
+# Configuration des modèles
+UNETR_CHECKPOINT = PROJECT_ROOT / "models" / "checkpoints" / "unetr_best.pth"
 
-CELLVIT_MODEL_PATH = PROJECT_ROOT / "models" / "pretrained" / "CellViT-256.pth"
-CELLVIT_REPO_PATH = PROJECT_ROOT / "CellViT"
-
-# Ajouter le repo CellViT au path pour les imports
-if CELLVIT_REPO_PATH.exists():
-    sys.path.insert(0, str(CELLVIT_REPO_PATH))
+# Tenter de charger H-optimus-0 + UNETR (architecture cible)
+MODEL_AVAILABLE = False
+inference_model = None
+MODEL_NAME = "H-optimus-0 + UNETR"
 
 try:
-    # Utiliser le wrapper officiel (repo TIO-IKIM)
-    from src.inference.cellvit_official import CellViTOfficial
+    from src.inference.hoptimus_unetr import HOptimusUNETRInference
 
-    # Vérifier que le checkpoint existe et n'est pas vide
-    if CELLVIT_MODEL_PATH.exists() and CELLVIT_MODEL_PATH.stat().st_size > 1000000:
-        print(f"Chargement CellViT-256 depuis {CELLVIT_MODEL_PATH}...")
-        cellvit_model = CellViTOfficial(str(CELLVIT_MODEL_PATH))
-        CELLVIT_AVAILABLE = True
-        print("CellViT-256 (repo officiel) chargé avec succès!")
+    if UNETR_CHECKPOINT.exists():
+        print(f"Chargement {MODEL_NAME} depuis {UNETR_CHECKPOINT}...")
+        inference_model = HOptimusUNETRInference(str(UNETR_CHECKPOINT))
+        MODEL_AVAILABLE = True
+        print(f"✅ {MODEL_NAME} chargé avec succès!")
     else:
-        print(f"CellViT-256 non trouvé ou invalide: {CELLVIT_MODEL_PATH}")
+        print(f"⚠️ Checkpoint UNETR non trouvé: {UNETR_CHECKPOINT}")
         print("Mode démonstration avec détection simulée.")
 except Exception as e:
-    print(f"Impossible de charger CellViT-256: {e}")
+    print(f"Impossible de charger {MODEL_NAME}: {e}")
     import traceback
     traceback.print_exc()
     print("Mode démonstration avec détection simulée.")
@@ -263,32 +259,34 @@ class CellVitDemo:
             new_w, new_h = int(w * scale), int(h * scale)
             image = cv2.resize(image, (new_w, new_h))
 
-        # Utiliser CellViT-256 si disponible
-        if CELLVIT_AVAILABLE and cellvit_model is not None:
+        # Utiliser H-optimus-0 + UNETR si disponible
+        if MODEL_AVAILABLE and inference_model is not None:
             try:
-                # Inférence avec le vrai modèle
-                result_data = cellvit_model.predict(image)
+                # Inférence avec le modèle cible
+                result_data = inference_model.predict(image)
 
                 # Visualisation
-                result = cellvit_model.visualize(
+                result = inference_model.visualize(
                     image, result_data,
                     show_contours=True,
-                    show_types=True,
+                    show_overlay=True,
                     alpha=0.4
                 )
 
                 # Rapport
-                report = cellvit_model.generate_report(result_data)
+                report = inference_model.generate_report(result_data)
                 report = f"""
-✅ MODÈLE CELLVIT-256 ACTIF
-Analyse réelle avec le modèle pré-entraîné.
+✅ MODÈLE {MODEL_NAME} ACTIF
+Architecture cible: H-optimus-0 (1.1B params) + UNETR
 
 {report}
 """
                 return image, result, report
 
             except Exception as e:
-                print(f"Erreur CellViT-256: {e}")
+                print(f"Erreur {MODEL_NAME}: {e}")
+                import traceback
+                traceback.print_exc()
                 # Fallback vers simulation
                 pass
 
@@ -304,7 +302,11 @@ Analyse réelle avec le modèle pré-entraîné.
         report = f"""
 ⚠️ MODE DÉMONSTRATION
 La classification des cellules est simulée.
-CellViT-256 non disponible ou erreur.
+{MODEL_NAME} non disponible ou erreur.
+
+Pour activer le modèle:
+1. Entraîner UNETR: python scripts/training/train_unetr.py
+2. Placer le checkpoint dans models/checkpoints/unetr_best.pth
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -321,7 +323,10 @@ def create_demo_interface():
     with gr.Blocks(title="CellViT-Optimus Demo") as interface:
 
         # Statut du modèle
-        model_status = "✅ CellViT-256 actif" if CELLVIT_AVAILABLE else "⚠️ Mode simulation"
+        if MODEL_AVAILABLE:
+            model_status = f"✅ {MODEL_NAME} actif"
+        else:
+            model_status = "⚠️ Mode simulation"
 
         gr.Markdown(f"""
         # 🔬 CellViT-Optimus — Démonstration
@@ -397,24 +402,27 @@ def create_demo_interface():
 
             # Tab 2: Analyser une image uploadée
             with gr.TabItem("📤 Analyser votre Image"):
-                if CELLVIT_AVAILABLE:
-                    gr.Markdown("""
+                if MODEL_AVAILABLE:
+                    gr.Markdown(f"""
                     ### Analysez votre propre image histopathologique
 
                     Uploadez une image de tissu coloré H&E pour obtenir une analyse cellulaire.
 
-                    **✅ CellViT-256 est actif** — L'analyse utilise le modèle pré-entraîné
-                    pour une segmentation et classification précise des cellules.
+                    **✅ {MODEL_NAME} est actif** — L'analyse utilise l'architecture cible:
+                    - **Backbone**: H-optimus-0 (1.1B paramètres, gelé)
+                    - **Décodeur**: UNETR entraîné sur PanNuke
                     """)
                 else:
-                    gr.Markdown("""
+                    gr.Markdown(f"""
                     ### Analysez votre propre image histopathologique
 
                     Uploadez une image de tissu coloré H&E pour obtenir une analyse cellulaire.
 
-                    **⚠️ Mode simulation** — CellViT-256 non disponible.
-                    Pour activer le modèle réel, placez `CellViT-256.pth` dans
-                    `models/pretrained/`.
+                    **⚠️ Mode simulation** — {MODEL_NAME} non disponible.
+
+                    Pour activer le modèle:
+                    1. Entraîner: `python scripts/training/train_unetr.py`
+                    2. Checkpoint attendu: `models/checkpoints/unetr_best.pth`
                     """)
 
                 with gr.Row():
@@ -427,7 +435,7 @@ def create_demo_interface():
                         upload_tissue = gr.Dropdown(
                             choices=list(TISSUE_CONFIGS.keys()),
                             value="Breast",
-                            label="Type de tissu (pour simulation)"
+                            label="Type de tissu (fallback simulation)"
                         )
                         analyze_btn = gr.Button(
                             "🔬 Analyser",
