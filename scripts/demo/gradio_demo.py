@@ -33,19 +33,29 @@ CELLVIT_AVAILABLE = False
 cellvit_model = None
 
 CELLVIT_MODEL_PATH = PROJECT_ROOT / "models" / "pretrained" / "CellViT-256.pth"
+CELLVIT_REPO_PATH = PROJECT_ROOT / "CellViT"
+
+# Ajouter le repo CellViT au path pour les imports
+if CELLVIT_REPO_PATH.exists():
+    sys.path.insert(0, str(CELLVIT_REPO_PATH))
 
 try:
-    from src.inference.cellvit_inference import CellViTInference
-    if CELLVIT_MODEL_PATH.exists():
+    # Utiliser le wrapper officiel (repo TIO-IKIM)
+    from src.inference.cellvit_official import CellViTOfficial
+
+    # Vérifier que le checkpoint existe et n'est pas vide
+    if CELLVIT_MODEL_PATH.exists() and CELLVIT_MODEL_PATH.stat().st_size > 1000000:
         print(f"Chargement CellViT-256 depuis {CELLVIT_MODEL_PATH}...")
-        cellvit_model = CellViTInference(str(CELLVIT_MODEL_PATH))
+        cellvit_model = CellViTOfficial(str(CELLVIT_MODEL_PATH))
         CELLVIT_AVAILABLE = True
-        print("CellViT-256 chargé avec succès!")
+        print("CellViT-256 (repo officiel) chargé avec succès!")
     else:
-        print(f"CellViT-256 non trouvé: {CELLVIT_MODEL_PATH}")
+        print(f"CellViT-256 non trouvé ou invalide: {CELLVIT_MODEL_PATH}")
         print("Mode démonstration avec détection simulée.")
 except Exception as e:
     print(f"Impossible de charger CellViT-256: {e}")
+    import traceback
+    traceback.print_exc()
     print("Mode démonstration avec détection simulée.")
 
 

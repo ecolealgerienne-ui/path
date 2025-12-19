@@ -233,7 +233,7 @@ cellvit-optimus/
 | 1.2 | Conda + PyTorch | `torch.cuda.is_available()` = True | ✅ FAIT |
 | 1.3 | Télécharger CellViT-256 | Fichier 187 MB présent | ✅ FAIT (manuel) |
 | 1.4 | Télécharger PanNuke | 3 folds présents | ⏳ À FAIRE (manuel) |
-| 1.5 | Inférence CellViT-256 | Détection cellules sur image test | 🔄 EN COURS |
+| 1.5 | Inférence CellViT-256 | Détection cellules sur image test | ✅ FAIT |
 | 1.6 | Valider métriques | Dice > 0.7 sur PanNuke fold3 | ⏳ À FAIRE |
 
 **Critères de passage Phase 2 :**
