@@ -221,9 +221,9 @@ def main():
         print(f"  Fold {args.train_fold} split: {n_train} train / {n_val} val")
 
     train_loader = DataLoader(train_dataset, batch_size=args.batch_size,
-                              shuffle=True, num_workers=4, pin_memory=True)
+                              shuffle=True, num_workers=0, pin_memory=False)
     val_loader = DataLoader(val_dataset, batch_size=args.batch_size,
-                            shuffle=False, num_workers=4, pin_memory=True)
+                            shuffle=False, num_workers=0, pin_memory=False)
 
     # Modèle UNETR (pas de backbone, features pré-extraites)
     print("\n🔧 Initialisation du décodeur UNETR...")
