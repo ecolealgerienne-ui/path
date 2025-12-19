@@ -126,6 +126,8 @@ def main():
                         help="Taille des batchs")
     parser.add_argument("--fold", type=int, default=1,
                         help="Fold PanNuke à utiliser")
+    parser.add_argument("--stratified", action="store_true",
+                        help="Échantillonner uniformément depuis tous les organes")
     args = parser.parse_args()
 
     # Chemins
@@ -135,6 +137,21 @@ def main():
 
     # Charger les images
     images, types = load_pannuke_images(data_dir, fold=args.fold)
+
+    # Échantillonnage stratifié si demandé
+    if args.stratified and args.num_images:
+        unique_types = np.unique(types)
+        n_per_type = args.num_images // len(unique_types)
+        indices = []
+        for t in unique_types:
+            type_indices = np.where(types == t)[0]
+            selected = np.random.choice(type_indices, min(n_per_type, len(type_indices)), replace=False)
+            indices.extend(selected)
+        indices = np.array(indices)
+        np.random.shuffle(indices)
+        images = images[indices]
+        types = types[indices]
+        print(f"  → Échantillonnage stratifié: {len(images)} images, {len(unique_types)} organes")
 
     # Charger le modèle
     model = load_model()
@@ -172,7 +189,7 @@ def main():
     print(f"\nFeatures sauvegardées: {output_path}")
 
     # Sauvegarder aussi les types correspondants
-    types_subset = types[:args.num_images] if args.num_images else types
+    types_subset = types[:len(features)]
     types_path = output_dir / f"pannuke_fold{args.fold}_types.npy"
     np.save(types_path, types_subset)
     print(f"Types sauvegardés: {types_path}")

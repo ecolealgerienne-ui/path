@@ -38,7 +38,7 @@ def compute_tsne(features: np.ndarray, perplexity: int = 30, random_state: int =
         n_components=2,
         perplexity=perplexity,
         random_state=random_state,
-        n_iter=1000,
+        max_iter=1000,
         verbose=1
     )
     embeddings_2d = tsne.fit_transform(features)
