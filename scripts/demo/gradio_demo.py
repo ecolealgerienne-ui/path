@@ -291,7 +291,7 @@ class CellVitDemo:
                 report = inference_model.generate_report(result_data)
                 report = f"""
 ✅ MODÈLE {MODEL_NAME} ACTIF
-Architecture cible: H-optimus-0 (1.1B params) + UNETR
+Architecture: H-optimus-0 (1.1B params) + Décodeur HoVer-Net
 
 {report}
 """
@@ -319,8 +319,8 @@ La classification des cellules est simulée.
 {MODEL_NAME} non disponible ou erreur.
 
 Pour activer le modèle:
-1. Entraîner UNETR: python scripts/training/train_unetr.py
-2. Placer le checkpoint dans models/checkpoints/unetr_best.pth
+1. Entraîner HoVer-Net: python scripts/training/train_hovernet.py
+2. Checkpoint attendu: models/checkpoints/hovernet_best.pth
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -424,7 +424,7 @@ def create_demo_interface():
 
                     **✅ {MODEL_NAME} est actif** — L'analyse utilise l'architecture cible:
                     - **Backbone**: H-optimus-0 (1.1B paramètres, gelé)
-                    - **Décodeur**: UNETR entraîné sur PanNuke
+                    - **Décodeur**: HoVer-Net (3 branches: NP, HV, NT)
                     """)
                 else:
                     gr.Markdown(f"""
@@ -435,8 +435,8 @@ def create_demo_interface():
                     **⚠️ Mode simulation** — {MODEL_NAME} non disponible.
 
                     Pour activer le modèle:
-                    1. Entraîner: `python scripts/training/train_unetr.py`
-                    2. Checkpoint attendu: `models/checkpoints/unetr_best.pth`
+                    1. Entraîner: `python scripts/training/train_hovernet.py`
+                    2. Checkpoint attendu: `models/checkpoints/hovernet_best.pth`
                     """)
 
                 with gr.Row():
