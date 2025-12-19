@@ -246,6 +246,129 @@ python -c "import torch; print(torch.cuda.is_available(), torch.cuda.get_device_
 |----------|----------|
 | Conda ToS non acceptées | `conda tos accept --override-channels --channel <url>` |
 | Docker "command not found" dans WSL | Installer Docker Engine natif, pas Docker Desktop |
+| H-optimus-0 accès refusé (401/403) | Voir section "Accès H-optimus-0" ci-dessous |
+| Token HuggingFace "fine-grained" sans accès gated | Activer "Read access to public gated repos" dans les permissions du token |
+
+---
+
+## Accès H-optimus-0 (Gated Model)
+
+H-optimus-0 est un modèle "gated" sur HuggingFace. Configuration requise :
+
+### Étape 1 : Demander l'accès
+1. Créer un compte sur https://huggingface.co
+2. Aller sur https://huggingface.co/bioptimus/H-optimus-0
+3. Cliquer sur "Agree and access repository"
+
+### Étape 2 : Créer un token avec les bonnes permissions
+1. Aller sur https://huggingface.co/settings/tokens
+2. Créer un nouveau token avec ces permissions :
+   - ✅ **Read access to contents of all public gated repos you can access**
+   - ✅ Read access to contents of all repos under your personal namespace
+
+### Étape 3 : Se connecter
+```bash
+huggingface-cli login
+# Coller le token quand demandé
+```
+
+### Vérification
+```bash
+huggingface-cli whoami
+```
+
+---
+
+## Guide d'Installation Complète (depuis zéro)
+
+### Prérequis Windows
+- Windows 10/11 avec WSL2 activé
+- GPU NVIDIA avec drivers récents
+
+### 1. WSL2 + Ubuntu
+```powershell
+# PowerShell Admin
+wsl --install -d Ubuntu-24.04
+wsl --set-default-version 2
+```
+
+### 2. Docker Engine natif (dans WSL)
+```bash
+# Dépendances
+sudo apt update && sudo apt upgrade -y
+sudo apt install -y ca-certificates curl gnupg
+
+# Clé GPG Docker
+sudo install -m 0755 -d /etc/apt/keyrings
+curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+sudo chmod a+r /etc/apt/keyrings/docker.gpg
+
+# Repository Docker
+echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo "$VERSION_CODENAME") stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+
+# Installation
+sudo apt update
+sudo apt install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+sudo usermod -aG docker $USER
+# Fermer et rouvrir le terminal
+```
+
+### 3. NVIDIA Container Toolkit
+```bash
+# Repository NVIDIA
+curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | sudo gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
+curl -s -L https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list | \
+  sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' | \
+  sudo tee /etc/apt/sources.list.d/nvidia-container-toolkit.list
+
+# Installation
+sudo apt update
+sudo apt install -y nvidia-container-toolkit
+sudo nvidia-ctk runtime configure --runtime=docker
+sudo systemctl restart docker
+
+# Test
+docker run --rm --gpus all nvidia/cuda:12.4.0-base-ubuntu22.04 nvidia-smi
+```
+
+### 4. Miniconda + Environnement
+```bash
+# Installer Miniconda
+wget https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh -O ~/miniconda.sh
+bash ~/miniconda.sh -b -p $HOME/miniconda3
+~/miniconda3/bin/conda init zsh  # ou bash
+rm ~/miniconda.sh
+# Fermer et rouvrir le terminal
+
+# Accepter ToS
+conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/main
+conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/r
+
+# Créer environnement
+conda create -n cellvit python=3.10 -y
+conda activate cellvit
+```
+
+### 5. PyTorch + Dépendances
+```bash
+# PyTorch avec CUDA
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
+
+# Dépendances projet
+pip install timm transformers huggingface_hub
+pip install scikit-learn scipy pandas matplotlib seaborn
+pip install tifffile opencv-python netcal mapie gradio
+```
+
+### 6. Test final
+```bash
+python -c "
+import torch
+print('PyTorch:', torch.__version__)
+print('CUDA:', torch.cuda.is_available())
+print('GPU:', torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'N/A')
+"
+```
 
 ---
 
