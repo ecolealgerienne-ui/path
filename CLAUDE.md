@@ -12,6 +12,8 @@
 >
 > **Si une information est jugée importante pour la continuité du projet, elle doit être ajoutée ici.**
 
+> **OBLIGATOIRE : Avant toute implémentation, Claude DOIT lire le fichier `CellViT-Optimus_Specifications.md` et s'assurer que le code respecte les spécifications techniques définies.**
+
 ---
 
 ## Vue d'ensemble
