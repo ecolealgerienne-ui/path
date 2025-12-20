@@ -14,8 +14,15 @@ import torch.nn.functional as F
 import numpy as np
 import cv2
 from pathlib import Path
-from typing import Dict, Tuple
+from typing import Dict, Tuple, Optional
 from scipy import ndimage
+
+# Importer l'estimateur d'incertitude
+try:
+    from src.uncertainty import UncertaintyEstimator, UncertaintyResult
+    UNCERTAINTY_AVAILABLE = True
+except ImportError:
+    UNCERTAINTY_AVAILABLE = False
 
 # Normalisation H-optimus-0
 HOPTIMUS_MEAN = (0.707223, 0.578729, 0.703617)
@@ -56,10 +63,18 @@ class HOptimusHoVerNetInference:
         checkpoint_path: str,
         device: str = "cuda" if torch.cuda.is_available() else "cpu",
         np_threshold: float = 0.5,
+        enable_uncertainty: bool = True,
     ):
         self.device = device
         self.img_size = 224
         self.np_threshold = np_threshold
+        self.enable_uncertainty = enable_uncertainty and UNCERTAINTY_AVAILABLE
+
+        # Estimateur d'incertitude
+        if self.enable_uncertainty:
+            self.uncertainty_estimator = UncertaintyEstimator()
+        else:
+            self.uncertainty_estimator = None
 
         print(f"Chargement H-optimus-0 + HoVer-Net sur {device}...")
 
@@ -237,12 +252,30 @@ class HOptimusHoVerNetInference:
             if 0 <= inst_type < 5:
                 counts[TYPE_NAMES[inst_type]] += 1
 
+        # Estimation d'incertitude
+        uncertainty_result = None
+        if self.enable_uncertainty and self.uncertainty_estimator is not None:
+            # Convertir en format (H, W, C) pour l'estimateur
+            np_probs_hwc = np.stack([1 - np_prob, np_prob], axis=-1)  # (H, W, 2)
+            nt_probs_hwc = np.transpose(nt_probs, (1, 2, 0))  # (H, W, 5)
+
+            # Embeddings pour OOD (moyenne des patch tokens)
+            embeddings = features[0, 1:257, :].mean(dim=0).cpu().numpy()  # (1536,)
+
+            uncertainty_result = self.uncertainty_estimator.estimate(
+                np_probs=np_probs_hwc,
+                nt_probs=nt_probs_hwc,
+                embeddings=embeddings,
+                compute_map=True,
+            )
+
         return {
             'np_mask': instance_map > 0,
             'instance_map': instance_map,
             'nt_mask': nt_mask,
             'counts': counts,
             'n_cells': instance_map.max(),
+            'uncertainty': uncertainty_result,
         }
 
     def visualize(
@@ -293,15 +326,24 @@ class HOptimusHoVerNetInference:
         counts = result['counts']
         n_cells = result['n_cells']
         total = sum(counts.values())
+        uncertainty = result.get('uncertainty')
 
-        lines = [
+        lines = []
+
+        # Section incertitude (en premier si disponible)
+        if uncertainty is not None:
+            lines.append(self.uncertainty_estimator.generate_report(uncertainty))
+            lines.append("")
+
+        # Section analyse cellulaire
+        lines.extend([
             "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
             "📊 ANALYSE CELLULAIRE (HoVer-Net)",
             "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
             "",
             f"Cellules détectées: {n_cells}",
             "",
-        ]
+        ])
 
         if total > 0:
             for name, count in counts.items():
@@ -319,3 +361,38 @@ class HOptimusHoVerNetInference:
         ])
 
         return "\n".join(lines)
+
+    def visualize_uncertainty(
+        self,
+        image: np.ndarray,
+        result: Dict,
+        alpha: float = 0.5,
+    ) -> np.ndarray:
+        """
+        Visualise la carte d'incertitude.
+
+        Rouge = haute incertitude
+        Vert = basse incertitude
+        """
+        uncertainty = result.get('uncertainty')
+        if uncertainty is None or uncertainty.uncertainty_map is None:
+            return image.copy()
+
+        # Redimensionner la carte si nécessaire
+        uncertainty_map = uncertainty.uncertainty_map
+        if uncertainty_map.shape[:2] != image.shape[:2]:
+            uncertainty_map = cv2.resize(
+                uncertainty_map,
+                (image.shape[1], image.shape[0]),
+                interpolation=cv2.INTER_LINEAR
+            )
+
+        # Créer heatmap (rouge = incertain, vert = confiant)
+        heatmap = np.zeros_like(image)
+        heatmap[..., 0] = (uncertainty_map * 255).astype(np.uint8)  # Rouge
+        heatmap[..., 1] = ((1 - uncertainty_map) * 255).astype(np.uint8)  # Vert
+
+        # Blend avec l'image
+        vis = cv2.addWeighted(image, 1 - alpha, heatmap, alpha, 0)
+
+        return vis
