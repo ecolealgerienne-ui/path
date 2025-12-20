@@ -692,13 +692,13 @@ OrganHead   HoVerNet
 + OOD       + Cellules
 ```
 
-**Résultats entraînement:**
+**Résultats entraînement (3 folds):**
 | Composant | Métrique | Valeur |
 |-----------|----------|--------|
-| OrganHead | Val Accuracy | **96.05%** |
-| OrganHead | Organes à 100% | 14/19 |
+| OrganHead | Val Accuracy | **99.56%** |
+| OrganHead | Organes à 100% | 15/19 |
 | HoVer-Net | Dice | **0.9601** |
-| OOD | Threshold | 39.26 |
+| OOD | Threshold | 46.69 |
 
 **Triple Sécurité OOD:**
 - Entropie organe (softmax uncertainty)
@@ -746,6 +746,77 @@ print(model.generate_report(result))
 ```bash
 python scripts/demo/gradio_demo.py
 # URL: http://localhost:7860
+```
+
+### 2025-12-20 — Entraînement Multi-Folds (3 folds) ✅
+
+**Support multi-folds ajouté** aux scripts d'entraînement pour améliorer la généralisation.
+
+#### Distribution des données PanNuke (3 folds)
+
+| Organe | Samples | % du total |
+|--------|---------|------------|
+| Colon | 1,323 | 17.2% |
+| Breast | 2,437 | 31.6% |
+| Adrenal_gland | 487 | 6.3% |
+| Bile-duct | 379 | 4.9% |
+| Bladder | 149 | 1.9% |
+| Cervix | 325 | 4.2% |
+| Esophagus | 427 | 5.5% |
+| HeadNeck | 396 | 5.1% |
+| Kidney | 141 | 1.8% |
+| Liver | 186 | 2.4% |
+| Lung | 178 | 2.3% |
+| Ovarian | 129 | 1.7% |
+| Pancreatic | 213 | 2.8% |
+| Prostate | 207 | 2.7% |
+| Skin | 178 | 2.3% |
+| Stomach | 145 | 1.9% |
+| Testis | 193 | 2.5% |
+| Thyroid | 191 | 2.5% |
+| Uterus | 216 | 2.8% |
+| **Total** | **7,900** | 100% |
+
+#### Résultats OrganHead (3 folds vs 1 fold)
+
+| Métrique | 1 fold | 3 folds | Amélioration |
+|----------|--------|---------|--------------|
+| Val Accuracy | 96.05% | **99.56%** | +3.51% |
+| Organes à 100% | 14/19 | 15/19 | +1 |
+| OOD Threshold | 39.26 | **46.69** | +19% |
+| Données train | ~2,100 | ~6,300 | 3x |
+
+#### Accuracy par organe (validation, 3 folds)
+
+| Organe | Accuracy | Samples Val |
+|--------|----------|-------------|
+| Bladder | 100.0% | 30 |
+| Cervix | 100.0% | 65 |
+| Colon | 100.0% | 265 |
+| Esophagus | 100.0% | 85 |
+| Kidney | 100.0% | 28 |
+| Liver | 100.0% | 37 |
+| Lung | 100.0% | 36 |
+| Ovarian | 100.0% | 26 |
+| Pancreatic | 100.0% | 43 |
+| Prostate | 100.0% | 41 |
+| Skin | 100.0% | 36 |
+| Stomach | 100.0% | 29 |
+| Testis | 100.0% | 39 |
+| Thyroid | 100.0% | 38 |
+| Uterus | 100.0% | 43 |
+| Breast | 99.4% | 487 |
+| Adrenal_gland | 99.0% | 97 |
+| HeadNeck | 98.7% | 79 |
+| Bile-duct | 97.4% | 76 |
+
+**Commandes d'entraînement (3 folds) :**
+```bash
+# OrganHead (~10 min)
+python scripts/training/train_organ_head.py --folds 0 1 2 --epochs 50
+
+# HoVerNet (~2-3h)
+python scripts/training/train_hovernet.py --folds 0 1 2 --epochs 50 --augment --batch_size 8
 ```
 
 ---
