@@ -263,12 +263,62 @@ def generate_morphometry_panel(
     morpho_report: 'MorphometryReport',
     organ: str = "Unknown",
     family: str = "unknown",
+    is_ood: bool = False,
+    ood_score: float = 0.0,
 ) -> str:
     """
     Génère un panneau morphométrique formaté pour l'IHM.
 
     Présente les métriques cliniques de façon structurée et lisible.
+
+    Args:
+        morpho_report: Rapport morphométrique
+        organ: Organe détecté
+        family: Famille HoVer-Net utilisée
+        is_ood: Flag Out-of-Distribution
+        ood_score: Score OOD (0-1)
     """
+    # ==========================================
+    # KILL SWITCH OOD — Sécurité maximale
+    # ==========================================
+    # Si OOD détecté, bloquer l'affichage des métriques
+    # pour éviter une mauvaise interprétation
+    if is_ood or ood_score > 0.8:
+        return """
+╔══════════════════════════════════════════════════════════╗
+║                                                          ║
+║   🚫🚫🚫🚫🚫🚫🚫🚫🚫🚫🚫🚫🚫🚫🚫🚫🚫🚫🚫🚫   ║
+║                                                          ║
+║       ⛔ ANALYSE IMPOSSIBLE ⛔                           ║
+║                                                          ║
+║       IMAGE HORS DOMAINE DÉTECTÉE                        ║
+║                                                          ║
+║   🚫🚫🚫🚫🚫🚫🚫🚫🚫🚫🚫🚫🚫🚫🚫🚫🚫🚫🚫🚫   ║
+║                                                          ║
+╠══════════════════════════════════════════════════════════╣
+║                                                          ║
+║   Cette image ne correspond pas à un tissu               ║
+║   histopathologique H&E reconnu par le système.          ║
+║                                                          ║
+║   Causes possibles:                                      ║
+║   • Image non-histologique (photo, schéma, etc.)         ║
+║   • Coloration non H&E (IHC, IF, etc.)                   ║
+║   • Artéfact majeur (flou, pli, bulle)                   ║
+║   • Tissu non représenté dans PanNuke                    ║
+║                                                          ║
+╠══════════════════════════════════════════════════════════╣
+║                                                          ║
+║   Score OOD: """ + f"{ood_score:.3f}" + """                                        ║
+║   Seuil: 0.800                                           ║
+║                                                          ║
+║   ❌ LES MÉTRIQUES NE SONT PAS AFFICHÉES                ║
+║      POUR ÉVITER TOUTE ERREUR D'INTERPRÉTATION          ║
+║                                                          ║
+╚══════════════════════════════════════════════════════════╝
+
+⚠️ Veuillez soumettre une image H&E valide pour analyse.
+"""
+
     if morpho_report is None:
         return "❌ Analyse morphométrique non disponible"
 
@@ -647,6 +697,10 @@ class CellVitDemo:
                 # ==========================================
                 morpho_panel = "❌ Morphométrie non disponible"
 
+                # Récupérer les infos OOD pour le Kill Switch
+                is_ood = result_data.get('is_ood', False)
+                ood_score = result_data.get('ood_score_global', 0.0)
+
                 if self.morpho_analyzer is not None:
                     instance_map = result_data.get('instance_map')
                     nt_mask = result_data.get('nt_mask')
@@ -656,10 +710,13 @@ class CellVitDemo:
                         self.current_morpho_report = self.morpho_analyzer.analyze(
                             instance_map, nt_mask
                         )
+                        # Générer le panneau avec Kill Switch OOD
                         morpho_panel = generate_morphometry_panel(
                             self.current_morpho_report,
                             organ=organ_name,
-                            family=family
+                            family=family,
+                            is_ood=is_ood,
+                            ood_score=ood_score
                         )
 
                 # Rapport ML (technique)
