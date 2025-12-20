@@ -728,6 +728,26 @@ print(result.confidence_level)      # ConfidenceLevel.FIABLE
 print(model.generate_report(result))
 ```
 
+### 2025-12-20 — Intégration Gradio Demo ✅
+
+**OptimusGateInference** intégré dans la démo Gradio:
+
+- **Fichier créé**: `src/inference/optimus_gate_inference.py`
+  - Wrapper complet: image → H-optimus-0 → OptimusGate → résultats
+  - Méthodes: `predict()`, `visualize()`, `visualize_uncertainty()`, `generate_report()`
+
+- **Démo mise à jour**: `scripts/demo/gradio_demo.py`
+  - OptimusGate chargé en priorité (avant HoVer-Net seul)
+  - UI mise à jour avec architecture double flux
+  - Affichage organe détecté + cellules + OOD
+  - Onglet "À propos" avec schéma Optimus-Gate
+
+**Lancement:**
+```bash
+python scripts/demo/gradio_demo.py
+# URL: http://localhost:7860
+```
+
 ---
 
 ## Fichiers Créés (Inventaire)
@@ -741,7 +761,8 @@ src/
 │   └── organ_head.py             # OrganHead (Flux Global)
 ├── inference/
 │   ├── __init__.py
-│   ├── optimus_gate.py           # 🆕 Architecture unifiée Optimus-Gate
+│   ├── optimus_gate.py           # Architecture unifiée Optimus-Gate
+│   ├── optimus_gate_inference.py # 🆕 Wrapper Gradio (image → résultats)
 │   ├── hoptimus_hovernet.py      # Wrapper H-optimus-0 + HoVer-Net
 │   ├── hoptimus_unetr.py         # Wrapper H-optimus-0 + UNETR (fallback)
 │   └── cellvit_official.py       # Wrapper pour repo officiel TIO-IKIM
