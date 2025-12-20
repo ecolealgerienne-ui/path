@@ -48,14 +48,28 @@
      ▼                                                   ▼
 ┌─────────────────────────────┐        ┌─────────────────────────────┐
 │  COUCHE 2A — FLUX GLOBAL    │        │  COUCHE 2B — FLUX LOCAL     │
-│       OrganHead             │        │       HoVer-Net             │
+│       OrganHead             │        │   5 HoVer-Net Spécialisés   │
 │                             │        │                             │
-│  • CLS token → MLP          │        │  • Patches → Décodeur       │
-│  • Classification organe    │        │  • NP : présence noyaux     │
-│  • 19 organes PanNuke       │        │  • HV : séparation          │
-│  ✅ Accuracy 96.05%         │        │  • NT : typage (5 cls)      │
-│                             │        │  ✅ Dice 0.9601             │
+│  • CLS token → MLP          │        │  • Patches → Router         │
+│  • Classification organe    │        │  • Router → Famille         │
+│  • 19 organes PanNuke       │        │  • HoVer-Net spécialisé     │
+│  ✅ Accuracy 99.56%         │        │  • NP/HV/NT par famille     │
 └─────────────────────────────┘        └─────────────────────────────┘
+          │                                      │
+          │    ┌─────────────────────────────────┘
+          │    │
+          ▼    ▼
+┌────────────────────────────────────────────────────────────────┐
+│                    ROUTAGE PAR FAMILLE                         │
+│                                                                │
+│  OrganHead prédit l'organe → Router sélectionne le décodeur   │
+│                                                                │
+│  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐
+│  │ Digestif │ │Glandulaire│ │Urologique│ │Respirat. │ │Épiderm.  │
+│  │ HoVerNet │ │ HoVerNet │ │ HoVerNet │ │ HoVerNet │ │ HoVerNet │
+│  └──────────┘ └──────────┘ └──────────┘ └──────────┘ └──────────┘
+│                                                                │
+└────────────────────────────────────────────────────────────────┘
                                │
                                ▼
 ┌────────────────────────────────────────────────────────────────┐
@@ -815,8 +829,102 @@ python scripts/demo/gradio_demo.py
 # OrganHead (~10 min)
 python scripts/training/train_organ_head.py --folds 0 1 2 --epochs 50
 
-# HoVerNet (~2-3h)
-python scripts/training/train_hovernet.py --folds 0 1 2 --epochs 50 --augment --batch_size 8
+# HoVerNet par famille (voir section suivante)
+python scripts/training/train_hovernet_family.py --family glandular --epochs 50 --augment
+```
+
+### 2025-12-20 — Architecture 5 Familles HoVer-Net ✅
+
+**Décision architecturale** : Au lieu d'un seul HoVer-Net global, utiliser 5 décodeurs spécialisés par famille d'organes.
+
+**Justification scientifique** (littérature MICCAI, Nature Communications) :
+- **Feature Sharing** : Les noyaux partagent des propriétés physiques → backbone commun
+- **Domain-Specific Variance** : L'erreur augmente entre organes de textures différentes
+- **Domain Adaptation** : Le transfert fonctionne mieux entre organes de même famille embryologique
+
+**Avantages techniques** :
+- RAM par entraînement : ~27 GB → **~5-6 GB** ✅
+- Gradient propre (pas de signaux contradictoires)
+- Meilleure classification NT par famille
+- Convergence plus rapide
+
+#### Distribution par Famille (PanNuke)
+
+| Famille | Organes | Samples | % | RAM estimée |
+|---------|---------|---------|---|-------------|
+| **Glandulaire** | Breast, Prostate, Thyroid, Pancreatic, Adrenal_gland | 3,535 | 45% | ~5 GB |
+| **Digestive** | Colon, Stomach, Esophagus, Bile-duct | 2,274 | 29% | ~3.5 GB |
+| **Urologique** | Kidney, Bladder, Testis, Ovarian, Uterus, Cervix | 1,153 | 15% | ~2 GB |
+| **Épidermoïde** | Skin, HeadNeck | 574 | 7% | ~1 GB |
+| **Respiratoire** | Lung, Liver | 364 | 5% | ~0.6 GB |
+
+#### Mapping Organe → Famille
+
+```python
+ORGAN_TO_FAMILY = {
+    # Glandulaire & Hormonale (acini, sécrétions)
+    "Breast": "glandular",
+    "Prostate": "glandular",
+    "Thyroid": "glandular",
+    "Pancreatic": "glandular",
+    "Adrenal_gland": "glandular",
+
+    # Digestive (formes tubulaires)
+    "Colon": "digestive",
+    "Stomach": "digestive",
+    "Esophagus": "digestive",
+    "Bile-duct": "digestive",
+
+    # Urologique & Reproductif (densité nucléaire)
+    "Kidney": "urologic",
+    "Bladder": "urologic",
+    "Testis": "urologic",
+    "Ovarian": "urologic",
+    "Uterus": "urologic",
+    "Cervix": "urologic",
+
+    # Respiratoire & Hépatique (structures ouvertes)
+    "Lung": "respiratory",
+    "Liver": "respiratory",
+
+    # Épidermoïde (couches stratifiées)
+    "Skin": "epidermal",
+    "HeadNeck": "epidermal",
+}
+
+FAMILIES = ["glandular", "digestive", "urologic", "respiratory", "epidermal"]
+```
+
+#### Pipeline d'Inférence
+
+```python
+# 1. OrganHead prédit l'organe (99.56% accuracy)
+organ = organ_head.predict(cls_token)  # "Prostate"
+
+# 2. Router sélectionne le bon décodeur
+family = ORGAN_TO_FAMILY[organ]  # "glandular"
+
+# 3. Décodeur spécialisé segmente
+cells = hovernet_decoders[family].predict(patch_tokens)
+```
+
+#### Commandes d'entraînement par famille
+
+```bash
+# Famille Glandulaire (priorité - 45% des données)
+python scripts/training/train_hovernet_family.py --family glandular --epochs 50 --augment
+
+# Famille Digestive
+python scripts/training/train_hovernet_family.py --family digestive --epochs 50 --augment
+
+# Famille Urologique
+python scripts/training/train_hovernet_family.py --family urologic --epochs 50 --augment
+
+# Famille Épidermoïde
+python scripts/training/train_hovernet_family.py --family epidermal --epochs 50 --augment
+
+# Famille Respiratoire
+python scripts/training/train_hovernet_family.py --family respiratory --epochs 50 --augment
 ```
 
 ---
