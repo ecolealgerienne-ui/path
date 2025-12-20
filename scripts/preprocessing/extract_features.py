@@ -1,37 +1,31 @@
 #!/usr/bin/env python3
 """
-Script d'extraction de features avec H-optimus-0 sur PanNuke.
+Extraction des features H-optimus-0 pour PanNuke.
 
-Ce script :
-1. Charge les images PanNuke
-2. Les prétraite pour H-optimus-0 (resize 224x224, normalisation)
-3. Extrait les features (layer 24 par défaut, ou couches 6, 12, 18, 24 pour UNETR)
-4. Sauvegarde les features pour entraînement
+Version optimisée pour faible consommation RAM:
+- Utilise mmap pour ne pas charger toutes les images en RAM
+- Traite par chunks et sauvegarde incrémentalement
+- Libère la mémoire entre les chunks
 
 Usage:
-    # Extraction rapide (layer 24 seulement - recommandé)
     python scripts/preprocessing/extract_features.py \
         --data_dir /home/amar/data/PanNuke \
-        --fold 0
-
-    # Extraction complète (4 couches pour UNETR)
-    python scripts/preprocessing/extract_features.py \
-        --data_dir /home/amar/data/PanNuke \
-        --fold 0 \
-        --all_layers
+        --fold 0 --all_layers --batch_size 8
 """
 
 import argparse
 import time
+import gc
 from pathlib import Path
-
 import numpy as np
 import torch
-import torch.nn.functional as F
-import timm
 from torchvision import transforms
 from tqdm import tqdm
 
+try:
+    import timm
+except ImportError:
+    raise ImportError("Installez timm: pip install timm")
 
 # Normalisation spécifique H-optimus-0
 HOPTIMUS_MEAN = (0.707223, 0.578729, 0.703617)
@@ -39,30 +33,6 @@ HOPTIMUS_STD = (0.211883, 0.230117, 0.177517)
 
 # Couches à extraire pour UNETR (0-indexed)
 EXTRACT_LAYERS = [5, 11, 17, 23]  # Couches 6, 12, 18, 24
-
-
-def load_pannuke_fold(data_dir: Path, fold: int = 0):
-    """Charge un fold PanNuke complet (images + masks)."""
-    fold_dir = data_dir / f"fold{fold}"
-
-    images_path = fold_dir / "images.npy"
-    masks_path = fold_dir / "masks.npy"
-    types_path = fold_dir / "types.npy"
-
-    if not images_path.exists():
-        raise FileNotFoundError(f"Images non trouvées: {images_path}")
-
-    print(f"Chargement fold{fold} depuis {fold_dir}...")
-    images = np.load(images_path)
-    masks = np.load(masks_path) if masks_path.exists() else None
-    types = np.load(types_path) if types_path.exists() else None
-
-    print(f"  → {len(images)} images")
-    print(f"  → Shape images: {images.shape}")
-    if masks is not None:
-        print(f"  → Shape masks: {masks.shape}")
-
-    return images, masks, types
 
 
 def create_transform():
@@ -79,11 +49,6 @@ class HOptimusFeatureExtractor:
     """Extracteur de features multi-couches pour H-optimus-0."""
 
     def __init__(self, device="cuda", all_layers=False):
-        """
-        Args:
-            device: Device pour l'inférence
-            all_layers: Si True, extrait couches 6,12,18,24. Sinon seulement 24.
-        """
         print("Chargement de H-optimus-0...")
         self.model = timm.create_model(
             "hf-hub:bioptimus/H-optimus-0",
@@ -95,13 +60,11 @@ class HOptimusFeatureExtractor:
         self.device = device
         self.all_layers = all_layers
 
-        # Définir les couches à extraire
         if all_layers:
-            self.extract_layers = [5, 11, 17, 23]  # Couches 6, 12, 18, 24
+            self.extract_layers = [5, 11, 17, 23]
         else:
-            self.extract_layers = [23]  # Seulement couche 24
+            self.extract_layers = [23]
 
-        # Hooks pour extraire les features intermédiaires
         self.features = {}
         self._register_hooks()
 
@@ -138,49 +101,105 @@ class HOptimusFeatureExtractor:
             }
 
 
-@torch.no_grad()
-def extract_features(
+def extract_features_chunked(
     extractor: HOptimusFeatureExtractor,
-    images: np.ndarray,
+    images_mmap: np.ndarray,
     transform,
+    output_path: Path,
     batch_size: int = 8,
+    chunk_size: int = 500,
 ):
-    """Extrait les features pour toutes les images."""
-    n_images = len(images)
+    """
+    Extrait les features par chunks pour économiser la RAM.
 
-    # Initialiser selon les couches à extraire
-    if extractor.all_layers:
-        all_features = {
-            'layer_6': [],
-            'layer_12': [],
-            'layer_18': [],
-            'layer_24': [],
-        }
-    else:
-        all_features = {
-            'layer_24': [],
-        }
+    Sauvegarde incrémentalement dans un fichier temporaire.
+    """
+    n_images = len(images_mmap)
+    n_chunks = (n_images + chunk_size - 1) // chunk_size
 
     print(f"Extraction de features pour {n_images} images...")
+    print(f"  → {n_chunks} chunks de {chunk_size} images max")
+    print(f"  → Batch size: {batch_size}")
 
-    for i in tqdm(range(0, n_images, batch_size)):
-        batch_images = images[i:i + batch_size]
+    # Déterminer les clés de features
+    if extractor.all_layers:
+        feature_keys = ['layer_6', 'layer_12', 'layer_18', 'layer_24']
+    else:
+        feature_keys = ['layer_24']
 
-        # Prétraitement
-        batch_tensors = torch.stack([transform(img) for img in batch_images])
+    # Premier batch pour déterminer la shape
+    first_img = images_mmap[0]
+    if first_img.dtype != np.uint8:
+        first_img = first_img.clip(0, 255).astype(np.uint8)
+    first_tensor = transform(first_img).unsqueeze(0)
+    first_features = extractor.extract(first_tensor)
 
-        # Extraction
-        features = extractor.extract(batch_tensors)
+    feature_shape = first_features[feature_keys[0]].shape[1:]  # (261, 1536)
+    print(f"  → Shape features: {feature_shape}")
 
-        for key in all_features:
-            all_features[key].append(features[key])
+    # Pré-allouer les arrays de sortie sur disque (memory-mapped)
+    temp_files = {}
+    all_features = {}
 
-    # Concaténer
-    for key in all_features:
-        all_features[key] = np.concatenate(all_features[key], axis=0)
-        print(f"  → {key}: {all_features[key].shape}")
+    for key in feature_keys:
+        temp_path = output_path.parent / f"_temp_{key}.npy"
+        arr = np.lib.format.open_memmap(
+            temp_path,
+            mode='w+',
+            dtype=np.float32,
+            shape=(n_images,) + feature_shape
+        )
+        temp_files[key] = temp_path
+        all_features[key] = arr
 
-    return all_features
+    # Traiter par chunks
+    global_idx = 0
+
+    for chunk_idx in range(n_chunks):
+        start = chunk_idx * chunk_size
+        end = min(start + chunk_size, n_images)
+
+        print(f"\n📦 Chunk {chunk_idx+1}/{n_chunks} [{start}:{end}]")
+
+        # Charger le chunk en RAM (seulement ce chunk)
+        chunk_images = np.array(images_mmap[start:end])
+
+        # Traiter par batches
+        for i in tqdm(range(0, len(chunk_images), batch_size), desc="  Batches"):
+            batch_end = min(i + batch_size, len(chunk_images))
+            batch_images = chunk_images[i:batch_end]
+
+            # Convertir en uint8 pour ToPILImage
+            batch_images_uint8 = []
+            for img in batch_images:
+                if img.dtype != np.uint8:
+                    img = img.clip(0, 255).astype(np.uint8)
+                batch_images_uint8.append(img)
+
+            # Prétraitement
+            batch_tensors = torch.stack([transform(img) for img in batch_images_uint8])
+
+            # Extraction
+            features = extractor.extract(batch_tensors)
+
+            # Sauvegarder dans les arrays memory-mapped
+            for key in feature_keys:
+                all_features[key][global_idx:global_idx + len(batch_images)] = features[key]
+
+            global_idx += len(batch_images)
+
+        # Libérer la mémoire du chunk
+        del chunk_images
+        gc.collect()
+        torch.cuda.empty_cache()
+
+    # Forcer l'écriture sur disque
+    for key in feature_keys:
+        all_features[key].flush()
+
+    print(f"\n✅ Extraction terminée: {global_idx} images")
+
+    return all_features, temp_files
 
 
 def main():
@@ -193,6 +212,8 @@ def main():
                         help="Fold PanNuke (0, 1, ou 2)")
     parser.add_argument("--batch_size", type=int, default=8,
                         help="Taille des batchs (8 recommandé pour 12GB VRAM)")
+    parser.add_argument("--chunk_size", type=int, default=500,
+                        help="Nombre d'images par chunk RAM (500 = ~1GB)")
     parser.add_argument("--all_layers", action="store_true",
                         help="Extraire 4 couches (6,12,18,24) au lieu de layer_24 seule")
     args = parser.parse_args()
@@ -202,8 +223,17 @@ def main():
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Charger les données
-    images, masks, types = load_pannuke_fold(data_dir, fold=args.fold)
+    fold_dir = data_dir / f"fold{args.fold}"
+    images_path = fold_dir / "images.npy"
+
+    if not images_path.exists():
+        raise FileNotFoundError(f"Images non trouvées: {images_path}")
+
+    # Charger les images en mode memory-mapped (ne charge PAS en RAM)
+    print(f"Ouverture de {images_path} en mode mmap...")
+    images_mmap = np.load(images_path, mmap_mode='r')
+    print(f"  → {len(images_mmap)} images, shape: {images_mmap.shape}")
+    print(f"  → dtype: {images_mmap.dtype}")
 
     # Créer l'extracteur
     extractor = HOptimusFeatureExtractor(all_layers=args.all_layers)
@@ -212,18 +242,21 @@ def main():
     # Mesurer le temps
     start_time = time.time()
 
-    # Extraire les features multi-couches
-    features = extract_features(
+    # Extraire les features par chunks
+    output_path = output_dir / f"fold{args.fold}_features.npz"
+    all_features, temp_files = extract_features_chunked(
         extractor,
-        images,
+        images_mmap,
         transform,
+        output_path,
         batch_size=args.batch_size,
+        chunk_size=args.chunk_size,
     )
 
     elapsed = time.time() - start_time
 
     # Stats
-    n_images = len(images)
+    n_images = len(images_mmap)
     print("\n" + "=" * 50)
     print("RÉSUMÉ EXTRACTION")
     print("=" * 50)
@@ -231,22 +264,37 @@ def main():
     print(f"Temps total: {elapsed:.1f}s ({elapsed/60:.1f} min)")
     print(f"Temps par image: {elapsed / n_images * 1000:.1f}ms")
 
-    # Sauvegarder les features (format NPZ sans compression - plus rapide)
-    output_path = output_dir / f"fold{args.fold}_features.npz"
-    print(f"\nSauvegarde features (sans compression)...")
-    np.savez(output_path, **features)
-    print(f"Features sauvegardées: {output_path}")
+    # Convertir les mmap en arrays normaux pour sauvegarde NPZ
+    print(f"\nConsolidation des features...")
+    final_features = {}
+    for key in all_features:
+        # Lire depuis le mmap
+        final_features[key] = np.array(all_features[key])
+        print(f"  → {key}: {final_features[key].shape}")
 
-    # Note: Les masks ne sont PAS dupliqués ici - ils restent dans le dossier PanNuke original
-    # Le script d'entraînement les charge depuis: {data_dir}/fold{X}/masks.npy
+    # Sauvegarder
+    print(f"\nSauvegarde vers {output_path}...")
+    np.savez(output_path, **final_features)
+    print(f"✅ Features sauvegardées: {output_path}")
 
-    # Taille des fichiers
-    features_size = output_path.stat().st_size / 1e9
-    print(f"\nTaille features: {features_size:.2f} GB")
+    # Nettoyer les fichiers temporaires
+    print("Nettoyage des fichiers temporaires...")
+    for key, temp_path in temp_files.items():
+        if temp_path.exists():
+            temp_path.unlink()
+            print(f"  🗑️  {temp_path.name}")
 
-    if torch.cuda.is_available():
-        mem_used = torch.cuda.max_memory_allocated() / 1e9
-        print(f"Pic mémoire GPU: {mem_used:.2f} GB")
+    # Vérification finale
+    print("\n" + "=" * 50)
+    print("VÉRIFICATION")
+    print("=" * 50)
+    loaded = np.load(output_path)
+    for key in loaded.files:
+        arr = loaded[key]
+        print(f"  {key}: {arr.shape}, dtype={arr.dtype}")
+        print(f"    range: [{arr.min():.4f}, {arr.max():.4f}]")
+
+    print(f"\n🎉 Extraction fold{args.fold} terminée!")
 
 
 if __name__ == "__main__":

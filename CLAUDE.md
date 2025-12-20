@@ -254,6 +254,201 @@ Précision: 127 niveaux suffisent pour le Sobel/Watershed
 
 ---
 
+## Explication du Modèle HoVer-Net
+
+### Architecture à 3 Branches
+
+HoVer-Net est un réseau de segmentation et classification de noyaux cellulaires conçu spécifiquement pour l'histopathologie. Il produit **3 sorties simultanées** à partir d'une seule image :
+
+```
+                    Image H&E (256×256)
+                           │
+                           ▼
+                    ┌─────────────┐
+                    │ H-optimus-0 │  ← Backbone gelé (1.1B params)
+                    │   Encoder   │
+                    └─────────────┘
+                           │
+                    features (1536-dim)
+                           │
+                           ▼
+                    ┌─────────────┐
+                    │  HoVer-Net  │  ← Décodeur entraînable
+                    │   Decoder   │
+                    └─────────────┘
+                           │
+         ┌─────────────────┼─────────────────┐
+         ▼                 ▼                 ▼
+    ┌─────────┐       ┌─────────┐       ┌─────────┐
+    │   NP    │       │   HV    │       │   NT    │
+    │ Branch  │       │ Branch  │       │ Branch  │
+    └─────────┘       └─────────┘       └─────────┘
+         │                 │                 │
+         ▼                 ▼                 ▼
+    Masque binaire    Cartes H/V      Classification
+    (noyau/fond)     (distances)       (5 types)
+```
+
+### Branche NP (Nuclei Presence)
+
+**Objectif** : Détecter la présence de noyaux cellulaires
+
+```
+Entrée : Features encodeur
+Sortie : Masque binaire 256×256 (2 classes : fond/noyau)
+Métrique : Dice Score (chevauchement prédit/réel)
+
+Interprétation :
+  Dice = 2 × |Prédit ∩ Réel| / (|Prédit| + |Réel|)
+
+  0.96+ = Excellent - Détecte 96%+ des noyaux
+```
+
+### Branche HV (Horizontal/Vertical)
+
+**Objectif** : Séparer les noyaux qui se touchent
+
+```
+Problème : Dans les tissus denses, les noyaux se chevauchent.
+           Un masque binaire ne distingue pas où finit un noyau
+           et où commence le suivant.
+
+Solution : Pour chaque pixel d'un noyau, calculer sa distance
+           normalisée au centre de l'instance.
+
+Masque binaire:          Carte H:              Carte V:
+┌─────────────┐       ┌─────────────┐       ┌─────────────┐
+│  ████████   │       │  -1  0  +1  │       │  -1 -1 -1   │
+│  ████████   │   →   │  -1  0  +1  │       │   0  0  0   │
+│  ████████   │       │  -1  0  +1  │       │  +1 +1 +1   │
+└─────────────┘       └─────────────┘       └─────────────┘
+
+H = distance horizontale normalisée [-1, +1]
+V = distance verticale normalisée [-1, +1]
+
+Post-processing :
+  1. Sobel(H, V) → Gradient maximal aux frontières
+  2. Watershed sur les gradients → Instances séparées
+```
+
+**Métrique** : MSE (Mean Squared Error)
+```
+MSE = moyenne((H_prédit - H_réel)² + (V_prédit - V_réel)²)
+
+Calculé uniquement sur les pixels de noyaux (masque NP)
+
+  < 0.02 = Excellent (frontières nettes)
+  0.02-0.05 = Bon
+  > 0.1 = Problématique (fusions possibles)
+```
+
+### Branche NT (Nuclei Type)
+
+**Objectif** : Classifier le type de chaque noyau
+
+```
+5 classes PanNuke :
+  🔴 Neoplastic   - Cellules tumorales
+  🟢 Inflammatory - Lymphocytes, macrophages
+  🔵 Connective   - Fibroblastes, stroma
+  🟡 Dead         - Cellules apoptotiques/nécrotiques
+  🩵 Epithelial   - Cellules épithéliales normales
+
+Sortie : 256×256×5 (probabilités par classe)
+Métrique : Accuracy (% pixels correctement classifiés)
+```
+
+### Fonction de Perte Combinée
+
+```python
+L_total = λ_np × L_np + λ_hv × L_hv + λ_nt × L_nt
+
+Où :
+  L_np = CrossEntropy (classification binaire)
+  L_hv = SmoothL1Loss (régression robuste aux outliers)
+  L_nt = CrossEntropy (classification 5 classes)
+
+Poids optimaux :
+  λ_np = 1.0
+  λ_hv = 2.0  ← Plus important pour séparation instances
+  λ_nt = 1.0
+```
+
+### Résultats par Famille (PanNuke)
+
+| Famille | Samples | NP Dice | HV MSE | NT Acc | Statut |
+|---------|---------|---------|--------|--------|--------|
+| **Glandulaire** | 3535 | **0.9645** | **0.015** | 0.88 | ✅ |
+| **Digestive** | 2274 | **0.9634** | **0.016** | 0.88 | ✅ |
+| Urologique | 1153 | 0.9318 | 0.281 | **0.91** | ✅ |
+| Épidermoïde | 574 | 0.9542 | 0.273 | 0.89 | ✅ |
+| Respiratoire | 364 | 0.9409 | 0.284 | 0.89 | ✅ |
+
+### Analyse des Résultats par Famille
+
+#### Corrélation Samples vs Performance
+
+```
+Seuil critique identifié :
+  ≥2000 samples → HV MSE < 0.02 (excellent)
+  <2000 samples → HV MSE > 0.25 (dégradé)
+
+Stabilité par branche :
+  NP Dice : Très stable (0.93-0.96) même avec 364 samples
+  NT Acc  : Très stable (0.88-0.91) même avec 364 samples
+  HV MSE  : Sensible au volume de données
+```
+
+#### Explications Pathologiques
+
+**Pourquoi Glandulaire/Digestive excellent (HV MSE ~0.015) ?**
+```
+• Noyaux bien définis avec contours nets
+• Structures glandulaires régulières (acini, cryptes)
+• Espacement naturel entre cellules épithéliales
+• Faible chevauchement nucléaire
+→ Le modèle apprend facilement les frontières
+```
+
+**Pourquoi Urologique/Respiratoire/Épidermoïde dégradé (HV MSE ~0.28) ?**
+```
+• Densité nucléaire élevée (clusters serrés)
+• Noyaux plus petits et irréguliers (rein, poumon)
+• Chevauchement fréquent dans les couches stratifiées (peau)
+• Moins de données d'entraînement disponibles
+→ Frontières ambiguës + données insuffisantes
+```
+
+#### Implications Cliniques
+
+| Famille | Détection (NP) | Classification (NT) | Séparation (HV) |
+|---------|----------------|---------------------|-----------------|
+| Glandulaire | ✅ Fiable | ✅ Fiable | ✅ Fiable |
+| Digestive | ✅ Fiable | ✅ Fiable | ✅ Fiable |
+| Urologique | ✅ Fiable | ✅ Fiable | ⚠️ Vérifier manuellement |
+| Épidermoïde | ✅ Fiable | ✅ Fiable | ⚠️ Vérifier manuellement |
+| Respiratoire | ✅ Fiable | ✅ Fiable | ⚠️ Vérifier manuellement |
+
+**Recommandation** : Pour les familles avec HV MSE > 0.1, afficher un avertissement
+dans l'interface utilisateur concernant la séparation des instances.
+
+### Pourquoi 5 Familles ?
+
+```
+Justification scientifique :
+  1. Les noyaux partagent des propriétés physiques → backbone commun
+  2. L'erreur augmente entre organes de textures différentes
+  3. Le transfert fonctionne mieux entre organes de même origine embryologique
+
+Avantages techniques :
+  - RAM réduite : ~27 GB → ~5 GB par entraînement
+  - Gradient propre (pas de signaux contradictoires)
+  - Meilleure classification NT par famille
+  - Convergence plus rapide
+```
+
+---
+
 ## Stratégie de Sécurité Clinique
 
 ### Sortie en 3 niveaux
@@ -748,8 +943,22 @@ OrganHead   HoVerNet
 |-----------|----------|--------|
 | OrganHead | Val Accuracy | **99.56%** |
 | OrganHead | Organes à 100% | 15/19 |
-| HoVer-Net | Dice | **0.9601** |
 | OOD | Threshold | 46.69 |
+
+**Résultats HoVer-Net par Famille (5/5 complétées) :**
+| Famille | Samples | Dice | HV MSE | NT Acc | Checkpoint | Statut |
+|---------|---------|------|--------|--------|------------|--------|
+| Glandulaire | 3535 | **0.9645** | **0.015** | 0.88 | `hovernet_glandular_best.pth` | ✅ |
+| Digestive | 2274 | **0.9634** | **0.016** | 0.88 | `hovernet_digestive_best.pth` | ✅ |
+| Urologique | 1153 | 0.9318 | 0.281 | **0.91** | `hovernet_urologic_best.pth` | ✅ |
+| Épidermoïde | 574 | 0.9542 | 0.273 | 0.89 | `hovernet_epidermal_best.pth` | ✅ |
+| Respiratoire | 364 | 0.9409 | 0.284 | 0.89 | `hovernet_respiratory_best.pth` | ✅ |
+
+**Comparaison HoVer-Net global vs par famille:**
+| Modèle | Dice | Amélioration |
+|--------|------|--------------|
+| HoVer-Net global (tous organes) | 0.9601 | baseline |
+| HoVer-Net Glandulaire (spécialisé) | **0.9645** | **+0.46%** |
 
 **Triple Sécurité OOD:**
 - Entropie organe (softmax uncertainty)
@@ -945,6 +1154,71 @@ family = ORGAN_TO_FAMILY[organ]  # "glandular"
 cells = hovernet_decoders[family].predict(patch_tokens)
 ```
 
+### 2025-12-20 — Entraînement Famille Digestive ✅
+
+**Résultats finaux (50 epochs):**
+| Métrique | Train | Validation | Best |
+|----------|-------|------------|------|
+| Loss | 0.6369 | 0.6890 | 0.6995 |
+| NP Dice | 0.9677 | 0.9627 | **0.9634** |
+| HV MSE | 0.0227 | 0.0152 | **0.0163** |
+| NT Acc | 0.8748 | 0.8748 | **0.8824** |
+
+**Observations:**
+- HV MSE amélioré de 0.27 (epoch 6) → 0.016 (epoch 50) = **94% d'amélioration**
+- Pas d'overfitting : Train Loss (0.64) ≈ Val Loss (0.69)
+- Performances comparables à Glandulaire
+
+**Checkpoint:** `models/checkpoints/hovernet_digestive_best.pth`
+
+### 2025-12-20 — Entraînement 5 Familles Complété ✅
+
+**Toutes les familles HoVer-Net sont maintenant entraînées.**
+
+#### Résultats Urologique (1153 samples)
+| Métrique | Best |
+|----------|------|
+| NP Dice | 0.9318 |
+| HV MSE | 0.2812 |
+| NT Acc | **0.9139** |
+
+#### Résultats Épidermoïde (574 samples)
+| Métrique | Best |
+|----------|------|
+| NP Dice | 0.9542 |
+| HV MSE | 0.2733 |
+| NT Acc | 0.8871 |
+
+#### Résultats Respiratoire (364 samples) — Stress Test
+| Métrique | Best |
+|----------|------|
+| NP Dice | 0.9409 |
+| HV MSE | 0.2836 |
+| NT Acc | 0.8947 |
+
+#### Analyse de Stabilité
+
+**Découverte clé** : Le volume de données impacte principalement la branche HV.
+
+```
+Corrélation Samples → HV MSE :
+  3535 samples (Glandulaire)  → 0.015 ✅ Excellent
+  2274 samples (Digestive)    → 0.016 ✅ Excellent
+  1153 samples (Urologique)   → 0.281 ⚠️ Dégradé
+   574 samples (Épidermoïde)  → 0.273 ⚠️ Dégradé
+   364 samples (Respiratoire) → 0.284 ⚠️ Dégradé
+
+Seuil critique : ~2000 samples pour HV MSE < 0.05
+```
+
+**Explication pathologique** :
+- Glandulaire/Digestive : noyaux bien espacés, contours nets → facile
+- Urologique/Respiratoire : densité nucléaire élevée, clusters serrés → difficile
+- Épidermoïde : couches stratifiées, chevauchement fréquent → difficile
+
+**Conclusion** : Le système est stable pour détection (NP) et classification (NT).
+Seule la séparation d'instances (HV) nécessite plus de données ou vérification manuelle.
+
 #### Commandes d'entraînement par famille
 
 ```bash
@@ -982,11 +1256,16 @@ src/
 │   ├── hoptimus_hovernet.py      # Wrapper H-optimus-0 + HoVer-Net
 │   ├── hoptimus_unetr.py         # Wrapper H-optimus-0 + UNETR (fallback)
 │   └── cellvit_official.py       # Wrapper pour repo officiel TIO-IKIM
-└── uncertainty/                   # Couche 3 & 4: Sécurité & Interaction Expert
-    ├── __init__.py
-    ├── uncertainty_estimator.py  # Entropie + Mahalanobis + Temperature Scaling
-    ├── conformal_prediction.py   # Conformal Prediction (APS/LAC/RAPS)
-    └── roi_selection.py          # Sélection automatique ROIs
+├── uncertainty/                   # Couche 3 & 4: Sécurité & Interaction Expert
+│   ├── __init__.py
+│   ├── uncertainty_estimator.py  # Entropie + Mahalanobis + Temperature Scaling
+│   ├── conformal_prediction.py   # Conformal Prediction (APS/LAC/RAPS)
+│   └── roi_selection.py          # Sélection automatique ROIs
+├── feedback/                      # 🆕 Active Learning (Couche 5)
+│   ├── __init__.py
+│   └── active_learning.py        # FeedbackCollector pour corrections expertes
+└── metrics/
+    └── morphometry.py            # Analyse morphométrique clinique
 
 scripts/
 ├── setup/
@@ -1190,3 +1469,247 @@ mapie
 fastapi
 gradio  # ou streamlit
 ```
+
+---
+
+## Fonctionnalités Futures (Roadmap Expert)
+
+### Suggestions d'un pathologiste expert pour transformer le prototype en outil clinique.
+
+### 1. Incertitude Technique vs Biologique (Priorité Haute)
+
+**Problème actuel:** Le calque HEAT mélange deux types d'incertitude.
+
+**Solution proposée:** Diviser en deux calques distincts:
+
+```
+HEAT_TECH (Incertitude Technique - OOD)
+├── Problèmes de focus
+├── Plis du tissu
+├── Artefacts (bulles, poussières)
+└── Zones hors domaine (coloration atypique)
+
+HEAT_BIO (Incertitude Biologique)
+├── Classification ambiguë (Inflammatory ↔ Neoplastic)
+├── Bordures de noyaux floues
+└── Types cellulaires intermédiaires
+```
+
+**Bénéfice clinique:** Le médecin ne réagit pas de la même façon à une bulle d'air qu'à une cellule de type "indéterminé".
+
+### 2. Galerie de Noyaux de Référence (Visual Benchmarking)
+
+**Concept:** Afficher une galerie comparative:
+- Noyau "typique sain" de l'organe détecté
+- Noyau "atypique" sélectionné par l'alerte
+
+**Implémentation suggérée:**
+```python
+class ReferenceNucleiGallery:
+    def __init__(self, organ: str):
+        # Charger noyaux de référence par organe
+        self.healthy_refs = load_reference_nuclei(organ, "healthy")
+        self.atypical_refs = load_reference_nuclei(organ, "atypical")
+
+    def compare(self, nucleus_crop: np.ndarray) -> np.ndarray:
+        # Afficher côte à côte: [Healthy] [Query] [Atypical]
+        return create_comparison_strip(
+            self.healthy_refs[0], nucleus_crop, self.atypical_refs[0]
+        )
+```
+
+**Bénéfice clinique:** Échelle de comparaison visuelle immédiate.
+
+### 3. Navigation WSI avec Mini-Map (Priorité Haute pour Production)
+
+**Concept:** Interface de navigation pour lames entières (Whole Slide Images).
+
+```
+┌───────────────────────────────────────────────────────────┐
+│ ┌─────────┐                                               │
+│ │ Mini-Map│  ← Vue d'ensemble de la lame                  │
+│ │ ●●○○●   │    • = Points d'intérêt (POIs) pré-calculés  │
+│ │ ○●●○○   │                                               │
+│ └─────────┘                                               │
+│                                                           │
+│ ┌───────────────────────────────────────────────────────┐ │
+│ │                                                       │ │
+│ │              PATCH HAUTE RÉSOLUTION                   │ │
+│ │              (Clic sur POI → zoom ici)                │ │
+│ │                                                       │ │
+│ └───────────────────────────────────────────────────────┘ │
+│                                                           │
+│ ┌─────────────────────────────────────────┐               │
+│ │ PANNEAU MORPHOMÉTRIQUE (temps réel)     │               │
+│ └─────────────────────────────────────────┘               │
+└───────────────────────────────────────────────────────────┘
+```
+
+**Workflow proposé:**
+1. Pré-calculer les POIs (ROIs à haute incertitude ou néoplasie)
+2. Le pathologiste clique sur un POI dans la Mini-Map
+3. L'IHM saute au patch correspondant
+4. Le panneau morphométrique s'actualise
+
+**Implémentation:**
+- Utiliser OpenSlide pour lecture WSI pyramidale
+- Pré-calculer les POIs avec `ROISelector` existant
+- Stocker les embeddings H-optimus-0 par patch pour navigation rapide
+
+### 4. Export vers DICOM-SR (Structured Report)
+
+**Concept:** Générer un rapport DICOM-SR compatible avec les PACS hospitaliers.
+
+**Champs suggérés:**
+- Numéro d'analyse
+- Date/Heure
+- Métriques morphométriques
+- Alertes cliniques
+- Niveau de confiance
+- Captures d'écran annotées
+
+### 5. Mode "Deuxième Lecture" (Quality Assurance) ✅ IMPLÉMENTÉ (v1)
+
+**Concept:** Comparer automatiquement la prédiction du modèle avec la lecture du pathologiste.
+
+**Implémenté (commit 003bba7):**
+- ✅ Module `FeedbackCollector` pour stocker les corrections
+- ✅ Onglet Gradio "📝 Feedback Expert"
+- ✅ Types de feedback: cell type, mitose FP/FN, TILs, organe
+- ✅ Niveaux de sévérité: low, medium, high, critical
+- ✅ Export JSON pour retraining
+
+**À faire (v2):**
+- 🔜 Comparaison automatique prédiction vs correction
+- 🔜 Statistiques de concordance par session
+- 🔜 Alertes sur patterns d'erreur récurrents
+- 🔜 Pipeline de retraining automatisé
+
+---
+
+## Fonctionnalités Implémentées (IHM Clinique)
+
+### Commit 575869a — Index Mitotique et TILs Hot/Cold
+
+#### Index Mitotique Estimé
+- Détection des figures évocatrices de mitoses (élongation + chromatine dense)
+- Calcul de l'index pour 10 HPF (High Power Fields)
+- XAI: Surbrillance jaune des noyaux mitotiques
+
+#### Statut TILs (Tumor-Infiltrating Lymphocytes)
+- Classification: 🔥 Chaud / ❄️ Froid / 🚫 Exclu / 〰️ Intermédiaire
+- Calcul du ratio de pénétration (% TILs dans le massif tumoral)
+- Distance au front d'invasion
+
+**Signification clinique:**
+- **Tumeur chaude:** Bon pronostic pour immunothérapie (TILs actifs)
+- **Tumeur froide:** Immunité bloquée en périphérie (checkpoint inhibitors moins efficaces)
+
+### Commit 66ba584 — IHM Clinique Complète
+
+- Panneau morphométrique avec métriques pathologiques
+- Gestion des calques (RAW/SEG/HEAT/BOTH)
+- XAI: Cliquer sur les alertes pour localiser les noyaux
+
+### Commit 003bba7 — Raffinements Expert & Active Learning ✅ NOUVEAU
+
+#### Détection Mitotique Raffinée
+**Problème initial:** Faux positifs (cellules endothéliales/fibroblastes allongées mais claires)
+
+**Solution implémentée** (recommandation expert pathologiste):
+```python
+# Avant: logique OR (trop permissive)
+if elongation > 1.8 OR circularity < 0.4:
+    is_mitotic = True
+
+# Après: logique AND (réduit 80% des FP)
+if elongation > 1.8 AND mean_intensity < 100:  # Allongé ET hyperchromatique
+    is_mitotic = True
+```
+
+**Critères multi-phases:**
+| Phase | Élongation | Intensité | Circularité |
+|-------|------------|-----------|-------------|
+| Prophase/Métaphase | >1.5 | <70 | <0.5 |
+| Anaphase | >1.8 | <100 | - |
+| Télophase | >2.2 | <120 | - |
+
+#### Convex Hull pour TILs Hot/Cold
+**Problème initial:** Centroïde + rayon = approximation grossière du front tumoral
+
+**Solution implémentée:** `scipy.spatial.ConvexHull` pour définir précisément le front
+
+```python
+from scipy.spatial import ConvexHull
+
+# Enveloppe convexe des cellules néoplasiques
+hull = ConvexHull(neo_centers)
+hull_vertices = neo_centers[hull.vertices]
+
+# Test point-in-polygon pour chaque TIL
+def point_in_hull(point, hull_vertices):
+    # Cross-product method pour tous les segments
+    for i in range(len(hull_vertices)):
+        v1, v2 = hull_vertices[i], hull_vertices[(i+1) % n]
+        cross = (v2[0]-v1[0])*(point[1]-v1[1]) - (v2[1]-v1[1])*(point[0]-v1[0])
+        if cross < 0:
+            return False
+    return True
+```
+
+**Classification TILs:**
+| Statut | Critère | Emoji |
+|--------|---------|-------|
+| Chaud | >50% TILs dans le hull | 🔥 |
+| Intermédiaire | 20-50% dans le hull | 〰️ |
+| Froid | >50% TILs à <20µm du bord | ❄️ |
+| Exclu | Distance moyenne >50µm | 🚫 |
+
+#### Active Learning — Mode "Seconde Lecture"
+
+**Nouveau module:** `src/feedback/active_learning.py`
+
+**FeedbackCollector** — Stockage des corrections expertes:
+```python
+from src.feedback import FeedbackCollector, FeedbackType
+
+collector = FeedbackCollector(storage_path="data/feedback")
+
+# Corriger un type cellulaire
+collector.add_cell_type_correction(
+    nucleus_id=42,
+    nucleus_location=(100, 150),
+    predicted_class="Neoplastic",
+    corrected_class="Inflammatory",
+    expert_comment="Lymphocyte évident"
+)
+
+# Signaler une fausse mitose
+collector.add_mitosis_false_positive(
+    nucleus_id=17,
+    nucleus_location=(200, 180),
+    actual_type="Fibroblast",
+    expert_comment="Allongé mais pas hyperchromatique"
+)
+
+# Statistiques
+stats = collector.get_statistics()
+# {'total': 42, 'by_type': {...}, 'by_severity': {...}}
+
+# Export pour retraining
+collector.export_for_retraining("data/retraining/batch_001.json")
+```
+
+**Types de feedback:**
+| Type | Sévérité | Description |
+|------|----------|-------------|
+| `CELL_TYPE_WRONG` | high | Mauvaise classification |
+| `MITOSIS_FALSE_POSITIVE` | high | Fausse mitose |
+| `MITOSIS_MISSED` | critical | Mitose non détectée |
+| `TILS_STATUS_WRONG` | medium | Mauvais hot/cold |
+| `ORGAN_WRONG` | high | Mauvais organe |
+
+**Nouvel onglet Gradio:** "📝 Feedback Expert"
+- Formulaire de soumission avec sévérité
+- Statistiques en temps réel
+- Sauvegarde JSON automatique

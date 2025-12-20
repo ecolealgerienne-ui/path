@@ -186,7 +186,7 @@ class FamilyHoVerDataset(Dataset):
 
 
 def compute_dice(pred: torch.Tensor, target: torch.Tensor) -> float:
-    """Calcule le Dice score."""
+    """Calcule le Dice score pour NP (nuclei presence)."""
     pred_binary = (pred.argmax(dim=1) == 1).float()
     target_float = target.float()
 
@@ -199,10 +199,48 @@ def compute_dice(pred: torch.Tensor, target: torch.Tensor) -> float:
     return (2 * intersection / union).item()
 
 
+def compute_hv_mse(hv_pred: torch.Tensor, hv_target: torch.Tensor, np_target: torch.Tensor) -> float:
+    """Calcule le MSE des cartes HV uniquement sur les pixels de noyaux."""
+    # Masque des pixels de noyaux
+    mask = np_target.float().unsqueeze(1)  # (B, 1, H, W)
+
+    if mask.sum() == 0:
+        return 0.0
+
+    # MSE uniquement sur les pixels de noyaux
+    diff = (hv_pred - hv_target) ** 2
+    masked_diff = diff * mask
+    mse = masked_diff.sum() / (mask.sum() * 2)  # *2 car 2 canaux H et V
+
+    return mse.item()
+
+
+def compute_nt_accuracy(nt_pred: torch.Tensor, nt_target: torch.Tensor, np_target: torch.Tensor) -> float:
+    """Calcule l'accuracy de classification des types sur les pixels de noyaux."""
+    # Masque des pixels de noyaux
+    mask = np_target > 0
+
+    if mask.sum() == 0:
+        return 1.0
+
+    # Prédiction de classe
+    pred_class = nt_pred.argmax(dim=1)
+
+    # Accuracy uniquement sur les pixels de noyaux
+    correct = (pred_class == nt_target) & mask
+    accuracy = correct.sum().float() / mask.sum().float()
+
+    return accuracy.item()
+
+
 def train_epoch(model, loader, optimizer, criterion, device):
     model.train()
     total_loss = 0
     losses = {'np': 0, 'hv': 0, 'nt': 0}
+    total_dice = 0
+    total_hv_mse = 0
+    total_nt_acc = 0
+    n_samples = 0
 
     pbar = tqdm(loader, desc="Train")
     for features, np_target, hv_target, nt_target in pbar:
@@ -223,17 +261,30 @@ def train_epoch(model, loader, optimizer, criterion, device):
         loss.backward()
         optimizer.step()
 
+        batch_size = features.shape[0]
         total_loss += loss.item()
         for k in losses:
             losses[k] += loss_dict[k]
 
+        # Métriques (sans gradient)
+        with torch.no_grad():
+            total_dice += compute_dice(np_pred, np_target) * batch_size
+            total_hv_mse += compute_hv_mse(hv_pred, hv_target, np_target) * batch_size
+            total_nt_acc += compute_nt_accuracy(nt_pred, nt_target, np_target) * batch_size
+        n_samples += batch_size
+
         pbar.set_postfix({
             'loss': f"{loss.item():.4f}",
-            'np': f"{loss_dict['np']:.4f}",
+            'dice': f"{total_dice/n_samples:.4f}",
         })
 
     n = len(loader)
-    return total_loss / n, {k: v / n for k, v in losses.items()}
+    metrics = {
+        'dice': total_dice / n_samples,
+        'hv_mse': total_hv_mse / n_samples,
+        'nt_acc': total_nt_acc / n_samples,
+    }
+    return total_loss / n, {k: v / n for k, v in losses.items()}, metrics
 
 
 @torch.no_grad()
@@ -241,6 +292,8 @@ def validate(model, loader, criterion, device):
     model.eval()
     total_loss = 0
     total_dice = 0
+    total_hv_mse = 0
+    total_nt_acc = 0
     n_samples = 0
 
     for features, np_target, hv_target, nt_target in tqdm(loader, desc="Val"):
@@ -256,11 +309,19 @@ def validate(model, loader, criterion, device):
             np_target, hv_target, nt_target
         )
 
+        batch_size = features.shape[0]
         total_loss += loss.item()
-        total_dice += compute_dice(np_pred, np_target) * features.shape[0]
-        n_samples += features.shape[0]
+        total_dice += compute_dice(np_pred, np_target) * batch_size
+        total_hv_mse += compute_hv_mse(hv_pred, hv_target, np_target) * batch_size
+        total_nt_acc += compute_nt_accuracy(nt_pred, nt_target, np_target) * batch_size
+        n_samples += batch_size
 
-    return total_loss / len(loader), total_dice / n_samples
+    metrics = {
+        'dice': total_dice / n_samples,
+        'hv_mse': total_hv_mse / n_samples,
+        'nt_acc': total_nt_acc / n_samples,
+    }
+    return total_loss / len(loader), metrics
 
 
 def main():
@@ -342,6 +403,7 @@ def main():
 
     best_dice = 0
     best_loss = float('inf')
+    best_metrics = {'dice': 0, 'hv_mse': float('inf'), 'nt_acc': 0}
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -350,17 +412,21 @@ def main():
         print(f"Epoch {epoch+1}/{args.epochs}")
         print(f"{'='*60}")
 
-        train_loss, train_losses = train_epoch(model, train_loader, optimizer, criterion, device)
-        print(f"Train - Loss: {train_loss:.4f} (NP: {train_losses['np']:.4f}, HV: {train_losses['hv']:.4f})")
+        train_loss, train_losses, train_metrics = train_epoch(model, train_loader, optimizer, criterion, device)
+        print(f"Train - Loss: {train_loss:.4f}")
+        print(f"        NP Dice: {train_metrics['dice']:.4f} | HV MSE: {train_metrics['hv_mse']:.4f} | NT Acc: {train_metrics['nt_acc']:.4f}")
 
-        val_loss, val_dice = validate(model, val_loader, criterion, device)
-        print(f"Val   - Loss: {val_loss:.4f}, Dice: {val_dice:.4f}")
+        val_loss, val_metrics = validate(model, val_loader, criterion, device)
+        print(f"Val   - Loss: {val_loss:.4f}")
+        print(f"        NP Dice: {val_metrics['dice']:.4f} | HV MSE: {val_metrics['hv_mse']:.4f} | NT Acc: {val_metrics['nt_acc']:.4f}")
 
         scheduler.step()
 
+        val_dice = val_metrics['dice']
         if val_dice > best_dice:
             best_dice = val_dice
             best_loss = val_loss
+            best_metrics = val_metrics
 
             checkpoint_path = output_dir / f'hovernet_{args.family}_best.pth'
             checkpoint = {
@@ -369,6 +435,8 @@ def main():
                 'optimizer_state_dict': optimizer.state_dict(),
                 'best_dice': best_dice,
                 'best_loss': best_loss,
+                'best_hv_mse': val_metrics['hv_mse'],
+                'best_nt_acc': val_metrics['nt_acc'],
                 'family': args.family,
                 'organs': get_organs(args.family),
             }
@@ -378,8 +446,11 @@ def main():
     print(f"\n{'='*60}")
     print(f"ENTRAÎNEMENT TERMINÉ - FAMILLE {args.family.upper()}")
     print(f"{'='*60}")
-    print(f"Meilleur Dice: {best_dice:.4f}")
     print(f"Meilleur Val Loss: {best_loss:.4f}")
+    print(f"Métriques:")
+    print(f"  NP Dice:  {best_dice:.4f}")
+    print(f"  HV MSE:   {best_metrics['hv_mse']:.4f}")
+    print(f"  NT Acc:   {best_metrics['nt_acc']:.4f}")
     print(f"Checkpoint: {output_dir / f'hovernet_{args.family}_best.pth'}")
 
     if best_dice >= 0.7:

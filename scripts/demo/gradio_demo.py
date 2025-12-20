@@ -6,6 +6,11 @@ Permet de visualiser interactivement les segmentations cellulaires
 et d'explorer les différents types de tissus.
 
 Architecture cible: Optimus-Gate (H-optimus-0 + OrganHead + HoVer-Net)
+
+Fonctionnalités IHM Clinique:
+- Panneau morphométrique (métriques pathologiques)
+- Gestion des calques (RAW/SEG/HEAT)
+- XAI: Cliquer sur une alerte pour voir les noyaux responsables
 """
 
 import gradio as gr
@@ -13,6 +18,7 @@ import numpy as np
 from pathlib import Path
 import cv2
 import sys
+from typing import Dict, List, Optional, Tuple
 
 # Ajouter le chemin du projet
 PROJECT_ROOT = Path(__file__).parent.parent.parent
@@ -28,6 +34,30 @@ from scripts.demo.visualize_cells import (
 )
 from scripts.demo.synthetic_cells import generate_synthetic_tissue, TISSUE_CONFIGS
 
+# Import du module morphométrie
+try:
+    from src.metrics.morphometry import (
+        MorphometryAnalyzer,
+        MorphometryReport,
+        CELL_TYPES as MORPHO_CELL_TYPES,
+    )
+    MORPHOMETRY_AVAILABLE = True
+except ImportError:
+    MORPHOMETRY_AVAILABLE = False
+    print("⚠️ Module morphométrie non disponible")
+
+# Import du module feedback Active Learning
+try:
+    from src.feedback.active_learning import (
+        FeedbackCollector,
+        FeedbackType,
+        get_feedback_collector,
+    )
+    FEEDBACK_AVAILABLE = True
+except ImportError:
+    FEEDBACK_AVAILABLE = False
+    print("⚠️ Module feedback non disponible")
+
 # Liste des 19 organes PanNuke pour comparaison
 PANNUKE_ORGANS = [
     "Adrenal_gland", "Bile-duct", "Bladder", "Breast", "Cervix",
@@ -37,36 +67,67 @@ PANNUKE_ORGANS = [
 ]
 
 # Configuration des modèles
-HOVERNET_CHECKPOINT = PROJECT_ROOT / "models" / "checkpoints" / "hovernet_best.pth"
-ORGAN_HEAD_CHECKPOINT = PROJECT_ROOT / "models" / "checkpoints" / "organ_head_best.pth"
-UNETR_CHECKPOINT = PROJECT_ROOT / "models" / "checkpoints" / "unetr_best.pth"
+CHECKPOINT_DIR = PROJECT_ROOT / "models" / "checkpoints"
+HOVERNET_CHECKPOINT = CHECKPOINT_DIR / "hovernet_best.pth"
+ORGAN_HEAD_CHECKPOINT = CHECKPOINT_DIR / "organ_head_best.pth"
+UNETR_CHECKPOINT = CHECKPOINT_DIR / "unetr_best.pth"
 
-# Tenter de charger les modèles (priorité: OptimusGate > HoVer-Net > UNETR > simulation)
+# Mapping familles
+FAMILY_CHECKPOINTS = {
+    "glandular": CHECKPOINT_DIR / "hovernet_glandular_best.pth",
+    "digestive": CHECKPOINT_DIR / "hovernet_digestive_best.pth",
+    "urologic": CHECKPOINT_DIR / "hovernet_urologic_best.pth",
+    "respiratory": CHECKPOINT_DIR / "hovernet_respiratory_best.pth",
+    "epidermal": CHECKPOINT_DIR / "hovernet_epidermal_best.pth",
+}
+
+# Tenter de charger les modèles (priorité: Multi-Famille > OptimusGate > HoVer-Net > simulation)
 MODEL_AVAILABLE = False
 inference_model = None
 MODEL_NAME = "Simulation"
 IS_OPTIMUS_GATE = False
+IS_MULTI_FAMILY = False
 
-# 1. Essayer OptimusGate (architecture complète: OrganHead + HoVer-Net)
+# 1. Essayer Optimus-Gate Multi-Famille (5 décodeurs spécialisés)
 try:
-    from src.inference.optimus_gate_inference import OptimusGateInference
+    from src.inference.optimus_gate_inference_multifamily import OptimusGateInferenceMultiFamily
 
-    if HOVERNET_CHECKPOINT.exists() and ORGAN_HEAD_CHECKPOINT.exists():
-        print(f"Chargement Optimus-Gate...")
-        inference_model = OptimusGateInference(
-            hovernet_path=str(HOVERNET_CHECKPOINT),
-            organ_head_path=str(ORGAN_HEAD_CHECKPOINT),
+    # Vérifier si au moins 1 famille est disponible
+    n_families = sum(1 for p in FAMILY_CHECKPOINTS.values() if p.exists())
+    if ORGAN_HEAD_CHECKPOINT.exists() and n_families > 0:
+        print(f"Chargement Optimus-Gate Multi-Famille ({n_families}/5 familles)...")
+        inference_model = OptimusGateInferenceMultiFamily(
+            checkpoint_dir=str(CHECKPOINT_DIR),
         )
         MODEL_AVAILABLE = True
-        MODEL_NAME = "Optimus-Gate"
+        MODEL_NAME = f"Optimus-Gate Multi-Famille ({n_families}/5)"
         IS_OPTIMUS_GATE = True
+        IS_MULTI_FAMILY = True
         print(f"✅ {MODEL_NAME} chargé avec succès!")
 except Exception as e:
-    print(f"OptimusGate non disponible: {e}")
+    print(f"Multi-Famille non disponible: {e}")
     import traceback
     traceback.print_exc()
 
-# 2. Sinon essayer HoVer-Net seul
+# 2. Sinon essayer OptimusGate simple (1 HoVer-Net global)
+if not MODEL_AVAILABLE:
+    try:
+        from src.inference.optimus_gate_inference import OptimusGateInference
+
+        if HOVERNET_CHECKPOINT.exists() and ORGAN_HEAD_CHECKPOINT.exists():
+            print(f"Chargement Optimus-Gate...")
+            inference_model = OptimusGateInference(
+                hovernet_path=str(HOVERNET_CHECKPOINT),
+                organ_head_path=str(ORGAN_HEAD_CHECKPOINT),
+            )
+            MODEL_AVAILABLE = True
+            MODEL_NAME = "Optimus-Gate"
+            IS_OPTIMUS_GATE = True
+            print(f"✅ {MODEL_NAME} chargé avec succès!")
+    except Exception as e:
+        print(f"OptimusGate non disponible: {e}")
+
+# 3. Sinon essayer HoVer-Net seul
 if not MODEL_AVAILABLE:
     try:
         from src.inference.hoptimus_hovernet import HOptimusHoVerNetInference
@@ -80,7 +141,7 @@ if not MODEL_AVAILABLE:
     except Exception as e:
         print(f"HoVer-Net non disponible: {e}")
 
-# 3. Sinon essayer UNETR (fallback)
+# 4. Sinon essayer UNETR (fallback)
 if not MODEL_AVAILABLE:
     try:
         from src.inference.hoptimus_unetr import HOptimusUNETRInference
@@ -96,6 +157,268 @@ if not MODEL_AVAILABLE:
 
 if not MODEL_AVAILABLE:
     print("⚠️ Aucun modèle disponible - Mode simulation activé")
+
+
+# =============================================================================
+# XAI - Fonctions de visualisation explicable
+# =============================================================================
+
+def highlight_nuclei_by_ids(
+    image: np.ndarray,
+    instance_map: np.ndarray,
+    nuclei_ids: List[int],
+    color: Tuple[int, int, int] = (255, 0, 255),  # Magenta
+    thickness: int = 3,
+    pulse: bool = True,
+) -> np.ndarray:
+    """
+    Met en surbrillance les noyaux spécifiés par leurs IDs.
+
+    Utilisé pour le XAI: quand l'utilisateur clique sur une alerte,
+    on montre quels noyaux ont déclenché cette alerte.
+
+    Args:
+        image: Image de base
+        instance_map: Carte d'instances (H, W) avec labels 1..N
+        nuclei_ids: Liste des IDs de noyaux à surbriller
+        color: Couleur de surbrillance
+        thickness: Épaisseur des contours
+        pulse: Si True, ajoute un effet visuel (contour double)
+
+    Returns:
+        Image avec noyaux surbrillés
+    """
+    result = image.copy()
+
+    for nid in nuclei_ids:
+        if nid <= 0 or nid > instance_map.max():
+            continue
+
+        mask = (instance_map == nid).astype(np.uint8) * 255
+        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+        if contours:
+            # Contour principal
+            cv2.drawContours(result, contours, -1, color, thickness)
+
+            if pulse:
+                # Contour externe (effet "pulse")
+                cv2.drawContours(result, contours, -1, (255, 255, 255), thickness + 2)
+                cv2.drawContours(result, contours, -1, color, thickness)
+
+    return result
+
+
+def create_layer_view(
+    image: np.ndarray,
+    result_data: Dict,
+    layer_mode: str = "SEG",
+    alpha: float = 0.4,
+) -> np.ndarray:
+    """
+    Crée une vue selon le mode de calque sélectionné.
+
+    Args:
+        image: Image originale
+        result_data: Résultats de l'inférence
+        layer_mode: Mode de calque ("RAW", "SEG", "HEAT", "BOTH")
+        alpha: Transparence pour les overlays
+
+    Returns:
+        Image avec le calque approprié
+    """
+    if layer_mode == "RAW":
+        return image.copy()
+
+    elif layer_mode == "SEG":
+        # Segmentation avec overlay coloré
+        if MODEL_AVAILABLE and inference_model is not None:
+            return inference_model.visualize(
+                image, result_data,
+                show_contours=True,
+                show_overlay=True,
+                alpha=alpha
+            )
+        return image.copy()
+
+    elif layer_mode == "HEAT":
+        # Carte d'incertitude uniquement
+        if MODEL_AVAILABLE and hasattr(inference_model, 'visualize_uncertainty'):
+            return inference_model.visualize_uncertainty(image, result_data, alpha=0.6)
+        return image.copy()
+
+    elif layer_mode == "BOTH":
+        # Superposition segmentation + incertitude
+        seg = create_layer_view(image, result_data, "SEG", alpha * 0.7)
+        if MODEL_AVAILABLE and hasattr(inference_model, 'visualize_uncertainty'):
+            heat = inference_model.visualize_uncertainty(image, result_data, alpha=0.3)
+            # Blend the two
+            return cv2.addWeighted(seg, 0.7, heat, 0.3, 0)
+        return seg
+
+    return image.copy()
+
+
+def generate_morphometry_panel(
+    morpho_report: 'MorphometryReport',
+    organ: str = "Unknown",
+    family: str = "unknown",
+    is_ood: bool = False,
+    ood_score: float = 0.0,
+) -> str:
+    """
+    Génère un panneau morphométrique formaté pour l'IHM.
+
+    Présente les métriques cliniques de façon structurée et lisible.
+
+    Args:
+        morpho_report: Rapport morphométrique
+        organ: Organe détecté
+        family: Famille HoVer-Net utilisée
+        is_ood: Flag Out-of-Distribution
+        ood_score: Score OOD (0-1)
+    """
+    # ==========================================
+    # KILL SWITCH OOD — Sécurité maximale
+    # ==========================================
+    # Si OOD détecté, bloquer l'affichage des métriques
+    # pour éviter une mauvaise interprétation
+    if is_ood or ood_score > 0.8:
+        return """
+╔══════════════════════════════════════════════════════════╗
+║                                                          ║
+║   🚫🚫🚫🚫🚫🚫🚫🚫🚫🚫🚫🚫🚫🚫🚫🚫🚫🚫🚫🚫   ║
+║                                                          ║
+║       ⛔ ANALYSE IMPOSSIBLE ⛔                           ║
+║                                                          ║
+║       IMAGE HORS DOMAINE DÉTECTÉE                        ║
+║                                                          ║
+║   🚫🚫🚫🚫🚫🚫🚫🚫🚫🚫🚫🚫🚫🚫🚫🚫🚫🚫🚫🚫   ║
+║                                                          ║
+╠══════════════════════════════════════════════════════════╣
+║                                                          ║
+║   Cette image ne correspond pas à un tissu               ║
+║   histopathologique H&E reconnu par le système.          ║
+║                                                          ║
+║   Causes possibles:                                      ║
+║   • Image non-histologique (photo, schéma, etc.)         ║
+║   • Coloration non H&E (IHC, IF, etc.)                   ║
+║   • Artéfact majeur (flou, pli, bulle)                   ║
+║   • Tissu non représenté dans PanNuke                    ║
+║                                                          ║
+╠══════════════════════════════════════════════════════════╣
+║                                                          ║
+║   Score OOD: """ + f"{ood_score:.3f}" + """                                        ║
+║   Seuil: 0.800                                           ║
+║                                                          ║
+║   ❌ LES MÉTRIQUES NE SONT PAS AFFICHÉES                ║
+║      POUR ÉVITER TOUTE ERREUR D'INTERPRÉTATION          ║
+║                                                          ║
+╚══════════════════════════════════════════════════════════╝
+
+⚠️ Veuillez soumettre une image H&E valide pour analyse.
+"""
+
+    if morpho_report is None:
+        return "❌ Analyse morphométrique non disponible"
+
+    lines = [
+        "╔══════════════════════════════════════════════════════════╗",
+        "║            PANNEAU MORPHOMÉTRIQUE CLINIQUE               ║",
+        "╠══════════════════════════════════════════════════════════╣",
+        f"║ Tissu: {organ.upper():20} | Famille: {family.upper():15} ║",
+        "╠══════════════════════════════════════════════════════════╣",
+        "║ 📊 MÉTRIQUES NUCLÉAIRES                                   ║",
+        f"║   Noyaux détectés    : {morpho_report.n_nuclei:>8}                      ║",
+        f"║   Densité            : {morpho_report.nuclei_per_mm2:>8.0f} noyaux/mm²           ║",
+        f"║   Hypercellularité   : {morpho_report.nuclear_density_percent:>8.1f}%                      ║",
+        "╠══════════════════════════════════════════════════════════╣",
+        "║ 📐 MORPHOLOGIE                                            ║",
+        f"║   Aire moyenne       : {morpho_report.mean_area_um2:>6.1f} ± {morpho_report.std_area_um2:.1f} µm²           ║",
+        f"║   Circularité        : {morpho_report.mean_circularity:>6.2f} ± {morpho_report.std_circularity:.2f}               ║",
+    ]
+
+    # Anisocaryose (CV de l'aire)
+    if morpho_report.mean_area_um2 > 0:
+        cv_area = morpho_report.std_area_um2 / morpho_report.mean_area_um2
+        aniso_status = "⚠️" if cv_area > 0.3 else "✓"
+        lines.append(f"║   Anisocaryose (CV)  : {cv_area:>6.2f} {aniso_status}                       ║")
+
+    # Index mitotique estimé (NOUVEAU)
+    if hasattr(morpho_report, 'mitotic_candidates') and morpho_report.mitotic_candidates > 0:
+        lines.extend([
+            "╠══════════════════════════════════════════════════════════╣",
+            "║ ⚡ INDEX MITOTIQUE ESTIMÉ                                ║",
+            f"║   Figures évocatrices: {morpho_report.mitotic_candidates:>8}                      ║",
+            f"║   Index /10 HPF      : {morpho_report.mitotic_index_per_10hpf:>8.1f}                      ║",
+        ])
+
+    lines.extend([
+        "╠══════════════════════════════════════════════════════════╣",
+        "║ 🏗️ ARCHITECTURE TISSULAIRE                               ║",
+        f"║   Topographie        : {morpho_report.spatial_distribution:>20}         ║",
+        f"║   Score clustering   : {morpho_report.clustering_score:>6.2f}                         ║",
+    ])
+
+    if morpho_report.stroma_tumor_distance_um > 0:
+        lines.append(f"║   Dist. stroma-tumeur: {morpho_report.stroma_tumor_distance_um:>6.1f} µm                      ║")
+
+    # Statut TILs (hot/cold) - NOUVEAU
+    if hasattr(morpho_report, 'til_status') and morpho_report.til_status != "indéterminé":
+        til_emoji = {"chaud": "🔥", "froid": "❄️", "exclu": "🚫", "intermédiaire": "〰️"}.get(morpho_report.til_status, "❓")
+        lines.append(f"║   Statut TILs        : {til_emoji} {morpho_report.til_status.upper():17}         ║")
+        if morpho_report.til_penetration_ratio > 0:
+            lines.append(f"║   Pénétration TILs   : {morpho_report.til_penetration_ratio:>6.0%}                        ║")
+
+    lines.extend([
+        "╠══════════════════════════════════════════════════════════╣",
+        "║ 🔬 POPULATION CELLULAIRE                                 ║",
+    ])
+
+    # Types avec barres de progression
+    emoji_map = {
+        "Neoplastic": "🔴",
+        "Inflammatory": "🟢",
+        "Connective": "🔵",
+        "Dead": "🟡",
+        "Epithelial": "🩵",
+    }
+
+    for cell_type in MORPHO_CELL_TYPES if MORPHOMETRY_AVAILABLE else []:
+        pct = morpho_report.type_percentages.get(cell_type, 0)
+        count = morpho_report.type_counts.get(cell_type, 0)
+        emoji = emoji_map.get(cell_type, "•")
+        bar_len = int(pct / 5)  # 20 chars max
+        bar = "█" * bar_len + "░" * (15 - bar_len)
+        lines.append(f"║   {emoji} {cell_type:12}: {bar} {count:>3} ({pct:>4.1f}%) ║")
+
+    lines.extend([
+        "╠══════════════════════════════════════════════════════════╣",
+        "║ 📊 RAPPORTS CLINIQUES                                    ║",
+        f"║   Ratio I/E (TILs)   : {morpho_report.immuno_epithelial_ratio:>6.2f}                         ║",
+        f"║   Ratio néoplasique  : {morpho_report.neoplastic_ratio:>6.1%}                        ║",
+        "╠══════════════════════════════════════════════════════════╣",
+    ])
+
+    # Alertes avec possibilité de clic (XAI)
+    if morpho_report.alerts:
+        lines.append("║ ⚠️ POINTS D'ATTENTION (cliquez pour localiser)          ║")
+        for i, alert in enumerate(morpho_report.alerts):
+            # Troncature si trop long
+            alert_short = alert[:50] + "..." if len(alert) > 50 else alert
+            lines.append(f"║   [{i+1}] {alert_short:<48} ║")
+    else:
+        lines.append("║ ✅ Aucune alerte particulière                            ║")
+
+    lines.extend([
+        "╠══════════════════════════════════════════════════════════╣",
+        f"║ 🎯 Confiance analyse : {morpho_report.confidence_level:>15}                 ║",
+        "╚══════════════════════════════════════════════════════════╝",
+        "",
+        "⚠️ Document d'aide à la décision - Validation médicale requise",
+    ])
+
+    return "\n".join(lines)
 
 
 def detect_nuclei_simple(image: np.ndarray) -> np.ndarray:
@@ -178,7 +501,14 @@ def create_mask_from_labels(
 
 
 class CellVitDemo:
-    """Interface de démonstration CellViT-Optimus."""
+    """
+    Interface de démonstration CellViT-Optimus.
+
+    Fonctionnalités IHM Clinique:
+    - Analyse morphométrique complète
+    - Gestion des calques (RAW/SEG/HEAT)
+    - XAI: Cliquer sur une alerte pour voir les noyaux responsables
+    """
 
     def __init__(self, data_dir: str = "data/demo"):
         self.data_dir = Path(data_dir)
@@ -186,6 +516,19 @@ class CellVitDemo:
         self.masks = None
         self.types = None
         self.current_idx = 0
+
+        # État pour XAI et interactions
+        self.current_image = None
+        self.current_result_data = None
+        self.current_morpho_report = None
+        self.current_organ = None
+        self.current_family = None
+
+        # Analyseur morphométrique
+        if MORPHOMETRY_AVAILABLE:
+            self.morpho_analyzer = MorphometryAnalyzer(pixel_size_um=0.5)
+        else:
+            self.morpho_analyzer = None
 
         self.load_data()
 
@@ -290,9 +633,14 @@ class CellVitDemo:
         return "\n".join(stats)
 
     def analyze_uploaded_image(self, image, tissue_type: str):
-        """Analyse une image uploadée par l'utilisateur."""
+        """
+        Analyse une image uploadée avec morphométrie clinique.
+
+        Returns:
+            Tuple: (original, segmentation, uncertainty, morpho_panel, ml_report)
+        """
         if image is None:
-            return None, None, None, "⚠️ Veuillez uploader une image"
+            return None, None, None, "⚠️ Veuillez uploader une image", ""
 
         # Redimensionner si nécessaire
         h, w = image.shape[:2]
@@ -302,11 +650,17 @@ class CellVitDemo:
             new_w, new_h = int(w * scale), int(h * scale)
             image = cv2.resize(image, (new_w, new_h))
 
+        # Stocker l'image courante pour XAI
+        self.current_image = image.copy()
+
         # Utiliser le modèle si disponible
         if MODEL_AVAILABLE and inference_model is not None:
             try:
                 # Inférence avec le modèle
                 result_data = inference_model.predict(image)
+
+                # Stocker pour XAI
+                self.current_result_data = result_data
 
                 # Visualisation segmentation
                 result = inference_model.visualize(
@@ -323,19 +677,56 @@ class CellVitDemo:
                         image, result_data, alpha=0.4
                     )
 
-                # Rapport
-                report = inference_model.generate_report(result_data)
+                # Extraire organe et famille
+                organ_name = "Unknown"
+                family = "unknown"
+                organ_conf = 0.0
+
+                if IS_OPTIMUS_GATE:
+                    organ_info = result_data.get('organ')
+                    if organ_info:
+                        organ_name = organ_info.organ_name
+                        organ_conf = organ_info.confidence
+                    family = result_data.get('family', 'unknown')
+
+                self.current_organ = organ_name
+                self.current_family = family
+
+                # ==========================================
+                # ANALYSE MORPHOMÉTRIQUE
+                # ==========================================
+                morpho_panel = "❌ Morphométrie non disponible"
+
+                # Récupérer les infos OOD pour le Kill Switch
+                is_ood = result_data.get('is_ood', False)
+                ood_score = result_data.get('ood_score_global', 0.0)
+
+                if self.morpho_analyzer is not None:
+                    instance_map = result_data.get('instance_map')
+                    nt_mask = result_data.get('nt_mask')
+
+                    if instance_map is not None and nt_mask is not None:
+                        # Analyse morphométrique
+                        self.current_morpho_report = self.morpho_analyzer.analyze(
+                            instance_map, nt_mask
+                        )
+                        # Générer le panneau avec Kill Switch OOD
+                        morpho_panel = generate_morphometry_panel(
+                            self.current_morpho_report,
+                            organ=organ_name,
+                            family=family,
+                            is_ood=is_ood,
+                            ood_score=ood_score
+                        )
+
+                # Rapport ML (technique)
+                ml_report = inference_model.generate_report(result_data)
 
                 # Header selon le modèle
                 if IS_OPTIMUS_GATE:
-                    organ_info = result_data.get('organ')
-                    organ_name = organ_info.organ_name if organ_info else "N/A"
-                    organ_conf = organ_info.confidence if organ_info else 0
-
                     # Comparaison avec l'organe attendu
                     expected = tissue_type
                     predicted = organ_name
-                    # Normaliser pour comparaison (ignorer casse et underscores)
                     match = expected.lower().replace("_", "").replace("-", "") == \
                             predicted.lower().replace("_", "").replace("-", "")
 
@@ -345,13 +736,13 @@ class CellVitDemo:
                         comparison = f"❌ DIFFÉRENT — Prédit: {predicted} ≠ Attendu: {expected}"
 
                     header = f"""
-✅ OPTIMUS-GATE ACTIF
+✅ OPTIMUS-GATE ACTIF ({MODEL_NAME})
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-🔬 Architecture complète:
+🔬 Architecture:
    • Backbone: H-optimus-0 (1.1B params)
-   • Flux Global: OrganHead (classification organe)
-   • Flux Local: HoVer-Net (segmentation cellulaire)
-   • Sécurité: Triple OOD (entropie + Mahalanobis)
+   • Flux Global: OrganHead (classification)
+   • Flux Local: HoVer-Net[{family}] (segmentation)
+   • Sécurité: Triple OOD
 
 🏥 Organe détecté: {organ_name} ({organ_conf:.1%})
 🎯 {comparison}
@@ -361,47 +752,126 @@ class CellVitDemo:
                 else:
                     header = f"""
 ✅ MODÈLE {MODEL_NAME} ACTIF
-Architecture: H-optimus-0 (1.1B params) + Décodeur HoVer-Net
+Architecture: H-optimus-0 + HoVer-Net
 Couche 3: Estimation d'incertitude active
 
 """
-                report = header + report
-                return image, result, uncertainty_vis, report
+                ml_report = header + ml_report
+                return image, result, uncertainty_vis, morpho_panel, ml_report
 
             except Exception as e:
                 print(f"Erreur {MODEL_NAME}: {e}")
                 import traceback
                 traceback.print_exc()
-                # Fallback vers simulation
                 pass
 
         # Fallback: détection simulée
         labels, n_cells = detect_nuclei_simple(image)
         mask = create_mask_from_labels(labels, n_cells, tissue_type)
 
+        self.current_result_data = None
+        self.current_morpho_report = None
+
         # Visualisation
         overlay = overlay_mask(image, mask, 0.4)
         result = draw_contours(overlay, mask, thickness=2)
 
         # Rapport
-        report = f"""
+        ml_report = f"""
 ⚠️ MODE DÉMONSTRATION
 La classification des cellules est simulée.
 {MODEL_NAME} non disponible ou erreur.
 
 Pour activer Optimus-Gate:
-1. Entraîner HoVer-Net: python scripts/training/train_hovernet.py
-2. Entraîner OrganHead: python scripts/training/train_organ_head.py
-3. Checkpoints attendus:
-   - models/checkpoints/hovernet_best.pth
-   - models/checkpoints/organ_head_best.pth
+1. python scripts/training/train_hovernet.py
+2. python scripts/training/train_organ_head.py
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 """
-        report += generate_report(mask, tissue_type)
+        ml_report += generate_report(mask, tissue_type)
 
-        return image, result, None, report
+        return image, result, None, "❌ Morphométrie non disponible (mode simulation)", ml_report
+
+    def switch_layer(self, layer_mode: str, alpha: float = 0.4):
+        """
+        Change le mode de calque affiché.
+
+        Args:
+            layer_mode: "RAW", "SEG", "HEAT", "BOTH"
+
+        Returns:
+            Image avec le calque sélectionné
+        """
+        if self.current_image is None or self.current_result_data is None:
+            return None
+
+        return create_layer_view(
+            self.current_image,
+            self.current_result_data,
+            layer_mode,
+            alpha
+        )
+
+    def highlight_alert(self, alert_idx: int):
+        """
+        Met en surbrillance les noyaux ayant déclenché une alerte spécifique.
+
+        Args:
+            alert_idx: Index de l'alerte (0-based)
+
+        Returns:
+            Image avec noyaux surbrillés
+        """
+        if self.current_image is None or self.current_result_data is None:
+            return None
+        if self.current_morpho_report is None:
+            return self.current_image.copy()
+
+        # Récupérer la clé de l'alerte
+        alert_keys = list(self.current_morpho_report.alert_nuclei_ids.keys())
+
+        if alert_idx < 0 or alert_idx >= len(alert_keys):
+            # Pas d'alerte valide, retourner segmentation normale
+            if MODEL_AVAILABLE and inference_model is not None:
+                return inference_model.visualize(
+                    self.current_image, self.current_result_data,
+                    show_contours=True, show_overlay=True, alpha=0.4
+                )
+            return self.current_image.copy()
+
+        alert_key = alert_keys[alert_idx]
+        nuclei_ids = self.current_morpho_report.alert_nuclei_ids.get(alert_key, [])
+
+        if not nuclei_ids:
+            return self.current_image.copy()
+
+        # Créer la base (segmentation)
+        if MODEL_AVAILABLE and inference_model is not None:
+            base = inference_model.visualize(
+                self.current_image, self.current_result_data,
+                show_contours=True, show_overlay=True, alpha=0.4
+            )
+        else:
+            base = self.current_image.copy()
+
+        # Surbrillance des noyaux
+        instance_map = self.current_result_data.get('instance_map')
+        if instance_map is not None:
+            # Couleur selon le type d'alerte
+            color_map = {
+                "anisocaryose": (255, 0, 255),    # Magenta
+                "atypie_forme": (255, 165, 0),    # Orange
+                "neoplasique": (255, 0, 0),       # Rouge
+                "infiltration": (0, 255, 0),      # Vert
+                "mitose": (255, 255, 0),          # Jaune (figures mitotiques)
+            }
+            color = color_map.get(alert_key, (255, 255, 0))
+
+            result = highlight_nuclei_by_ids(base, instance_map, nuclei_ids, color)
+            return result
+
+        return base
 
 
 def create_demo_interface():
@@ -488,95 +958,157 @@ def create_demo_interface():
                     outputs=[output_image, report_output]
                 )
 
-            # Tab 2: Analyser une image uploadée
-            with gr.TabItem("📤 Analyser votre Image"):
+            # Tab 2: Analyser une image uploadée — IHM CLINIQUE
+            with gr.TabItem("🏥 Analyse Clinique"):
                 if IS_OPTIMUS_GATE:
                     gr.Markdown(f"""
-                    ### Analysez votre propre image histopathologique
+                    ### 🔬 Interface d'Analyse Morphométrique Clinique
 
-                    Uploadez une image de tissu coloré H&E pour obtenir une analyse complète.
+                    Uploadez une image H&E pour une analyse pathologique complète.
 
-                    **✅ OPTIMUS-GATE est actif** — Architecture double flux:
-
-                    🔬 **Flux Global (OrganHead)**
-                    - Classification d'organe (19 organes PanNuke)
-                    - Détection OOD sur CLS token
-
-                    🔎 **Flux Local (HoVer-Net)**
-                    - Segmentation cellulaire instance-aware
-                    - Typage (Neoplastic, Inflammatory, Connective, Dead, Epithelial)
-
-                    🛡️ **Triple Sécurité OOD**
-                    - Entropie softmax + Mahalanobis global + Mahalanobis local
-                    - **Sortie**: {{Fiable | À revoir | Hors domaine}}
+                    **✅ {MODEL_NAME}** | 📊 Morphométrie | 🔍 XAI (cliquez sur les alertes)
                     """)
                 elif MODEL_AVAILABLE:
                     gr.Markdown(f"""
-                    ### Analysez votre propre image histopathologique
+                    ### 🔬 Analyse Histopathologique
 
-                    Uploadez une image de tissu coloré H&E pour obtenir une analyse cellulaire.
-
-                    **✅ {MODEL_NAME} est actif** — L'analyse utilise l'architecture cible:
-                    - **Backbone**: H-optimus-0 (1.1B paramètres, gelé)
-                    - **Décodeur**: HoVer-Net (3 branches: NP, HV, NT)
-                    - **Couche 3**: Estimation d'incertitude (entropie + Mahalanobis)
-                    - **Sortie**: {{Fiable | À revoir | Hors domaine}}
+                    **✅ {MODEL_NAME}** actif | 📊 Morphométrie clinique disponible
                     """)
                 else:
-                    gr.Markdown(f"""
-                    ### Analysez votre propre image histopathologique
+                    gr.Markdown("""
+                    ### 🔬 Analyse Histopathologique
 
-                    Uploadez une image de tissu coloré H&E pour obtenir une analyse cellulaire.
-
-                    **⚠️ Mode simulation** — {MODEL_NAME} non disponible.
-
-                    Pour activer le modèle:
-                    1. Entraîner: `python scripts/training/train_hovernet.py`
-                    2. Checkpoint attendu: `models/checkpoints/hovernet_best.pth`
+                    **⚠️ Mode simulation** — Modèle non disponible
                     """)
 
                 with gr.Row():
+                    # Colonne gauche: Upload et contrôles
                     with gr.Column(scale=1):
                         upload_image = gr.Image(
-                            label="Uploader une image",
+                            label="📤 Uploader une image H&E",
                             type="numpy",
                             sources=["upload", "clipboard"]
                         )
                         upload_tissue = gr.Dropdown(
                             choices=PANNUKE_ORGANS,
                             value="Prostate",
-                            label="🎯 Organe attendu (pour comparaison)"
+                            label="🎯 Organe attendu (comparaison)"
                         )
                         analyze_btn = gr.Button(
                             "🔬 Analyser",
                             variant="primary"
                         )
 
+                        gr.Markdown("---")
+                        gr.Markdown("### 🎨 Gestion des Calques")
+
+                        layer_mode = gr.Radio(
+                            choices=["RAW", "SEG", "HEAT", "BOTH"],
+                            value="SEG",
+                            label="Mode d'affichage",
+                            info="RAW=Image brute | SEG=Segmentation | HEAT=Incertitude | BOTH=Combiné"
+                        )
+                        layer_alpha = gr.Slider(
+                            minimum=0.1, maximum=0.9, value=0.4,
+                            label="Transparence overlay"
+                        )
+                        layer_btn = gr.Button("🔄 Appliquer calque")
+
+                        gr.Markdown("---")
+                        gr.Markdown("### 🔍 XAI — Expliquer les alertes")
+
+                        alert_selector = gr.Dropdown(
+                            choices=[],
+                            label="Sélectionner une alerte",
+                            info="Les noyaux concernés seront surbrillés",
+                            interactive=True
+                        )
+                        highlight_btn = gr.Button("✨ Localiser les noyaux")
+
+                    # Colonne droite: Visualisations
                     with gr.Column(scale=2):
                         with gr.Row():
                             upload_original = gr.Image(
-                                label="Image originale",
+                                label="📷 Image originale",
                                 type="numpy"
                             )
                             upload_result = gr.Image(
-                                label="Segmentation cellulaire",
+                                label="🔬 Segmentation / XAI",
                                 type="numpy"
                             )
                         with gr.Row():
                             upload_uncertainty = gr.Image(
-                                label="Carte d'incertitude (vert=fiable, rouge=incertain)",
+                                label="🌡️ Carte d'incertitude (vert=fiable, rouge=incertain)",
                                 type="numpy"
                             )
 
-                upload_report = gr.Textbox(
-                    label="Rapport d'analyse (inclut niveau de confiance)",
-                    lines=20
-                )
+                # Panneaux de rapport en bas
+                with gr.Row():
+                    with gr.Column(scale=1):
+                        morpho_panel = gr.Textbox(
+                            label="📊 Panneau Morphométrique Clinique",
+                            lines=25,
+                            max_lines=35,
+                        )
+                    with gr.Column(scale=1):
+                        ml_report = gr.Textbox(
+                            label="🤖 Rapport Technique (ML)",
+                            lines=25,
+                            max_lines=35,
+                        )
 
+                # Fonction pour mettre à jour les alertes disponibles
+                def update_alert_choices(morpho_text):
+                    """Extrait les alertes du panneau morphométrique."""
+                    if morpho_text is None or "POINTS D'ATTENTION" not in morpho_text:
+                        return gr.update(choices=[], value=None)
+
+                    alerts = []
+                    lines = morpho_text.split("\n")
+                    for line in lines:
+                        if line.strip().startswith("[") and "]" in line:
+                            # Format: [1] Alerte texte...
+                            try:
+                                idx = line.split("]")[0].replace("[", "").replace("║", "").strip()
+                                alert_text = line.split("]")[1].strip()
+                                alerts.append(f"[{idx}] {alert_text[:40]}...")
+                            except:
+                                pass
+
+                    return gr.update(choices=alerts, value=alerts[0] if alerts else None)
+
+                # Handler pour highlight
+                def handle_highlight(alert_choice):
+                    if alert_choice is None:
+                        return demo.switch_layer("SEG", 0.4)
+                    try:
+                        # Extraire l'index de "[1] ..."
+                        idx = int(alert_choice.split("]")[0].replace("[", "").strip()) - 1
+                        return demo.highlight_alert(idx)
+                    except:
+                        return demo.switch_layer("SEG", 0.4)
+
+                # Connexions
                 analyze_btn.click(
                     fn=demo.analyze_uploaded_image,
                     inputs=[upload_image, upload_tissue],
-                    outputs=[upload_original, upload_result, upload_uncertainty, upload_report]
+                    outputs=[upload_original, upload_result, upload_uncertainty, morpho_panel, ml_report]
+                ).then(
+                    fn=update_alert_choices,
+                    inputs=[morpho_panel],
+                    outputs=[alert_selector]
+                )
+
+                layer_btn.click(
+                    fn=demo.switch_layer,
+                    inputs=[layer_mode, layer_alpha],
+                    outputs=[upload_result]
+                )
+
+                highlight_btn.click(
+                    fn=handle_highlight,
+                    inputs=[alert_selector],
+                    outputs=[upload_result]
                 )
 
             # Tab 3: Générer de nouveaux tissus
@@ -713,6 +1245,169 @@ def create_demo_interface():
                 *Système d'assistance au triage histopathologique.*
                 *Ne remplace pas le pathologiste - aide à prioriser et sécuriser.*
                 """)
+
+            # Tab 5: Feedback Expert (Active Learning)
+            with gr.TabItem("📝 Feedback Expert"):
+                if FEEDBACK_AVAILABLE:
+                    gr.Markdown("""
+                    ### Mode "Seconde Lecture" - Arbitrage Expert
+
+                    Ce panneau permet aux pathologistes de signaler les désaccords
+                    avec les prédictions du modèle. Les corrections sont collectées
+                    pour améliorer le système de manière continue.
+
+                    **Types de corrections possibles:**
+                    - 🔴 **Type cellulaire incorrect** — Le modèle a mal classifié une cellule
+                    - 🟡 **Fausse mitose** — Une figure mitotique était en fait autre chose
+                    - 🟢 **Mitose manquée** — Le modèle n'a pas détecté une vraie mitose
+                    - 🔵 **Statut TILs incorrect** — Chaud/Froid mal évalué
+                    - ⚫ **Organe incorrect** — Mauvais organe détecté
+
+                    ---
+                    """)
+
+                    with gr.Row():
+                        with gr.Column(scale=1):
+                            fb_type = gr.Dropdown(
+                                choices=[
+                                    "Type cellulaire incorrect",
+                                    "Fausse mitose (faux positif)",
+                                    "Mitose manquée (faux négatif)",
+                                    "Statut TILs incorrect",
+                                    "Organe incorrect",
+                                    "Alerte non justifiée",
+                                    "Autre",
+                                ],
+                                value="Type cellulaire incorrect",
+                                label="Type de correction"
+                            )
+
+                            fb_predicted = gr.Textbox(
+                                label="Prédiction du modèle",
+                                placeholder="ex: Neoplastic"
+                            )
+
+                            fb_corrected = gr.Textbox(
+                                label="Correction experte",
+                                placeholder="ex: Inflammatory"
+                            )
+
+                            fb_severity = gr.Radio(
+                                choices=["low", "medium", "high", "critical"],
+                                value="medium",
+                                label="Sévérité de l'erreur"
+                            )
+
+                            fb_comment = gr.Textbox(
+                                label="Commentaire (optionnel)",
+                                placeholder="Détails supplémentaires...",
+                                lines=3
+                            )
+
+                            fb_submit = gr.Button(
+                                "📝 Enregistrer la correction",
+                                variant="primary"
+                            )
+
+                        with gr.Column(scale=1):
+                            fb_status = gr.Textbox(
+                                label="Statut",
+                                lines=5,
+                                interactive=False
+                            )
+
+                            fb_stats = gr.Textbox(
+                                label="Statistiques de la session",
+                                lines=10,
+                                interactive=False
+                            )
+
+                            fb_refresh = gr.Button("🔄 Rafraîchir les statistiques")
+
+                    # Handlers
+                    def submit_feedback(fb_type, predicted, corrected, severity, comment):
+                        collector = get_feedback_collector()
+
+                        type_mapping = {
+                            "Type cellulaire incorrect": FeedbackType.CELL_TYPE_WRONG,
+                            "Fausse mitose (faux positif)": FeedbackType.MITOSIS_FALSE_POSITIVE,
+                            "Mitose manquée (faux négatif)": FeedbackType.MITOSIS_MISSED,
+                            "Statut TILs incorrect": FeedbackType.TILS_STATUS_WRONG,
+                            "Organe incorrect": FeedbackType.ORGAN_WRONG,
+                            "Alerte non justifiée": FeedbackType.FALSE_ALARM,
+                            "Autre": FeedbackType.OTHER,
+                        }
+
+                        entry = collector.add_feedback(
+                            feedback_type=type_mapping.get(fb_type, FeedbackType.OTHER),
+                            predicted_class=predicted,
+                            corrected_class=corrected,
+                            severity=severity,
+                            expert_comment=comment,
+                        )
+
+                        # Sauvegarder immédiatement
+                        path = collector.save_session()
+
+                        summary = collector.get_session_summary()
+
+                        return (
+                            f"✅ Correction enregistrée!\n\n"
+                            f"ID: {entry.id}\n"
+                            f"Type: {fb_type}\n"
+                            f"Sévérité: {severity}\n\n"
+                            f"Fichier: {path}",
+                            summary
+                        )
+
+                    def refresh_stats():
+                        collector = get_feedback_collector()
+                        stats = collector.get_statistics()
+
+                        if stats.get("total", 0) == 0:
+                            return "Aucun feedback collecté dans cette session."
+
+                        lines = [
+                            f"📊 STATISTIQUES GLOBALES",
+                            f"========================",
+                            f"Total corrections: {stats['total']}",
+                            "",
+                            "Par type:",
+                        ]
+                        for t, count in stats.get("by_type", {}).items():
+                            lines.append(f"  - {t}: {count}")
+
+                        lines.extend(["", "Par sévérité:"])
+                        for s, count in stats.get("by_severity", {}).items():
+                            if count > 0:
+                                lines.append(f"  - {s}: {count}")
+
+                        if stats.get("common_corrections"):
+                            lines.extend(["", "Corrections fréquentes:"])
+                            for corr, count in stats["common_corrections"][:5]:
+                                lines.append(f"  - {corr}: {count}x")
+
+                        return "\n".join(lines)
+
+                    fb_submit.click(
+                        fn=submit_feedback,
+                        inputs=[fb_type, fb_predicted, fb_corrected, fb_severity, fb_comment],
+                        outputs=[fb_status, fb_stats]
+                    )
+
+                    fb_refresh.click(
+                        fn=refresh_stats,
+                        inputs=[],
+                        outputs=[fb_stats]
+                    )
+
+                else:
+                    gr.Markdown("""
+                    ### ⚠️ Module Feedback non disponible
+
+                    Le module `src.feedback.active_learning` n'est pas chargé.
+                    Vérifiez l'installation du projet.
+                    """)
 
         # Charger la première image au démarrage
         interface.load(

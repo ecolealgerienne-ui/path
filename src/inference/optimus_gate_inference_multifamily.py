@@ -1,17 +1,11 @@
 #!/usr/bin/env python3
 """
-Wrapper d'inférence pour Optimus-Gate.
+Wrapper d'inférence pour Optimus-Gate Multi-Famille.
 
-Pipeline complet: Image → H-optimus-0 → OptimusGate → Résultats
-
-Combine:
-- Classification d'organe (OrganHead)
-- Segmentation cellulaire (HoVer-Net)
-- Triple sécurité OOD
+Pipeline: Image → H-optimus-0 → OrganHead → Router → HoVer-Net[famille]
 """
 
 import torch
-import torch.nn.functional as F
 import numpy as np
 import cv2
 from pathlib import Path
@@ -19,11 +13,16 @@ from typing import Dict, Optional
 from scipy import ndimage
 from torchvision import transforms
 
-# Imports locaux
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from src.inference.optimus_gate import OptimusGate, OptimusGateResult
+from src.inference.optimus_gate_multifamily import (
+    OptimusGateMultiFamily,
+    MultiFamilyResult,
+    FAMILIES,
+    RELIABLE_HV_FAMILIES,
+    CELL_TYPES,
+)
 from src.uncertainty import ConfidenceLevel
 
 # Normalisation H-optimus-0
@@ -45,13 +44,13 @@ def create_hoptimus_transform():
         transforms.Normalize(mean=HOPTIMUS_MEAN, std=HOPTIMUS_STD),
     ])
 
-# Couleurs pour visualisation (RGB)
+# Couleurs pour visualisation
 CELL_COLORS = {
-    'Neoplastic': (255, 0, 0),      # Rouge
-    'Inflammatory': (0, 255, 0),     # Vert
-    'Connective': (0, 0, 255),       # Bleu
-    'Dead': (255, 255, 0),           # Jaune
-    'Epithelial': (0, 255, 255),     # Cyan
+    'Neoplastic': (255, 0, 0),
+    'Inflammatory': (0, 255, 0),
+    'Connective': (0, 0, 255),
+    'Dead': (255, 255, 0),
+    'Epithelial': (0, 255, 255),
 }
 
 CELL_EMOJIS = {
@@ -62,20 +61,15 @@ CELL_EMOJIS = {
     'Epithelial': '🩵',
 }
 
-TYPE_NAMES = ['Neoplastic', 'Inflammatory', 'Connective', 'Dead', 'Epithelial']
 
-
-class OptimusGateInference:
+class OptimusGateInferenceMultiFamily:
     """
-    Wrapper d'inférence pour Optimus-Gate.
+    Wrapper d'inférence Optimus-Gate avec 5 familles.
 
-    Combine H-optimus-0 (backbone) + OptimusGate (OrganHead + HoVer-Net).
+    Charge H-optimus-0 + OrganHead + 5 HoVer-Net spécialisés.
 
     Usage:
-        model = OptimusGateInference(
-            hovernet_path="models/checkpoints/hovernet_best.pth",
-            organ_head_path="models/checkpoints/organ_head_best.pth"
-        )
+        model = OptimusGateInferenceMultiFamily()
         result = model.predict(image)
         vis = model.visualize(image, result)
         report = model.generate_report(result)
@@ -83,8 +77,7 @@ class OptimusGateInference:
 
     def __init__(
         self,
-        hovernet_path: str,
-        organ_head_path: str,
+        checkpoint_dir: str = "models/checkpoints",
         device: str = "cuda" if torch.cuda.is_available() else "cpu",
         np_threshold: float = 0.5,
     ):
@@ -92,7 +85,7 @@ class OptimusGateInference:
         self.img_size = 224
         self.np_threshold = np_threshold
 
-        print(f"🚀 Chargement Optimus-Gate sur {device}...")
+        print(f"🚀 Chargement Optimus-Gate Multi-Famille sur {device}...")
 
         # 1. Charger H-optimus-0 backbone
         import timm
@@ -106,22 +99,20 @@ class OptimusGateInference:
         self.backbone.eval()
         self.backbone.to(device)
 
-        # Freeze backbone
         for param in self.backbone.parameters():
             param.requires_grad = False
         print("  ✓ H-optimus-0 chargé")
 
-        # 2. Charger OptimusGate (OrganHead + HoVer-Net)
-        self.model = OptimusGate.from_pretrained(
-            hovernet_path=hovernet_path,
-            organ_head_path=organ_head_path,
+        # 2. Charger Optimus-Gate Multi-Famille
+        self.model = OptimusGateMultiFamily.from_pretrained(
+            checkpoint_dir=checkpoint_dir,
             device=device,
         )
 
         # 3. Créer le transform (DOIT être identique à extract_features.py)
         self.transform = create_hoptimus_transform()
 
-        print("  ✅ Optimus-Gate prêt!")
+        print("  ✅ Optimus-Gate Multi-Famille prêt!")
 
     def preprocess(self, image: np.ndarray) -> torch.Tensor:
         """
@@ -157,31 +148,25 @@ class OptimusGateInference:
         np_pred: np.ndarray,
         hv_pred: np.ndarray,
     ) -> np.ndarray:
-        """Post-processing HoVer-Net: watershed sur les cartes HV."""
-        # Masque binaire
+        """Watershed sur les cartes HV pour séparer les instances."""
         binary_mask = np_pred > self.np_threshold
 
         if not binary_mask.any():
             return np.zeros_like(np_pred, dtype=np.int32)
 
-        # Gradient des cartes HV
         h_grad = np.abs(cv2.Sobel(hv_pred[0], cv2.CV_64F, 1, 0, ksize=3))
         v_grad = np.abs(cv2.Sobel(hv_pred[1], cv2.CV_64F, 0, 1, ksize=3))
 
-        # Combiner les gradients
         edge = h_grad + v_grad
         edge = (edge - edge.min()) / (edge.max() - edge.min() + 1e-8)
 
-        # Marqueurs pour watershed
         markers = np_pred.copy()
         markers[edge > 0.3] = 0
         markers = (markers > 0.7).astype(np.uint8)
 
-        # Distance transform pour seeds
         dist = ndimage.distance_transform_edt(binary_mask)
         markers = ndimage.label(markers * (dist > 2))[0]
 
-        # Watershed
         if markers.max() > 0:
             from skimage.segmentation import watershed
             instance_map = watershed(-dist, markers, mask=binary_mask)
@@ -191,44 +176,36 @@ class OptimusGateInference:
         return instance_map
 
     @torch.no_grad()
-    def predict(self, image: np.ndarray) -> Dict:
+    def predict(
+        self,
+        image: np.ndarray,
+        force_family: Optional[str] = None,
+    ) -> Dict:
         """
-        Prédit la segmentation cellulaire et l'organe.
+        Prédit avec routage automatique vers la famille appropriée.
 
         Args:
             image: Image RGB (H, W, 3)
+            force_family: Forcer une famille spécifique (optionnel)
 
         Returns:
-            Dict avec:
-                - organ: OrganPrediction
-                - np_mask: Masque binaire noyaux
-                - instance_map: Labels d'instances
-                - nt_mask: Type par instance
-                - counts: Comptages par type
-                - n_cells: Nombre total
-                - confidence_level: ConfidenceLevel
-                - is_ood: Booléen OOD
-                - optimus_result: OptimusGateResult complet
+            Dict avec organ, family, cellules, etc.
         """
         original_size = image.shape[:2]
 
-        # Prétraitement
         x = self.preprocess(image)
+        features = self.backbone.forward_features(x)
 
-        # Forward backbone - obtenir les features
-        features = self.backbone.forward_features(x)  # (1, 261, 1536)
+        result = self.model.predict(features, force_family=force_family)
 
-        # Forward OptimusGate
-        result = self.model.predict(features)
-
-        # Instance segmentation via watershed sur HV maps
-        hv_pred = result.hv_map  # (2, 224, 224)
-        np_prob = result.np_mask.astype(np.float32)  # Binary to prob
+        # Instance segmentation
+        hv_pred = result.hv_map
+        np_prob = result.np_mask.astype(np.float32)
         instance_map = self.post_process_hv(np_prob, hv_pred)
 
         # Type par instance
         nt_mask = np.zeros_like(instance_map, dtype=np.int32) - 1
-        type_probs = result.type_probs  # (5, H, W)
+        type_probs = result.type_probs
 
         for inst_id in range(1, instance_map.max() + 1):
             inst_mask = instance_map == inst_id
@@ -240,7 +217,7 @@ class OptimusGateInference:
                 type_votes[t] = type_probs[t][inst_mask].mean()
             nt_mask[inst_mask] = type_votes.argmax()
 
-        # Redimensionner à la taille originale
+        # Resize si nécessaire
         if original_size != (self.img_size, self.img_size):
             instance_map = cv2.resize(
                 instance_map.astype(np.float32),
@@ -253,18 +230,20 @@ class OptimusGateInference:
                 interpolation=cv2.INTER_NEAREST
             ).astype(np.int32)
 
-        # Compter les cellules
-        counts = {name: 0 for name in TYPE_NAMES}
+        # Compter
+        counts = {name: 0 for name in CELL_TYPES}
         for inst_id in range(1, instance_map.max() + 1):
             inst_mask = instance_map == inst_id
             if inst_mask.sum() == 0:
                 continue
             inst_type = nt_mask[inst_mask][0]
             if 0 <= inst_type < 5:
-                counts[TYPE_NAMES[inst_type]] += 1
+                counts[CELL_TYPES[inst_type]] += 1
 
         return {
             'organ': result.organ,
+            'family': result.family,
+            'family_hv_reliable': result.family_hv_reliable,
             'np_mask': instance_map > 0,
             'instance_map': instance_map,
             'nt_mask': nt_mask,
@@ -273,10 +252,8 @@ class OptimusGateInference:
             'confidence_level': result.confidence_level,
             'is_ood': result.is_ood,
             'ood_score_global': result.ood_score_global,
-            'ood_score_local': result.ood_score_local,
-            'ood_score_combined': result.ood_score_combined,
             'uncertainty': result.uncertainty,
-            'optimus_result': result,
+            'multifamily_result': result,
         }
 
     def visualize(
@@ -287,7 +264,7 @@ class OptimusGateInference:
         show_overlay: bool = True,
         alpha: float = 0.4,
     ) -> np.ndarray:
-        """Crée une visualisation avec overlay coloré par instance."""
+        """Visualisation avec overlay coloré."""
         vis = image.copy()
 
         if show_overlay:
@@ -302,10 +279,9 @@ class OptimusGateInference:
 
                 inst_type = nt_mask[inst_mask][0]
                 if 0 <= inst_type < 5:
-                    color = CELL_COLORS[TYPE_NAMES[inst_type]]
+                    color = CELL_COLORS[CELL_TYPES[inst_type]]
                     overlay[inst_mask] = color
 
-            # Blend
             mask_any = instance_map > 0
             if mask_any.any():
                 vis[mask_any] = cv2.addWeighted(
@@ -330,7 +306,7 @@ class OptimusGateInference:
         result: Dict,
         alpha: float = 0.5,
     ) -> np.ndarray:
-        """Visualise la carte d'incertitude (rouge=incertain, vert=fiable)."""
+        """Carte d'incertitude (rouge=incertain, vert=fiable)."""
         uncertainty = result.get('uncertainty')
         if uncertainty is None or uncertainty.uncertainty_map is None:
             return image.copy()
@@ -343,10 +319,9 @@ class OptimusGateInference:
                 interpolation=cv2.INTER_LINEAR
             )
 
-        # Heatmap rouge-vert
         heatmap = np.zeros_like(image)
-        heatmap[..., 0] = (uncertainty_map * 255).astype(np.uint8)  # Rouge
-        heatmap[..., 1] = ((1 - uncertainty_map) * 255).astype(np.uint8)  # Vert
+        heatmap[..., 0] = (uncertainty_map * 255).astype(np.uint8)
+        heatmap[..., 1] = ((1 - uncertainty_map) * 255).astype(np.uint8)
 
         vis = cv2.addWeighted(image, 1 - alpha, heatmap, alpha, 0)
         return vis
@@ -354,76 +329,51 @@ class OptimusGateInference:
     def generate_report(self, result: Dict) -> str:
         """Génère un rapport textuel complet."""
         organ = result['organ']
+        family = result['family']
+        family_reliable = result['family_hv_reliable']
         counts = result['counts']
         n_cells = result['n_cells']
         total = sum(counts.values())
         confidence_level = result['confidence_level']
         is_ood = result['is_ood']
 
-        # Emoji niveau de confiance
         level_emoji = {
             ConfidenceLevel.FIABLE: "✅",
             ConfidenceLevel.A_REVOIR: "⚠️",
             ConfidenceLevel.HORS_DOMAINE: "🚫",
         }
         emoji = level_emoji.get(confidence_level, "❓")
+        hv_status = "✅ Fiable" if family_reliable else "⚠️ Vérifier"
 
         lines = [
-            "╔══════════════════════════════════════════════════════════════╗",
-            "║           RAPPORT OPTIMUS-GATE                               ║",
-            "╠══════════════════════════════════════════════════════════════╣",
-            f"║ {emoji} NIVEAU: {confidence_level.value.upper():44} ║",
-            "╠══════════════════════════════════════════════════════════════╣",
-            "║ 🔬 CONTEXTE TISSULAIRE (Flux Global)                         ║",
-            f"║    Organe prédit: {organ.organ_name:20} ({organ.confidence:.1%})    ║",
-            f"║    Entropie: {organ.entropy:.3f}                                        ║",
-            f"║    OOD Score: {result['ood_score_global']:.3f}                                       ║",
-            "╠══════════════════════════════════════════════════════════════╣",
-            "║ 🔎 ANALYSE CELLULAIRE (Flux Local)                           ║",
-            f"║    Cellules détectées: {n_cells:4}                                    ║",
+            "╔════════════════════════════════════════════════════════════════╗",
+            "║         RAPPORT OPTIMUS-GATE (5 Familles)                      ║",
+            "╠════════════════════════════════════════════════════════════════╣",
+            f"║ {emoji} NIVEAU: {confidence_level.value.upper():46} ║",
+            "╠════════════════════════════════════════════════════════════════╣",
+            "║ 🔬 ROUTAGE AUTOMATIQUE                                         ║",
+            f"║    Organe: {organ.organ_name:20} ({organ.confidence:.1%})          ║",
+            f"║    → Famille: {family.upper():16}                              ║",
+            f"║    → Séparation HV: {hv_status:14}                            ║",
+            "╠════════════════════════════════════════════════════════════════╣",
+            "║ 🔎 ANALYSE CELLULAIRE                                          ║",
+            f"║    Cellules: {n_cells:4}                                             ║",
         ]
 
         if total > 0:
-            lines.append("║                                                              ║")
-            for name in TYPE_NAMES:
+            for name in CELL_TYPES:
                 count = counts.get(name, 0)
                 pct = count / total * 100
                 emoji = CELL_EMOJIS.get(name, '•')
                 bar_len = int(pct / 5)
                 bar = "█" * bar_len + "░" * (20 - bar_len)
-                lines.append(f"║    {emoji} {name:12}: {bar} {count:3} ({pct:5.1f}%) ║")
+                lines.append(f"║    {emoji} {name:12}: {bar} {count:3} ({pct:5.1f}%)  ║")
 
         lines.extend([
-            "╠══════════════════════════════════════════════════════════════╣",
-            "║ 🛡️ TRIPLE SÉCURITÉ OOD                                        ║",
-            f"║    Score Global:  {result['ood_score_global']:.3f}                                    ║",
-            f"║    Score Local:   {result['ood_score_local']:.3f}                                    ║",
-            f"║    Score Combiné: {result['ood_score_combined']:.3f}                                    ║",
-            f"║    Hors Domaine:  {'OUI 🚫' if is_ood else 'NON ✓':5}                                    ║",
-            "╚══════════════════════════════════════════════════════════════╝",
+            "╠════════════════════════════════════════════════════════════════╣",
+            "║ 🛡️ SÉCURITÉ                                                     ║",
+            f"║    OOD: {result['ood_score_global']:.3f} {'🚫 HORS DOMAINE' if is_ood else '✓ OK':18}             ║",
+            "╚════════════════════════════════════════════════════════════════╝",
         ])
 
         return "\n".join(lines)
-
-
-# Test
-if __name__ == "__main__":
-    print("Test OptimusGateInference...")
-
-    # Créer une image test
-    test_image = np.random.randint(0, 255, (256, 256, 3), dtype=np.uint8)
-
-    # Charger le modèle
-    model = OptimusGateInference(
-        hovernet_path="models/checkpoints/hovernet_best.pth",
-        organ_head_path="models/checkpoints/organ_head_best.pth",
-    )
-
-    # Prédiction
-    result = model.predict(test_image)
-    print(f"\nOrgane: {result['organ'].organ_name}")
-    print(f"Cellules: {result['n_cells']}")
-    print(f"Niveau: {result['confidence_level'].value}")
-
-    # Rapport
-    print("\n" + model.generate_report(result))
