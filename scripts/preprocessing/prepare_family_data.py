@@ -58,9 +58,9 @@ def compute_hv_maps(binary_mask: np.ndarray) -> np.ndarray:
     return hv
 
 
-def prepare_targets(masks: np.ndarray) -> tuple:
+def prepare_targets_chunk(masks: np.ndarray, start_idx: int = 0) -> tuple:
     """
-    Pré-calcule tous les targets HoVer-Net.
+    Pré-calcule les targets HoVer-Net pour un chunk de masks.
 
     Returns:
         np_targets: (N, 256, 256) float32 - binary nuclei mask
@@ -72,8 +72,7 @@ def prepare_targets(masks: np.ndarray) -> tuple:
     hv_targets = np.zeros((N, 2, 256, 256), dtype=np.float32)
     nt_targets = np.zeros((N, 256, 256), dtype=np.int64)
 
-    print("  Pré-calcul des targets HV...")
-    for i in tqdm(range(N), desc="  HV maps"):
+    for i in tqdm(range(N), desc=f"  HV maps [{start_idx}:{start_idx+N}]"):
         mask = masks[i]
 
         # NP: union de tous les types
@@ -91,9 +90,13 @@ def prepare_targets(masks: np.ndarray) -> tuple:
     return np_targets, hv_targets, nt_targets
 
 
-def prepare_family(data_dir: Path, output_dir: Path, family: str, folds: list = None):
+def prepare_family(data_dir: Path, output_dir: Path, family: str, folds: list = None, chunk_size: int = None):
     """
     Prépare les données pour une famille d'organes.
+
+    Args:
+        chunk_size: Si spécifié, traite les données par chunks de N samples
+                   pour réduire l'utilisation mémoire. Ex: 500 = ~1GB par chunk.
 
     Sauvegarde:
     - {family}_features.npz : features H-optimus-0 filtrées
@@ -177,7 +180,7 @@ def prepare_family(data_dir: Path, output_dir: Path, family: str, folds: list = 
 
     # Pré-calculer les targets HV (c'est le plus lent)
     print(f"\n🔄 Pré-calcul des targets HoVer-Net...")
-    np_targets, hv_targets, nt_targets = prepare_targets(masks)
+    np_targets, hv_targets, nt_targets = prepare_targets_chunk(masks)
 
     # Sauvegarder
     output_dir.mkdir(parents=True, exist_ok=True)
