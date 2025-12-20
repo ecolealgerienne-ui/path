@@ -183,7 +183,13 @@ class HoVerNetLoss(nn.Module):
     - NT: CE loss
     """
 
-    def __init__(self, lambda_np: float = 1.0, lambda_hv: float = 1.0, lambda_nt: float = 1.0):
+    def __init__(self, lambda_np: float = 1.0, lambda_hv: float = 2.0, lambda_nt: float = 1.0):
+        """
+        Args:
+            lambda_np: Poids branche NP (segmentation binaire)
+            lambda_hv: Poids branche HV (séparation instances) - 2.0 pour focus gradients
+            lambda_nt: Poids branche NT (typage cellulaire)
+        """
         super().__init__()
         self.lambda_np = lambda_np
         self.lambda_hv = lambda_hv
