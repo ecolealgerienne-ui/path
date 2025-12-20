@@ -600,6 +600,35 @@ Tronc Commun (upsampling partagé 16→224)
 | Val Loss | 0.7469 | **0.7333** | -1.8% |
 | HV Loss | ~0.01 | 0.0085 | -15% |
 
+### 2025-12-20 — Régularisation: Augmentation + Dropout ✅ IMPLÉMENTÉ
+
+**Problème identifié:** Overfitting Train Loss (0.31) vs Val Loss (0.81) = 2.6x gap
+
+**Solutions implémentées:**
+
+1. **Data Augmentation** (`FeatureAugmentation` class):
+   - Flip horizontal/vertical avec ajustement composantes H/V
+   - Rotation 90° (90°, 180°, 270°) avec rotation H/V
+   - Appliqué sur features H-optimus-0 (reshape 16x16 grid)
+   - Flag: `--augment`
+
+2. **Dropout régularisation**:
+   - Dropout2d après bottleneck et entre blocs upsampling
+   - Default: 0.1, configurable via `--dropout`
+
+3. **Loss weights ajustés** (recommandation expert):
+   - `L_total = 1.0*NP + 2.0*HV + 1.0*NT`
+   - Focus sur gradient sharpness (séparation instances)
+
+**Fichiers modifiés:**
+- `src/models/hovernet_decoder.py` — Ajout dropout parameter
+- `scripts/training/train_hovernet.py` — Ajout FeatureAugmentation, flags --augment/--dropout
+
+**Commande entraînement avec régularisation:**
+```bash
+python scripts/training/train_hovernet.py --fold 0 --epochs 50 --augment --dropout 0.1
+```
+
 ---
 
 ## Fichiers Créés (Inventaire)
