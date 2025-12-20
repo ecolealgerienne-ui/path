@@ -13,7 +13,14 @@ from .cellvit256_model import (
     load_cellvit256_from_checkpoint,
 )
 
+from .optimus_gate import (
+    OptimusGate,
+    OptimusGateResult,
+    CellDetection,
+)
+
 __all__ = [
+    # Legacy CellViT
     "CellViTInference",
     "CellViT256Model",
     "CellViT256",
@@ -21,4 +28,8 @@ __all__ = [
     "CELL_TYPES",
     "CELL_COLORS",
     "CELL_EMOJIS",
+    # Optimus-Gate (new architecture)
+    "OptimusGate",
+    "OptimusGateResult",
+    "CellDetection",
 ]

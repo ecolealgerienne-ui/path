@@ -5,7 +5,8 @@ Interface Gradio pour la démonstration CellViT-Optimus.
 Permet de visualiser interactivement les segmentations cellulaires
 et d'explorer les différents types de tissus.
 
-Conforme aux specs CellViT-Optimus_Specifications.md section 3.2.
+Architecture cible: H-optimus-0 (backbone gelé) + HoVer-Net decoder
+Basé sur la littérature: CellViT, HoVer-Net
 """
 
 import gradio as gr
@@ -28,35 +29,44 @@ from scripts.demo.visualize_cells import (
 )
 from scripts.demo.synthetic_cells import generate_synthetic_tissue, TISSUE_CONFIGS
 
-# Tenter de charger CellViT-256 si disponible
-CELLVIT_AVAILABLE = False
-cellvit_model = None
+# Configuration des modèles
+HOVERNET_CHECKPOINT = PROJECT_ROOT / "models" / "checkpoints" / "hovernet_best.pth"
+UNETR_CHECKPOINT = PROJECT_ROOT / "models" / "checkpoints" / "unetr_best.pth"
 
-CELLVIT_MODEL_PATH = PROJECT_ROOT / "models" / "pretrained" / "CellViT-256.pth"
-CELLVIT_REPO_PATH = PROJECT_ROOT / "CellViT"
+# Tenter de charger les modèles (priorité: HoVer-Net > UNETR > simulation)
+MODEL_AVAILABLE = False
+inference_model = None
+MODEL_NAME = "Simulation"
 
-# Ajouter le repo CellViT au path pour les imports
-if CELLVIT_REPO_PATH.exists():
-    sys.path.insert(0, str(CELLVIT_REPO_PATH))
-
+# 1. Essayer HoVer-Net (meilleure architecture)
 try:
-    # Utiliser le wrapper officiel (repo TIO-IKIM)
-    from src.inference.cellvit_official import CellViTOfficial
+    from src.inference.hoptimus_hovernet import HOptimusHoVerNetInference
 
-    # Vérifier que le checkpoint existe et n'est pas vide
-    if CELLVIT_MODEL_PATH.exists() and CELLVIT_MODEL_PATH.stat().st_size > 1000000:
-        print(f"Chargement CellViT-256 depuis {CELLVIT_MODEL_PATH}...")
-        cellvit_model = CellViTOfficial(str(CELLVIT_MODEL_PATH))
-        CELLVIT_AVAILABLE = True
-        print("CellViT-256 (repo officiel) chargé avec succès!")
-    else:
-        print(f"CellViT-256 non trouvé ou invalide: {CELLVIT_MODEL_PATH}")
-        print("Mode démonstration avec détection simulée.")
+    if HOVERNET_CHECKPOINT.exists():
+        print(f"Chargement H-optimus-0 + HoVer-Net depuis {HOVERNET_CHECKPOINT}...")
+        inference_model = HOptimusHoVerNetInference(str(HOVERNET_CHECKPOINT))
+        MODEL_AVAILABLE = True
+        MODEL_NAME = "H-optimus-0 + HoVer-Net"
+        print(f"✅ {MODEL_NAME} chargé avec succès!")
 except Exception as e:
-    print(f"Impossible de charger CellViT-256: {e}")
-    import traceback
-    traceback.print_exc()
-    print("Mode démonstration avec détection simulée.")
+    print(f"HoVer-Net non disponible: {e}")
+
+# 2. Sinon essayer UNETR (fallback)
+if not MODEL_AVAILABLE:
+    try:
+        from src.inference.hoptimus_unetr import HOptimusUNETRInference
+
+        if UNETR_CHECKPOINT.exists():
+            print(f"Chargement H-optimus-0 + UNETR depuis {UNETR_CHECKPOINT}...")
+            inference_model = HOptimusUNETRInference(str(UNETR_CHECKPOINT))
+            MODEL_AVAILABLE = True
+            MODEL_NAME = "H-optimus-0 + UNETR"
+            print(f"✅ {MODEL_NAME} chargé avec succès!")
+    except Exception as e:
+        print(f"UNETR non disponible: {e}")
+
+if not MODEL_AVAILABLE:
+    print("⚠️ Aucun modèle disponible - Mode simulation activé")
 
 
 def detect_nuclei_simple(image: np.ndarray) -> np.ndarray:
@@ -253,7 +263,7 @@ class CellVitDemo:
     def analyze_uploaded_image(self, image, tissue_type: str):
         """Analyse une image uploadée par l'utilisateur."""
         if image is None:
-            return None, None, "⚠️ Veuillez uploader une image"
+            return None, None, None, "⚠️ Veuillez uploader une image"
 
         # Redimensionner si nécessaire
         h, w = image.shape[:2]
@@ -263,32 +273,42 @@ class CellVitDemo:
             new_w, new_h = int(w * scale), int(h * scale)
             image = cv2.resize(image, (new_w, new_h))
 
-        # Utiliser CellViT-256 si disponible
-        if CELLVIT_AVAILABLE and cellvit_model is not None:
+        # Utiliser H-optimus-0 + HoVer-Net si disponible
+        if MODEL_AVAILABLE and inference_model is not None:
             try:
-                # Inférence avec le vrai modèle
-                result_data = cellvit_model.predict(image)
+                # Inférence avec le modèle cible
+                result_data = inference_model.predict(image)
 
-                # Visualisation
-                result = cellvit_model.visualize(
+                # Visualisation segmentation
+                result = inference_model.visualize(
                     image, result_data,
                     show_contours=True,
-                    show_types=True,
+                    show_overlay=True,
                     alpha=0.4
                 )
 
+                # Visualisation incertitude (si disponible)
+                uncertainty_vis = None
+                if hasattr(inference_model, 'visualize_uncertainty'):
+                    uncertainty_vis = inference_model.visualize_uncertainty(
+                        image, result_data, alpha=0.4
+                    )
+
                 # Rapport
-                report = cellvit_model.generate_report(result_data)
+                report = inference_model.generate_report(result_data)
                 report = f"""
-✅ MODÈLE CELLVIT-256 ACTIF
-Analyse réelle avec le modèle pré-entraîné.
+✅ MODÈLE {MODEL_NAME} ACTIF
+Architecture: H-optimus-0 (1.1B params) + Décodeur HoVer-Net
+Couche 3: Estimation d'incertitude active
 
 {report}
 """
-                return image, result, report
+                return image, result, uncertainty_vis, report
 
             except Exception as e:
-                print(f"Erreur CellViT-256: {e}")
+                print(f"Erreur {MODEL_NAME}: {e}")
+                import traceback
+                traceback.print_exc()
                 # Fallback vers simulation
                 pass
 
@@ -304,14 +324,18 @@ Analyse réelle avec le modèle pré-entraîné.
         report = f"""
 ⚠️ MODE DÉMONSTRATION
 La classification des cellules est simulée.
-CellViT-256 non disponible ou erreur.
+{MODEL_NAME} non disponible ou erreur.
+
+Pour activer le modèle:
+1. Entraîner HoVer-Net: python scripts/training/train_hovernet.py
+2. Checkpoint attendu: models/checkpoints/hovernet_best.pth
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 """
         report += generate_report(mask, tissue_type)
 
-        return image, result, report
+        return image, result, None, report
 
 
 def create_demo_interface():
@@ -321,7 +345,10 @@ def create_demo_interface():
     with gr.Blocks(title="CellViT-Optimus Demo") as interface:
 
         # Statut du modèle
-        model_status = "✅ CellViT-256 actif" if CELLVIT_AVAILABLE else "⚠️ Mode simulation"
+        if MODEL_AVAILABLE:
+            model_status = f"✅ {MODEL_NAME} actif"
+        else:
+            model_status = "⚠️ Mode simulation"
 
         gr.Markdown(f"""
         # 🔬 CellViT-Optimus — Démonstration
@@ -397,24 +424,29 @@ def create_demo_interface():
 
             # Tab 2: Analyser une image uploadée
             with gr.TabItem("📤 Analyser votre Image"):
-                if CELLVIT_AVAILABLE:
-                    gr.Markdown("""
+                if MODEL_AVAILABLE:
+                    gr.Markdown(f"""
                     ### Analysez votre propre image histopathologique
 
                     Uploadez une image de tissu coloré H&E pour obtenir une analyse cellulaire.
 
-                    **✅ CellViT-256 est actif** — L'analyse utilise le modèle pré-entraîné
-                    pour une segmentation et classification précise des cellules.
+                    **✅ {MODEL_NAME} est actif** — L'analyse utilise l'architecture cible:
+                    - **Backbone**: H-optimus-0 (1.1B paramètres, gelé)
+                    - **Décodeur**: HoVer-Net (3 branches: NP, HV, NT)
+                    - **Couche 3**: Estimation d'incertitude (entropie + Mahalanobis)
+                    - **Sortie**: {{Fiable | À revoir | Hors domaine}}
                     """)
                 else:
-                    gr.Markdown("""
+                    gr.Markdown(f"""
                     ### Analysez votre propre image histopathologique
 
                     Uploadez une image de tissu coloré H&E pour obtenir une analyse cellulaire.
 
-                    **⚠️ Mode simulation** — CellViT-256 non disponible.
-                    Pour activer le modèle réel, placez `CellViT-256.pth` dans
-                    `models/pretrained/`.
+                    **⚠️ Mode simulation** — {MODEL_NAME} non disponible.
+
+                    Pour activer le modèle:
+                    1. Entraîner: `python scripts/training/train_hovernet.py`
+                    2. Checkpoint attendu: `models/checkpoints/hovernet_best.pth`
                     """)
 
                 with gr.Row():
@@ -427,7 +459,7 @@ def create_demo_interface():
                         upload_tissue = gr.Dropdown(
                             choices=list(TISSUE_CONFIGS.keys()),
                             value="Breast",
-                            label="Type de tissu (pour simulation)"
+                            label="Type de tissu (fallback simulation)"
                         )
                         analyze_btn = gr.Button(
                             "🔬 Analyser",
@@ -441,19 +473,24 @@ def create_demo_interface():
                                 type="numpy"
                             )
                             upload_result = gr.Image(
-                                label="Analyse",
+                                label="Segmentation cellulaire",
+                                type="numpy"
+                            )
+                        with gr.Row():
+                            upload_uncertainty = gr.Image(
+                                label="Carte d'incertitude (vert=fiable, rouge=incertain)",
                                 type="numpy"
                             )
 
                 upload_report = gr.Textbox(
-                    label="Rapport d'analyse",
-                    lines=15
+                    label="Rapport d'analyse (inclut niveau de confiance)",
+                    lines=20
                 )
 
                 analyze_btn.click(
                     fn=demo.analyze_uploaded_image,
                     inputs=[upload_image, upload_tissue],
-                    outputs=[upload_original, upload_result, upload_report]
+                    outputs=[upload_original, upload_result, upload_uncertainty, upload_report]
                 )
 
             # Tab 3: Générer de nouveaux tissus
