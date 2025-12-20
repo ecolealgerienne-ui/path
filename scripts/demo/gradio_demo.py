@@ -28,6 +28,14 @@ from scripts.demo.visualize_cells import (
 )
 from scripts.demo.synthetic_cells import generate_synthetic_tissue, TISSUE_CONFIGS
 
+# Liste des 19 organes PanNuke pour comparaison
+PANNUKE_ORGANS = [
+    "Adrenal_gland", "Bile-duct", "Bladder", "Breast", "Cervix",
+    "Colon", "Esophagus", "HeadNeck", "Kidney", "Liver",
+    "Lung", "Ovarian", "Pancreatic", "Prostate", "Skin",
+    "Stomach", "Testis", "Thyroid", "Uterus"
+]
+
 # Configuration des modèles
 HOVERNET_CHECKPOINT = PROJECT_ROOT / "models" / "checkpoints" / "hovernet_best.pth"
 ORGAN_HEAD_CHECKPOINT = PROJECT_ROOT / "models" / "checkpoints" / "organ_head_best.pth"
@@ -323,6 +331,19 @@ class CellVitDemo:
                     organ_info = result_data.get('organ')
                     organ_name = organ_info.organ_name if organ_info else "N/A"
                     organ_conf = organ_info.confidence if organ_info else 0
+
+                    # Comparaison avec l'organe attendu
+                    expected = tissue_type
+                    predicted = organ_name
+                    # Normaliser pour comparaison (ignorer casse et underscores)
+                    match = expected.lower().replace("_", "").replace("-", "") == \
+                            predicted.lower().replace("_", "").replace("-", "")
+
+                    if match:
+                        comparison = f"✅ CORRECT — Prédit: {predicted} = Attendu: {expected}"
+                    else:
+                        comparison = f"❌ DIFFÉRENT — Prédit: {predicted} ≠ Attendu: {expected}"
+
                     header = f"""
 ✅ OPTIMUS-GATE ACTIF
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -333,6 +354,7 @@ class CellVitDemo:
    • Sécurité: Triple OOD (entropie + Mahalanobis)
 
 🏥 Organe détecté: {organ_name} ({organ_conf:.1%})
+🎯 {comparison}
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 """
@@ -521,9 +543,9 @@ def create_demo_interface():
                             sources=["upload", "clipboard"]
                         )
                         upload_tissue = gr.Dropdown(
-                            choices=list(TISSUE_CONFIGS.keys()),
-                            value="Breast",
-                            label="Type de tissu (fallback simulation)"
+                            choices=PANNUKE_ORGANS,
+                            value="Prostate",
+                            label="🎯 Organe attendu (pour comparaison)"
                         )
                         analyze_btn = gr.Button(
                             "🔬 Analyser",
