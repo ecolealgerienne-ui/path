@@ -513,9 +513,13 @@ class OptimusGate(nn.Module):
         # Charger OrganHead
         organ_ckpt = torch.load(organ_head_path, map_location=device)
         if 'model_state_dict' in organ_ckpt:
-            self.organ_head.load_state_dict(organ_ckpt['model_state_dict'])
+            state_dict = organ_ckpt['model_state_dict']
+            # Filtrer les clés OOD qui sont des buffers, pas des paramètres du classifier
+            filtered_state = {k: v for k, v in state_dict.items()
+                            if k not in ['cls_mean', 'cls_cov_inv']}
+            self.organ_head.load_state_dict(filtered_state, strict=False)
         else:
-            self.organ_head.load_state_dict(organ_ckpt)
+            self.organ_head.load_state_dict(organ_ckpt, strict=False)
         print(f"  ✓ OrganHead chargé depuis {organ_head_path}")
 
         # Charger OOD calibration si disponible
