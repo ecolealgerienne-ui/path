@@ -21,6 +21,16 @@ from .optimus_gate import (
 
 from .optimus_gate_inference import OptimusGateInference
 
+from .optimus_gate_multifamily import (
+    OptimusGateMultiFamily,
+    MultiFamilyResult,
+    ORGAN_TO_FAMILY,
+    FAMILIES,
+    RELIABLE_HV_FAMILIES,
+)
+
+from .optimus_gate_inference_multifamily import OptimusGateInferenceMultiFamily
+
 __all__ = [
     # Legacy CellViT
     "CellViTInference",
@@ -30,9 +40,16 @@ __all__ = [
     "CELL_TYPES",
     "CELL_COLORS",
     "CELL_EMOJIS",
-    # Optimus-Gate (new architecture)
+    # Optimus-Gate (architecture simple)
     "OptimusGate",
     "OptimusGateResult",
     "CellDetection",
     "OptimusGateInference",
+    # Optimus-Gate Multi-Famille (5 décodeurs)
+    "OptimusGateMultiFamily",
+    "MultiFamilyResult",
+    "OptimusGateInferenceMultiFamily",
+    "ORGAN_TO_FAMILY",
+    "FAMILIES",
+    "RELIABLE_HV_FAMILIES",
 ]

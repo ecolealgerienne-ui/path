@@ -37,36 +37,67 @@ PANNUKE_ORGANS = [
 ]
 
 # Configuration des modèles
-HOVERNET_CHECKPOINT = PROJECT_ROOT / "models" / "checkpoints" / "hovernet_best.pth"
-ORGAN_HEAD_CHECKPOINT = PROJECT_ROOT / "models" / "checkpoints" / "organ_head_best.pth"
-UNETR_CHECKPOINT = PROJECT_ROOT / "models" / "checkpoints" / "unetr_best.pth"
+CHECKPOINT_DIR = PROJECT_ROOT / "models" / "checkpoints"
+HOVERNET_CHECKPOINT = CHECKPOINT_DIR / "hovernet_best.pth"
+ORGAN_HEAD_CHECKPOINT = CHECKPOINT_DIR / "organ_head_best.pth"
+UNETR_CHECKPOINT = CHECKPOINT_DIR / "unetr_best.pth"
 
-# Tenter de charger les modèles (priorité: OptimusGate > HoVer-Net > UNETR > simulation)
+# Mapping familles
+FAMILY_CHECKPOINTS = {
+    "glandular": CHECKPOINT_DIR / "hovernet_glandular_best.pth",
+    "digestive": CHECKPOINT_DIR / "hovernet_digestive_best.pth",
+    "urologic": CHECKPOINT_DIR / "hovernet_urologic_best.pth",
+    "respiratory": CHECKPOINT_DIR / "hovernet_respiratory_best.pth",
+    "epidermal": CHECKPOINT_DIR / "hovernet_epidermal_best.pth",
+}
+
+# Tenter de charger les modèles (priorité: Multi-Famille > OptimusGate > HoVer-Net > simulation)
 MODEL_AVAILABLE = False
 inference_model = None
 MODEL_NAME = "Simulation"
 IS_OPTIMUS_GATE = False
+IS_MULTI_FAMILY = False
 
-# 1. Essayer OptimusGate (architecture complète: OrganHead + HoVer-Net)
+# 1. Essayer Optimus-Gate Multi-Famille (5 décodeurs spécialisés)
 try:
-    from src.inference.optimus_gate_inference import OptimusGateInference
+    from src.inference.optimus_gate_inference_multifamily import OptimusGateInferenceMultiFamily
 
-    if HOVERNET_CHECKPOINT.exists() and ORGAN_HEAD_CHECKPOINT.exists():
-        print(f"Chargement Optimus-Gate...")
-        inference_model = OptimusGateInference(
-            hovernet_path=str(HOVERNET_CHECKPOINT),
-            organ_head_path=str(ORGAN_HEAD_CHECKPOINT),
+    # Vérifier si au moins 1 famille est disponible
+    n_families = sum(1 for p in FAMILY_CHECKPOINTS.values() if p.exists())
+    if ORGAN_HEAD_CHECKPOINT.exists() and n_families > 0:
+        print(f"Chargement Optimus-Gate Multi-Famille ({n_families}/5 familles)...")
+        inference_model = OptimusGateInferenceMultiFamily(
+            checkpoint_dir=str(CHECKPOINT_DIR),
         )
         MODEL_AVAILABLE = True
-        MODEL_NAME = "Optimus-Gate"
+        MODEL_NAME = f"Optimus-Gate Multi-Famille ({n_families}/5)"
         IS_OPTIMUS_GATE = True
+        IS_MULTI_FAMILY = True
         print(f"✅ {MODEL_NAME} chargé avec succès!")
 except Exception as e:
-    print(f"OptimusGate non disponible: {e}")
+    print(f"Multi-Famille non disponible: {e}")
     import traceback
     traceback.print_exc()
 
-# 2. Sinon essayer HoVer-Net seul
+# 2. Sinon essayer OptimusGate simple (1 HoVer-Net global)
+if not MODEL_AVAILABLE:
+    try:
+        from src.inference.optimus_gate_inference import OptimusGateInference
+
+        if HOVERNET_CHECKPOINT.exists() and ORGAN_HEAD_CHECKPOINT.exists():
+            print(f"Chargement Optimus-Gate...")
+            inference_model = OptimusGateInference(
+                hovernet_path=str(HOVERNET_CHECKPOINT),
+                organ_head_path=str(ORGAN_HEAD_CHECKPOINT),
+            )
+            MODEL_AVAILABLE = True
+            MODEL_NAME = "Optimus-Gate"
+            IS_OPTIMUS_GATE = True
+            print(f"✅ {MODEL_NAME} chargé avec succès!")
+    except Exception as e:
+        print(f"OptimusGate non disponible: {e}")
+
+# 3. Sinon essayer HoVer-Net seul
 if not MODEL_AVAILABLE:
     try:
         from src.inference.hoptimus_hovernet import HOptimusHoVerNetInference
@@ -80,7 +111,7 @@ if not MODEL_AVAILABLE:
     except Exception as e:
         print(f"HoVer-Net non disponible: {e}")
 
-# 3. Sinon essayer UNETR (fallback)
+# 4. Sinon essayer UNETR (fallback)
 if not MODEL_AVAILABLE:
     try:
         from src.inference.hoptimus_unetr import HOptimusUNETRInference
