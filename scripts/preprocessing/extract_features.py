@@ -237,11 +237,8 @@ def main():
     np.savez(output_path, **features)
     print(f"Features sauvegardées: {output_path}")
 
-    # Sauvegarder les masks (pour entraînement)
-    if masks is not None:
-        masks_path = output_dir / f"fold{args.fold}_masks.npy"
-        np.save(masks_path, masks)
-        print(f"Masks sauvegardés: {masks_path}")
+    # Note: Les masks ne sont PAS dupliqués ici - ils restent dans le dossier PanNuke original
+    # Le script d'entraînement les charge depuis: {data_dir}/fold{X}/masks.npy
 
     # Taille des fichiers
     features_size = output_path.stat().st_size / 1e9
