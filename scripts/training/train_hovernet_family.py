@@ -4,6 +4,9 @@ Entraînement du décodeur HoVer-Net par famille d'organes.
 
 Architecture "Y inversé" : backbone H-optimus-0 partagé, décodeurs spécialisés par famille.
 
+IMPORTANT: Exécuter d'abord prepare_family_data.py pour préparer les données:
+    python scripts/preprocessing/prepare_family_data.py --data_dir /home/amar/data/PanNuke
+
 Usage:
     # Entraîner la famille Glandulaire (45% des données)
     python scripts/training/train_hovernet_family.py --family glandular --epochs 50 --augment
@@ -24,12 +27,12 @@ import sys
 from pathlib import Path
 import numpy as np
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import CosineAnnealingLR
 from tqdm import tqdm
+import cv2
 
 # Ajouter le projet au path
 PROJECT_ROOT = Path(__file__).parent.parent.parent
@@ -94,111 +97,55 @@ class FeatureAugmentation:
 
 class FamilyHoVerDataset(Dataset):
     """
-    Dataset PanNuke filtré par famille d'organes.
+    Dataset lazy-loading par famille d'organes.
 
-    Charge uniquement les samples appartenant à la famille spécifiée.
+    Utilise memory-mapping pour éviter de charger toutes les données en RAM.
+    Les targets HoVer-Net sont calculés à la demande pour chaque sample.
+
+    Avantages:
+    - RAM minimale: seulement le batch courant en mémoire
+    - Pas de pré-calcul des targets HV
+    - Scalable pour de grands datasets
     """
 
-    def __init__(self, data_dir: str, family: str, folds: list = None, augment: bool = False):
-        self.data_dir = Path(data_dir)
+    def __init__(self, family: str, cache_dir: str = None, augment: bool = False):
         self.family = family
-        self.folds = folds if folds else [0, 1, 2]
         self.augment = augment
         self.augmenter = FeatureAugmentation() if augment else None
 
-        # Organes de cette famille
-        self.family_organs = set(get_organs(family))
+        # Répertoire des données pré-préparées
+        if cache_dir is None:
+            cache_dir = PROJECT_ROOT / "data" / "cache" / "family_data"
+        else:
+            cache_dir = Path(cache_dir)
+
+        self.features_path = cache_dir / f"{family}_features.npz"
+        self.masks_path = cache_dir / f"{family}_masks.npz"
+
+        if not self.features_path.exists() or not self.masks_path.exists():
+            raise FileNotFoundError(
+                f"Données famille {family} non trouvées.\n"
+                f"Lancez d'abord:\n"
+                f"  python scripts/preprocessing/prepare_family_data.py --family {family}"
+            )
+
         print(f"\n🏷️ Famille: {family}")
-        print(f"   Organes: {', '.join(self.family_organs)}")
+        print(f"   Organes: {', '.join(get_organs(family))}")
+        print(f"   Description: {FAMILY_DESCRIPTIONS[family]}")
 
-        # Charger et filtrer les données
-        all_features = []
-        all_np_targets = []
-        all_hv_targets = []
-        all_nt_targets = []
+        # Ouvrir les fichiers en memory-map (lecture à la demande)
+        print(f"\nOuverture {self.features_path.name} (memory-mapped)...")
+        self._features_file = np.load(self.features_path, mmap_mode='r')
+        self.n_samples = self._features_file['layer_24'].shape[0]
+        print(f"  → {self.n_samples} samples disponibles")
 
-        for fold in self.folds:
-            features, np_t, hv_t, nt_t, n_selected = self._load_fold_filtered(fold)
-            if n_selected > 0:
-                all_features.append(features)
-                all_np_targets.append(np_t)
-                all_hv_targets.append(hv_t)
-                all_nt_targets.append(nt_t)
+        print(f"Ouverture {self.masks_path.name} (memory-mapped)...")
+        self._masks_file = np.load(self.masks_path, mmap_mode='r')
 
-        if not all_features:
-            raise ValueError(f"Aucun sample trouvé pour la famille {family}")
+        print(f"\n📊 Dataset famille {family}: {self.n_samples} samples (lazy-loading)")
+        print(f"   Mode: Chargement à la demande (RAM minimale)")
 
-        self.features = np.concatenate(all_features, axis=0)
-        self.np_targets = np.concatenate(all_np_targets, axis=0)
-        self.hv_targets = np.concatenate(all_hv_targets, axis=0)
-        self.nt_targets = np.concatenate(all_nt_targets, axis=0)
-
-        self.n_samples = len(self.features)
-        print(f"\n📊 Dataset famille {family}: {self.n_samples} samples")
-
-    def _load_fold_filtered(self, fold: int):
-        """Charge un fold et filtre par famille."""
-        import cv2
-
-        # Charger les features
-        features_path = PROJECT_ROOT / "data" / "cache" / "pannuke_features" / f"fold{fold}_features.npz"
-        if not features_path.exists():
-            print(f"  ⚠️ Features fold {fold} non trouvées, ignoré")
-            return None, None, None, None, 0
-
-        print(f"Chargement fold {fold}...")
-        data = np.load(features_path)
-        features = data['layer_24'] if 'layer_24' in data else data['layer_23']
-
-        # Charger les types
-        types_path = self.data_dir / f"fold{fold}" / "types.npy"
-        types = np.load(types_path)
-
-        # Charger les masques
-        masks_path = self.data_dir / f"fold{fold}" / "masks.npy"
-        masks = np.load(masks_path)
-
-        # Filtrer par famille
-        indices = []
-        for i, organ in enumerate(types):
-            organ_str = str(organ).strip()
-            if organ_str in self.family_organs:
-                indices.append(i)
-
-        if not indices:
-            print(f"  → 0 samples pour cette famille")
-            return None, None, None, None, 0
-
-        indices = np.array(indices)
-        features = features[indices]
-        masks = masks[indices]
-
-        print(f"  → {len(indices)} samples sélectionnés")
-
-        # Préparer les targets
-        N = len(features)
-        np_targets = np.zeros((N, 256, 256), dtype=np.float32)
-        nt_targets = np.zeros((N, 256, 256), dtype=np.int64)
-        hv_targets = np.zeros((N, 2, 256, 256), dtype=np.float32)
-
-        for i in range(N):
-            mask = masks[i]
-
-            # NP: union de tous les types
-            np_mask = mask[:, :, 1:].sum(axis=-1) > 0
-            np_targets[i] = np_mask.astype(np.float32)
-
-            # NT: argmax sur canaux 1-5
-            for c in range(5):
-                type_mask = mask[:, :, c + 1] > 0
-                nt_targets[i][type_mask] = c
-
-            # HV: cartes horizontal/vertical
-            hv_targets[i] = self._compute_hv_maps(np_mask, cv2)
-
-        return features, np_targets, hv_targets, nt_targets, len(indices)
-
-    def _compute_hv_maps(self, binary_mask: np.ndarray, cv2) -> np.ndarray:
+    def _compute_hv_maps(self, binary_mask: np.ndarray) -> np.ndarray:
         """Calcule les cartes H/V depuis un masque binaire."""
         hv = np.zeros((2, 256, 256), dtype=np.float32)
 
@@ -228,14 +175,33 @@ class FamilyHoVerDataset(Dataset):
         hv = np.clip(hv, -1, 1)
         return hv
 
+    def _prepare_sample_targets(self, mask: np.ndarray):
+        """Prépare les targets HoVer-Net pour un seul sample."""
+        # NP: union de tous les types
+        np_mask = mask[:, :, 1:].sum(axis=-1) > 0
+        np_target = np_mask.astype(np.float32)
+
+        # NT: argmax sur canaux 1-5
+        nt_target = np.zeros((256, 256), dtype=np.int64)
+        for c in range(5):
+            type_mask = mask[:, :, c + 1] > 0
+            nt_target[type_mask] = c
+
+        # HV: cartes horizontal/vertical
+        hv_target = self._compute_hv_maps(np_mask)
+
+        return np_target, hv_target, nt_target
+
     def __len__(self):
         return self.n_samples
 
     def __getitem__(self, idx):
-        features = self.features[idx].copy()
-        np_target = self.np_targets[idx].copy()
-        hv_target = self.hv_targets[idx].copy()
-        nt_target = self.nt_targets[idx].copy()
+        # Lazy-loading: charger un seul sample depuis les fichiers memory-mapped
+        features = self._features_file['layer_24'][idx].copy()
+        mask = self._masks_file['masks'][idx].copy()
+
+        # Calculer les targets à la volée
+        np_target, hv_target, nt_target = self._prepare_sample_targets(mask)
 
         # Resize targets de 256 à 224
         np_target_t = torch.from_numpy(np_target)
@@ -351,8 +317,8 @@ def main():
                        help='Répertoire PanNuke')
     parser.add_argument('--family', type=str, required=True, choices=FAMILIES,
                        help=f'Famille à entraîner: {FAMILIES}')
-    parser.add_argument('--folds', type=int, nargs='+', default=[0, 1, 2],
-                       help='Folds à utiliser')
+    parser.add_argument('--cache_dir', type=str, default='data/cache/family_data',
+                       help='Répertoire des données pré-préparées')
     parser.add_argument('--epochs', type=int, default=50)
     parser.add_argument('--batch_size', type=int, default=16)
     parser.add_argument('--lr', type=float, default=1e-4)
@@ -371,17 +337,16 @@ def main():
     print(f"{'='*60}")
     print(f"Description: {FAMILY_DESCRIPTIONS[args.family]}")
 
-    # Charger le dataset
-    print("\n📦 Chargement des données...")
-    train_dataset = FamilyHoVerDataset(
-        args.data_dir, args.family, args.folds, augment=args.augment
-    )
-    val_dataset = FamilyHoVerDataset(
-        args.data_dir, args.family, args.folds, augment=False
+    # Charger le dataset (lazy-loading)
+    print("\n📦 Chargement des données (lazy-loading)...")
+    full_dataset = FamilyHoVerDataset(
+        family=args.family,
+        cache_dir=args.cache_dir,
+        augment=False  # On gère l'augmentation différemment pour train/val
     )
 
     # Split train/val
-    n_total = len(train_dataset)
+    n_total = len(full_dataset)
     n_val = int(n_total * args.val_split)
     n_train = n_total - n_val
 
@@ -389,8 +354,14 @@ def main():
     train_indices = indices[:n_train]
     val_indices = indices[n_train:]
 
+    # Créer les datasets train/val avec wrapper pour augmentation
+    train_dataset = FamilyHoVerDataset(
+        family=args.family,
+        cache_dir=args.cache_dir,
+        augment=args.augment
+    )
     train_subset = torch.utils.data.Subset(train_dataset, train_indices)
-    val_subset = torch.utils.data.Subset(val_dataset, val_indices)
+    val_subset = torch.utils.data.Subset(full_dataset, val_indices)
 
     aug_str = " (augmenté)" if args.augment else ""
     print(f"  {n_train} train{aug_str} / {n_val} val")
