@@ -95,12 +95,25 @@ class OptimusGateInferenceMultiFamily:
         print("  ✅ Optimus-Gate Multi-Famille prêt!")
 
     def preprocess(self, image: np.ndarray) -> torch.Tensor:
-        """Prétraitement de l'image pour H-optimus-0."""
+        """
+        Prétraitement de l'image pour H-optimus-0.
+
+        Gère automatiquement:
+        - uint8 [0, 255] → normalisé
+        - float [0, 1] → normalisé directement
+        - float [0, 255] → converti puis normalisé
+        """
         if image.shape[:2] != (self.img_size, self.img_size):
             image = cv2.resize(image, (self.img_size, self.img_size))
 
-        img = image.astype(np.float32) / 255.0
+        # Détection automatique du format et conversion vers [0, 1]
+        img = image.astype(np.float32)
+        if img.max() > 1.0:
+            # Image en [0, 255] → convertir vers [0, 1]
+            img = img / 255.0
+        # Si déjà en [0, 1], ne pas diviser à nouveau
 
+        # Normalisation H-optimus-0
         for c in range(3):
             img[:, :, c] = (img[:, :, c] - HOPTIMUS_MEAN[c]) / HOPTIMUS_STD[c]
 
