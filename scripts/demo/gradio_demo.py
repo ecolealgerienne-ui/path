@@ -992,14 +992,12 @@ def create_demo_interface():
                             label="📊 Panneau Morphométrique Clinique",
                             lines=25,
                             max_lines=35,
-                            show_copy_button=True
                         )
                     with gr.Column(scale=1):
                         ml_report = gr.Textbox(
                             label="🤖 Rapport Technique (ML)",
                             lines=25,
                             max_lines=35,
-                            show_copy_button=True
                         )
 
                 # Fonction pour mettre à jour les alertes disponibles
