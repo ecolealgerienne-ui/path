@@ -166,8 +166,16 @@ def extract_features(
     for i in tqdm(range(0, n_images, batch_size)):
         batch_images = images[i:i + batch_size]
 
+        # IMPORTANT: Convertir en uint8 avant ToPILImage pour éviter la corruption
+        # ToPILImage avec float64 [0,255] multiplie par 255 → overflow → couleurs fausses
+        batch_images_uint8 = []
+        for img in batch_images:
+            if img.dtype != np.uint8:
+                img = img.clip(0, 255).astype(np.uint8)
+            batch_images_uint8.append(img)
+
         # Prétraitement
-        batch_tensors = torch.stack([transform(img) for img in batch_images])
+        batch_tensors = torch.stack([transform(img) for img in batch_images_uint8])
 
         # Extraction
         features = extractor.extract(batch_tensors)
