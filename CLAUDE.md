@@ -53,7 +53,7 @@
 │  • NP : présence noyaux  │          │  • Agrégation régions    │
 │  • HV : séparation       │          │  • Score biomarqueur     │
 │  • NT : typage (5 cls)   │          │                          │
-│  ✅ Dice 0.9587          │          │                          │
+│  ✅ Dice 0.9601          │          │                          │
 └──────────────────────────┘          └──────────────────────────┘
                                │
                                ▼
@@ -592,6 +592,13 @@ Tronc Commun (upsampling partagé 16→224)
 - `scripts/demo/gradio_demo.py` (4 outputs au lieu de 3)
 
 **Amélioration Loss:** MSELoss → SmoothL1Loss pour branche HV (moins sensible aux outliers)
+
+**Résultats après SmoothL1Loss (2025-12-20):**
+| Métrique | Avant | Après | Amélioration |
+|----------|-------|-------|--------------|
+| Dice | 0.9587 | **0.9601** | +0.14% |
+| Val Loss | 0.7469 | **0.7333** | -1.8% |
+| HV Loss | ~0.01 | 0.0085 | -15% |
 
 ---
 
