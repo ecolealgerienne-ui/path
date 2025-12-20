@@ -486,6 +486,75 @@ class OptimusGate(nn.Module):
             self.patch_threshold = ood['threshold']
             self.local_ood_fitted = True
 
+    def load_from_separate_checkpoints(
+        self,
+        hovernet_path: str,
+        organ_head_path: str,
+        device: str = "cpu"
+    ):
+        """
+        Charge les poids depuis les checkpoints séparés.
+
+        Args:
+            hovernet_path: Chemin vers hovernet_best.pth
+            organ_head_path: Chemin vers organ_head_best.pth
+            device: Device cible
+        """
+        print(f"Chargement des checkpoints...")
+
+        # Charger HoVer-Net
+        hovernet_ckpt = torch.load(hovernet_path, map_location=device)
+        if 'model_state_dict' in hovernet_ckpt:
+            self.hovernet.load_state_dict(hovernet_ckpt['model_state_dict'])
+        else:
+            self.hovernet.load_state_dict(hovernet_ckpt)
+        print(f"  ✓ HoVer-Net chargé depuis {hovernet_path}")
+
+        # Charger OrganHead
+        organ_ckpt = torch.load(organ_head_path, map_location=device)
+        if 'model_state_dict' in organ_ckpt:
+            self.organ_head.load_state_dict(organ_ckpt['model_state_dict'])
+        else:
+            self.organ_head.load_state_dict(organ_ckpt)
+        print(f"  ✓ OrganHead chargé depuis {organ_head_path}")
+
+        # Charger OOD calibration si disponible
+        if organ_ckpt.get('ood_calibrated') or organ_ckpt.get('cls_mean') is not None:
+            self.organ_head.cls_mean = organ_ckpt.get('cls_mean')
+            self.organ_head.cls_cov_inv = organ_ckpt.get('cls_cov_inv')
+            self.organ_head.mahalanobis_threshold = organ_ckpt.get('mahalanobis_threshold')
+            self.organ_head.ood_fitted = True
+            print(f"  ✓ OOD calibré (threshold: {self.organ_head.mahalanobis_threshold:.2f})")
+
+        # Afficher les métriques
+        if 'val_acc' in organ_ckpt:
+            print(f"  📊 OrganHead Val Acc: {organ_ckpt['val_acc']:.4f}")
+        if 'best_dice' in hovernet_ckpt:
+            print(f"  📊 HoVer-Net Dice: {hovernet_ckpt['best_dice']:.4f}")
+
+        self.to(device)
+        self.eval()
+        print(f"  ✓ Modèle prêt sur {device}")
+
+    @classmethod
+    def from_pretrained(
+        cls,
+        hovernet_path: str = "models/checkpoints/hovernet_best.pth",
+        organ_head_path: str = "models/checkpoints/organ_head_best.pth",
+        device: str = "cuda",
+        **kwargs
+    ) -> "OptimusGate":
+        """
+        Crée un OptimusGate pré-entraîné.
+
+        Usage:
+            model = OptimusGate.from_pretrained()
+            result = model.predict(features)
+        """
+        model = cls(**kwargs)
+        model.load_from_separate_checkpoints(hovernet_path, organ_head_path, device)
+        return model
+
 
 # Test
 if __name__ == "__main__":

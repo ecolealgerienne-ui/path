@@ -40,21 +40,22 @@
 │              COUCHE 1 — EXTRACTION SÉMANTIQUE                  │
 │                     H-OPTIMUS-0 (gelé)                         │
 │  • Entrée : tuiles 224×224 @ 0.5 MPP                          │
-│  • Sortie : embeddings 1536-dim                                │
+│  • Sortie : CLS token (1536) + Patches (256×1536)             │
 │  • ViT-Giant/14, 1.1 milliard paramètres                      │
 └────────────────────────────────────────────────────────────────┘
                                │
-          ┌────────────────────┴────────────────────┐
-          ▼                                         ▼
-┌──────────────────────────┐          ┌──────────────────────────┐
-│  COUCHE 2A — CELLULAIRE  │          │  COUCHE 2B — LAME        │
-│    Décodeur HoVer-Net    │          │    Attention-MIL         │
-│                          │          │                          │
-│  • NP : présence noyaux  │          │  • Agrégation régions    │
-│  • HV : séparation       │          │  • Score biomarqueur     │
-│  • NT : typage (5 cls)   │          │                          │
-│  ✅ Dice 0.9601          │          │                          │
-└──────────────────────────┘          └──────────────────────────┘
+     ┌─────────────────────────┴─────────────────────────┐
+     ▼                                                   ▼
+┌─────────────────────────────┐        ┌─────────────────────────────┐
+│  COUCHE 2A — FLUX GLOBAL    │        │  COUCHE 2B — FLUX LOCAL     │
+│       OrganHead             │        │       HoVer-Net             │
+│                             │        │                             │
+│  • CLS token → MLP          │        │  • Patches → Décodeur       │
+│  • Classification organe    │        │  • NP : présence noyaux     │
+│  • 19 organes PanNuke       │        │  • HV : séparation          │
+│  ✅ Accuracy 96.05%         │        │  • NT : typage (5 cls)      │
+│                             │        │  ✅ Dice 0.9601             │
+└─────────────────────────────┘        └─────────────────────────────┘
                                │
                                ▼
 ┌────────────────────────────────────────────────────────────────┐
@@ -668,6 +669,65 @@ python scripts/training/train_hovernet.py --fold 0 --epochs 50 --augment --dropo
 python -c "from src.uncertainty import ConformalPredictor, ROISelector; print('OK')"
 ```
 
+### 2025-12-20 — Architecture Optimus-Gate ✅
+
+**Architecture finale "Optimus-Gate"** avec double flux:
+
+```
+H-optimus-0 (backbone gelé)
+         │
+    features (B, 261, 1536)
+         │
+    ┌────┴────┐
+    ↓         ↓
+CLS token   Patch tokens
+(1, 1536)   (256, 1536)
+    │         │
+    ↓         ↓
+OrganHead   HoVerNet
+(96% acc)   (96% Dice)
+    │         │
+    ↓         ↓
+19 organes  NP/HV/NT
++ OOD       + Cellules
+```
+
+**Résultats entraînement:**
+| Composant | Métrique | Valeur |
+|-----------|----------|--------|
+| OrganHead | Val Accuracy | **96.05%** |
+| OrganHead | Organes à 100% | 14/19 |
+| HoVer-Net | Dice | **0.9601** |
+| OOD | Threshold | 39.26 |
+
+**Triple Sécurité OOD:**
+- Entropie organe (softmax uncertainty)
+- Mahalanobis global (CLS token distance)
+- Mahalanobis local (patch mean distance)
+
+**Usage:**
+```python
+from src.inference import OptimusGate
+
+# Charger le modèle pré-entraîné
+model = OptimusGate.from_pretrained(
+    hovernet_path="models/checkpoints/hovernet_best.pth",
+    organ_head_path="models/checkpoints/organ_head_best.pth",
+    device="cuda"
+)
+
+# Prédiction
+result = model.predict(features)
+print(result.organ.organ_name)      # "Prostate"
+print(result.organ.confidence)      # 0.99
+print(result.n_cells)               # 42
+print(result.is_ood)                # False
+print(result.confidence_level)      # ConfidenceLevel.FIABLE
+
+# Rapport complet
+print(model.generate_report(result))
+```
+
 ---
 
 ## Fichiers Créés (Inventaire)
@@ -677,10 +737,12 @@ src/
 ├── models/
 │   ├── __init__.py
 │   ├── unetr_decoder.py          # Décodeur UNETR (obsolète)
-│   └── hovernet_decoder.py       # Décodeur HoVer-Net (architecture cible)
+│   ├── hovernet_decoder.py       # Décodeur HoVer-Net (Flux Local)
+│   └── organ_head.py             # OrganHead (Flux Global)
 ├── inference/
 │   ├── __init__.py
-│   ├── hoptimus_hovernet.py      # Wrapper H-optimus-0 + HoVer-Net (cible)
+│   ├── optimus_gate.py           # 🆕 Architecture unifiée Optimus-Gate
+│   ├── hoptimus_hovernet.py      # Wrapper H-optimus-0 + HoVer-Net
 │   ├── hoptimus_unetr.py         # Wrapper H-optimus-0 + UNETR (fallback)
 │   └── cellvit_official.py       # Wrapper pour repo officiel TIO-IKIM
 └── uncertainty/                   # Couche 3 & 4: Sécurité & Interaction Expert
@@ -709,11 +771,13 @@ scripts/
 │   └── entropy_scoring.py
 ├── training/
 │   ├── train_unetr.py            # Entraînement UNETR (obsolète)
-│   └── train_hovernet.py         # Entraînement HoVer-Net (cible)
+│   ├── train_hovernet.py         # Entraînement HoVer-Net (Flux Local)
+│   └── train_organ_head.py       # Entraînement OrganHead (Flux Global)
 ├── utils/
 │   └── inspect_checkpoint.py
 ├── validation/
-│   └── test_cellvit256_inference.py  # Test étape 1.5 POC
+│   ├── test_cellvit256_inference.py  # Test étape 1.5 POC
+│   └── test_optimus_gate.py          # Test Optimus-Gate complet
 └── demo/
     ├── gradio_demo.py             # Interface principale
     ├── synthetic_cells.py         # Générateur tissus
@@ -723,7 +787,8 @@ models/
 ├── pretrained/
 │   └── CellViT-256.pth            # 187 MB (baseline)
 └── checkpoints/
-    └── hovernet_best.pth          # HoVer-Net entraîné (Dice 0.9587)
+    ├── hovernet_best.pth          # HoVer-Net (Dice 0.9601)
+    └── organ_head_best.pth        # OrganHead (Acc 96.05%)
 ```
 
 ---
