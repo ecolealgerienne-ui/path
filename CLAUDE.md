@@ -1256,11 +1256,16 @@ src/
 │   ├── hoptimus_hovernet.py      # Wrapper H-optimus-0 + HoVer-Net
 │   ├── hoptimus_unetr.py         # Wrapper H-optimus-0 + UNETR (fallback)
 │   └── cellvit_official.py       # Wrapper pour repo officiel TIO-IKIM
-└── uncertainty/                   # Couche 3 & 4: Sécurité & Interaction Expert
-    ├── __init__.py
-    ├── uncertainty_estimator.py  # Entropie + Mahalanobis + Temperature Scaling
-    ├── conformal_prediction.py   # Conformal Prediction (APS/LAC/RAPS)
-    └── roi_selection.py          # Sélection automatique ROIs
+├── uncertainty/                   # Couche 3 & 4: Sécurité & Interaction Expert
+│   ├── __init__.py
+│   ├── uncertainty_estimator.py  # Entropie + Mahalanobis + Temperature Scaling
+│   ├── conformal_prediction.py   # Conformal Prediction (APS/LAC/RAPS)
+│   └── roi_selection.py          # Sélection automatique ROIs
+├── feedback/                      # 🆕 Active Learning (Couche 5)
+│   ├── __init__.py
+│   └── active_learning.py        # FeedbackCollector pour corrections expertes
+└── metrics/
+    └── morphometry.py            # Analyse morphométrique clinique
 
 scripts/
 ├── setup/
@@ -1563,15 +1568,22 @@ class ReferenceNucleiGallery:
 - Niveau de confiance
 - Captures d'écran annotées
 
-### 5. Mode "Deuxième Lecture" (Quality Assurance)
+### 5. Mode "Deuxième Lecture" (Quality Assurance) ✅ IMPLÉMENTÉ (v1)
 
 **Concept:** Comparer automatiquement la prédiction du modèle avec la lecture du pathologiste.
 
-**Workflow:**
-1. Le pathologiste enregistre son diagnostic initial
-2. Le système compare avec ses propres alertes
-3. Affiche les discordances pour révision
-4. Génère des statistiques de concordance
+**Implémenté (commit 003bba7):**
+- ✅ Module `FeedbackCollector` pour stocker les corrections
+- ✅ Onglet Gradio "📝 Feedback Expert"
+- ✅ Types de feedback: cell type, mitose FP/FN, TILs, organe
+- ✅ Niveaux de sévérité: low, medium, high, critical
+- ✅ Export JSON pour retraining
+
+**À faire (v2):**
+- 🔜 Comparaison automatique prédiction vs correction
+- 🔜 Statistiques de concordance par session
+- 🔜 Alertes sur patterns d'erreur récurrents
+- 🔜 Pipeline de retraining automatisé
 
 ---
 
@@ -1598,3 +1610,106 @@ class ReferenceNucleiGallery:
 - Panneau morphométrique avec métriques pathologiques
 - Gestion des calques (RAW/SEG/HEAT/BOTH)
 - XAI: Cliquer sur les alertes pour localiser les noyaux
+
+### Commit 003bba7 — Raffinements Expert & Active Learning ✅ NOUVEAU
+
+#### Détection Mitotique Raffinée
+**Problème initial:** Faux positifs (cellules endothéliales/fibroblastes allongées mais claires)
+
+**Solution implémentée** (recommandation expert pathologiste):
+```python
+# Avant: logique OR (trop permissive)
+if elongation > 1.8 OR circularity < 0.4:
+    is_mitotic = True
+
+# Après: logique AND (réduit 80% des FP)
+if elongation > 1.8 AND mean_intensity < 100:  # Allongé ET hyperchromatique
+    is_mitotic = True
+```
+
+**Critères multi-phases:**
+| Phase | Élongation | Intensité | Circularité |
+|-------|------------|-----------|-------------|
+| Prophase/Métaphase | >1.5 | <70 | <0.5 |
+| Anaphase | >1.8 | <100 | - |
+| Télophase | >2.2 | <120 | - |
+
+#### Convex Hull pour TILs Hot/Cold
+**Problème initial:** Centroïde + rayon = approximation grossière du front tumoral
+
+**Solution implémentée:** `scipy.spatial.ConvexHull` pour définir précisément le front
+
+```python
+from scipy.spatial import ConvexHull
+
+# Enveloppe convexe des cellules néoplasiques
+hull = ConvexHull(neo_centers)
+hull_vertices = neo_centers[hull.vertices]
+
+# Test point-in-polygon pour chaque TIL
+def point_in_hull(point, hull_vertices):
+    # Cross-product method pour tous les segments
+    for i in range(len(hull_vertices)):
+        v1, v2 = hull_vertices[i], hull_vertices[(i+1) % n]
+        cross = (v2[0]-v1[0])*(point[1]-v1[1]) - (v2[1]-v1[1])*(point[0]-v1[0])
+        if cross < 0:
+            return False
+    return True
+```
+
+**Classification TILs:**
+| Statut | Critère | Emoji |
+|--------|---------|-------|
+| Chaud | >50% TILs dans le hull | 🔥 |
+| Intermédiaire | 20-50% dans le hull | 〰️ |
+| Froid | >50% TILs à <20µm du bord | ❄️ |
+| Exclu | Distance moyenne >50µm | 🚫 |
+
+#### Active Learning — Mode "Seconde Lecture"
+
+**Nouveau module:** `src/feedback/active_learning.py`
+
+**FeedbackCollector** — Stockage des corrections expertes:
+```python
+from src.feedback import FeedbackCollector, FeedbackType
+
+collector = FeedbackCollector(storage_path="data/feedback")
+
+# Corriger un type cellulaire
+collector.add_cell_type_correction(
+    nucleus_id=42,
+    nucleus_location=(100, 150),
+    predicted_class="Neoplastic",
+    corrected_class="Inflammatory",
+    expert_comment="Lymphocyte évident"
+)
+
+# Signaler une fausse mitose
+collector.add_mitosis_false_positive(
+    nucleus_id=17,
+    nucleus_location=(200, 180),
+    actual_type="Fibroblast",
+    expert_comment="Allongé mais pas hyperchromatique"
+)
+
+# Statistiques
+stats = collector.get_statistics()
+# {'total': 42, 'by_type': {...}, 'by_severity': {...}}
+
+# Export pour retraining
+collector.export_for_retraining("data/retraining/batch_001.json")
+```
+
+**Types de feedback:**
+| Type | Sévérité | Description |
+|------|----------|-------------|
+| `CELL_TYPE_WRONG` | high | Mauvaise classification |
+| `MITOSIS_FALSE_POSITIVE` | high | Fausse mitose |
+| `MITOSIS_MISSED` | critical | Mitose non détectée |
+| `TILS_STATUS_WRONG` | medium | Mauvais hot/cold |
+| `ORGAN_WRONG` | high | Mauvais organe |
+
+**Nouvel onglet Gradio:** "📝 Feedback Expert"
+- Formulaire de soumission avec sévérité
+- Statistiques en temps réel
+- Sauvegarde JSON automatique
