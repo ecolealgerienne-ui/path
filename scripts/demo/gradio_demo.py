@@ -282,6 +282,15 @@ def generate_morphometry_panel(
         aniso_status = "⚠️" if cv_area > 0.3 else "✓"
         lines.append(f"║   Anisocaryose (CV)  : {cv_area:>6.2f} {aniso_status}                       ║")
 
+    # Index mitotique estimé (NOUVEAU)
+    if hasattr(morpho_report, 'mitotic_candidates') and morpho_report.mitotic_candidates > 0:
+        lines.extend([
+            "╠══════════════════════════════════════════════════════════╣",
+            "║ ⚡ INDEX MITOTIQUE ESTIMÉ                                ║",
+            f"║   Figures évocatrices: {morpho_report.mitotic_candidates:>8}                      ║",
+            f"║   Index /10 HPF      : {morpho_report.mitotic_index_per_10hpf:>8.1f}                      ║",
+        ])
+
     lines.extend([
         "╠══════════════════════════════════════════════════════════╣",
         "║ 🏗️ ARCHITECTURE TISSULAIRE                               ║",
@@ -291,6 +300,13 @@ def generate_morphometry_panel(
 
     if morpho_report.stroma_tumor_distance_um > 0:
         lines.append(f"║   Dist. stroma-tumeur: {morpho_report.stroma_tumor_distance_um:>6.1f} µm                      ║")
+
+    # Statut TILs (hot/cold) - NOUVEAU
+    if hasattr(morpho_report, 'til_status') and morpho_report.til_status != "indéterminé":
+        til_emoji = {"chaud": "🔥", "froid": "❄️", "exclu": "🚫", "intermédiaire": "〰️"}.get(morpho_report.til_status, "❓")
+        lines.append(f"║   Statut TILs        : {til_emoji} {morpho_report.til_status.upper():17}         ║")
+        if morpho_report.til_penetration_ratio > 0:
+            lines.append(f"║   Pénétration TILs   : {morpho_report.til_penetration_ratio:>6.0%}                        ║")
 
     lines.extend([
         "╠══════════════════════════════════════════════════════════╣",
@@ -779,6 +795,7 @@ Pour activer Optimus-Gate:
                 "atypie_forme": (255, 165, 0),    # Orange
                 "neoplasique": (255, 0, 0),       # Rouge
                 "infiltration": (0, 255, 0),      # Vert
+                "mitose": (255, 255, 0),          # Jaune (figures mitotiques)
             }
             color = color_map.get(alert_key, (255, 255, 0))
 

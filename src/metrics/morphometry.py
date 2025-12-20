@@ -37,6 +37,10 @@ class NucleusMetrics:
     circularity: float  # 4π × area / perimeter²
     type_idx: int
     type_name: str
+    # Nouvelles métriques pour index mitotique
+    elongation: float = 0.0  # Ratio axes ellipse (forme sablier)
+    mean_intensity: float = 0.0  # Densité chromatine (si image fournie)
+    is_mitotic_candidate: bool = False  # Suspicion de figure mitotique
 
 
 @dataclass
@@ -67,12 +71,31 @@ class MorphometryReport:
     spatial_distribution: str  # "diffuse", "clustered", "peritumoral"
     clustering_score: float  # 0-1, haut = cellules regroupées
 
+    # Index Mitotique Estimé (NOUVEAU)
+    mitotic_candidates: int = 0  # Nombre de figures évocatrices
+    mitotic_index_per_10hpf: float = 0.0  # Index estimé pour 10 HPF
+    mitotic_nuclei_ids: List[int] = None  # IDs pour XAI
+
+    # Distance au Front d'Invasion (NOUVEAU - TILs hot/cold)
+    til_invasion_distance_um: float = 0.0  # Distance moyenne TILs → front tumoral
+    til_status: str = "indéterminé"  # "chaud", "froid", "exclu", "indéterminé"
+    til_penetration_ratio: float = 0.0  # % TILs dans le massif tumoral
+
     # Alertes cliniques (langage suggestif)
-    alerts: List[str]
-    alert_nuclei_ids: Dict[str, List[int]]  # IDs des noyaux ayant déclenché chaque alerte
+    alerts: List[str] = None
+    alert_nuclei_ids: Dict[str, List[int]] = None  # IDs des noyaux ayant déclenché chaque alerte
 
     # Niveau de confiance
-    confidence_level: str  # "Haute", "Modérée", "Faible"
+    confidence_level: str = "Modérée"  # "Haute", "Modérée", "Faible"
+
+    def __post_init__(self):
+        """Initialize mutable defaults."""
+        if self.alerts is None:
+            self.alerts = []
+        if self.alert_nuclei_ids is None:
+            self.alert_nuclei_ids = {}
+        if self.mitotic_nuclei_ids is None:
+            self.mitotic_nuclei_ids = []
 
 
 # Types cellulaires PanNuke
@@ -106,6 +129,7 @@ class MorphometryAnalyzer:
         instance_map: np.ndarray,
         type_map: np.ndarray,
         patch_size_um: Optional[float] = None,
+        image: Optional[np.ndarray] = None,
     ) -> MorphometryReport:
         """
         Analyse morphométrique complète d'un patch.
@@ -114,6 +138,7 @@ class MorphometryAnalyzer:
             instance_map: Carte d'instances (H, W) avec labels 0=fond, 1..N=noyaux
             type_map: Carte de types (H, W) avec 0-4 = types PanNuke
             patch_size_um: Taille du patch en µm (calculé si None)
+            image: Image originale (optionnel, améliore détection mitoses)
 
         Returns:
             MorphometryReport avec toutes les métriques cliniques
@@ -126,8 +151,8 @@ class MorphometryAnalyzer:
         patch_area_um2 = (h * self.pixel_size_um) * (w * self.pixel_size_um)
         patch_area_mm2 = patch_area_um2 / 1e6
 
-        # Extraire les métriques par noyau
-        nuclei = self._extract_nucleus_metrics(instance_map, type_map)
+        # Extraire les métriques par noyau (avec image pour intensité chromatine)
+        nuclei = self._extract_nucleus_metrics(instance_map, type_map, image)
 
         if len(nuclei) == 0:
             return self._empty_report()
@@ -169,10 +194,29 @@ class MorphometryAnalyzer:
         # Analyse spatiale / Topographie
         spatial_dist, clustering_score = self._analyze_spatial_distribution(nuclei)
 
+        # ==========================================
+        # NOUVELLES MÉTRIQUES
+        # ==========================================
+
+        # Index mitotique estimé
+        mitotic_candidates = [n for n in nuclei if n.is_mitotic_candidate]
+        mitotic_count = len(mitotic_candidates)
+        mitotic_nuclei_ids = [n.id for n in mitotic_candidates]
+
+        # Estimation pour 10 HPF (High Power Fields)
+        # 1 HPF ≈ 0.196 mm² à 40x, donc 10 HPF ≈ 1.96 mm²
+        # patch_area_mm2 est notre surface analysée
+        hpf_equivalent = patch_area_mm2 / 0.196
+        mitotic_index_per_10hpf = (mitotic_count / hpf_equivalent) * 10 if hpf_equivalent > 0 else 0
+
+        # TILs invasion (hot/cold)
+        til_distance, til_status, til_penetration = self._compute_til_invasion_metrics(nuclei)
+
         # Générer les alertes cliniques (langage suggestif + IDs des noyaux)
         alerts, alert_nuclei_ids = self._generate_alerts_with_ids(
             nuclei, mean_area, std_area, mean_circ,
-            nuclear_density, neoplastic_ratio, immuno_epithelial
+            nuclear_density, neoplastic_ratio, immuno_epithelial,
+            mitotic_count, mitotic_nuclei_ids, til_status
         )
 
         # Niveau de confiance
@@ -193,6 +237,14 @@ class MorphometryAnalyzer:
             stroma_tumor_distance_um=stroma_tumor_dist,
             spatial_distribution=spatial_dist,
             clustering_score=clustering_score,
+            # Nouvelles métriques
+            mitotic_candidates=mitotic_count,
+            mitotic_index_per_10hpf=mitotic_index_per_10hpf,
+            mitotic_nuclei_ids=mitotic_nuclei_ids,
+            til_invasion_distance_um=til_distance,
+            til_status=til_status,
+            til_penetration_ratio=til_penetration,
+            # Alertes
             alerts=alerts,
             alert_nuclei_ids=alert_nuclei_ids,
             confidence_level=confidence,
@@ -202,8 +254,16 @@ class MorphometryAnalyzer:
         self,
         instance_map: np.ndarray,
         type_map: np.ndarray,
+        image: Optional[np.ndarray] = None,
     ) -> List[NucleusMetrics]:
-        """Extrait les métriques pour chaque noyau."""
+        """
+        Extrait les métriques pour chaque noyau.
+
+        Args:
+            instance_map: Carte d'instances
+            type_map: Carte des types
+            image: Image originale (optionnel, pour intensité chromatine)
+        """
         nuclei = []
 
         for inst_id in range(1, instance_map.max() + 1):
@@ -229,12 +289,42 @@ class MorphometryAnalyzer:
             perimeter = cv2.arcLength(contours[0], True)
 
             # Circularité: 4π × area / perimeter²
-            # = 1 pour cercle parfait, < 1 pour formes irrégulières
             if perimeter > 0:
                 circularity = (4 * np.pi * area_pixels) / (perimeter ** 2)
-                circularity = min(circularity, 1.0)  # Clamp
+                circularity = min(circularity, 1.0)
             else:
                 circularity = 0.0
+
+            # Élongation via ellipse ajustée (pour détection mitoses)
+            elongation = 0.0
+            is_mitotic = False
+            if len(contours[0]) >= 5:  # fitEllipse nécessite au moins 5 points
+                try:
+                    ellipse = cv2.fitEllipse(contours[0])
+                    (_, (minor_axis, major_axis), _) = ellipse
+                    if minor_axis > 0:
+                        elongation = major_axis / minor_axis
+                        # Critères de mitose: très allongé (sablier) ou peu circulaire
+                        # et de taille moyenne (pas trop petit, pas trop grand)
+                        if (elongation > 1.8 or circularity < 0.4) and \
+                           30 < area_pixels < 500:
+                            is_mitotic = True
+                except cv2.error:
+                    pass
+
+            # Intensité moyenne (densité chromatine) si image fournie
+            mean_intensity = 0.0
+            if image is not None:
+                if len(image.shape) == 3:
+                    # Convertir en niveaux de gris (H de HSV pour H&E)
+                    gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
+                else:
+                    gray = image
+                mean_intensity = gray[mask].mean() if mask.sum() > 0 else 0.0
+                # Chromatine dense = intensité faible (noyaux sombres)
+                # Renforcer la suspicion de mitose si très dense
+                if mean_intensity < 80 and elongation > 1.5:
+                    is_mitotic = True
 
             # Type cellulaire (mode dans le masque)
             types_in_mask = type_map[mask]
@@ -252,6 +342,9 @@ class MorphometryAnalyzer:
                 circularity=circularity,
                 type_idx=type_idx,
                 type_name=CELL_TYPES[type_idx] if type_idx < 5 else "Unknown",
+                elongation=elongation,
+                mean_intensity=mean_intensity,
+                is_mitotic_candidate=is_mitotic,
             ))
 
         return nuclei
@@ -279,6 +372,62 @@ class MorphometryAnalyzer:
 
         mean_dist_pixels = np.mean(distances)
         return mean_dist_pixels * self.pixel_size_um
+
+    def _compute_til_invasion_metrics(
+        self,
+        nuclei: List[NucleusMetrics],
+    ) -> Tuple[float, str, float]:
+        """
+        Calcule les métriques d'invasion des TILs (Tumor-Infiltrating Lymphocytes).
+
+        Détermine si la tumeur est "chaude" (TILs pénètrent le massif) ou
+        "froide" (TILs bloqués en périphérie).
+
+        Returns:
+            (distance_um, status, penetration_ratio)
+            - distance_um: Distance moyenne TILs → centre tumoral
+            - status: "chaud", "froid", "exclu", "indéterminé"
+            - penetration_ratio: % TILs dans le massif tumoral (vs périphérie)
+        """
+        neoplastic = [n for n in nuclei if n.type_name == "Neoplastic"]
+        inflammatory = [n for n in nuclei if n.type_name == "Inflammatory"]
+
+        if len(neoplastic) < 5 or len(inflammatory) < 3:
+            return 0.0, "indéterminé", 0.0
+
+        neo_centers = np.array([n.centroid for n in neoplastic])
+        inf_centers = np.array([n.centroid for n in inflammatory])
+
+        # Centre du massif tumoral (barycentre des néoplasiques)
+        tumor_centroid = neo_centers.mean(axis=0)
+
+        # Rayon du massif tumoral (distance max au centroïde)
+        tumor_radius = np.sqrt(np.sum((neo_centers - tumor_centroid) ** 2, axis=1)).max()
+
+        # Distance de chaque TIL au centre tumoral
+        til_distances = np.sqrt(np.sum((inf_centers - tumor_centroid) ** 2, axis=1))
+        mean_til_distance = til_distances.mean()
+
+        # Ratio de pénétration: % de TILs à l'intérieur du rayon tumoral
+        tils_inside = np.sum(til_distances <= tumor_radius)
+        penetration_ratio = tils_inside / len(inflammatory) if len(inflammatory) > 0 else 0.0
+
+        # Classification du statut
+        if penetration_ratio > 0.5:
+            status = "chaud"  # TILs pénètrent le massif tumoral
+        elif penetration_ratio > 0.2:
+            status = "intermédiaire"  # Partiellement infiltré
+        elif len(inflammatory) > 0:
+            # Vérifier si TILs sont proches mais exclus
+            mean_dist_to_front = np.abs(til_distances - tumor_radius).mean()
+            if mean_dist_to_front < 20 * self.pixel_size_um:  # < 20 µm du front
+                status = "froid"  # TILs bloqués à la périphérie
+            else:
+                status = "exclu"  # TILs éloignés
+        else:
+            status = "indéterminé"
+
+        return mean_til_distance * self.pixel_size_um, status, penetration_ratio
 
     def _analyze_spatial_distribution(
         self,
@@ -350,6 +499,9 @@ class MorphometryAnalyzer:
         nuclear_density: float,
         neoplastic_ratio: float,
         immuno_epithelial: float,
+        mitotic_count: int = 0,
+        mitotic_nuclei_ids: List[int] = None,
+        til_status: str = "indéterminé",
     ) -> Tuple[List[str], Dict[str, List[int]]]:
         """
         Génère des alertes cliniques avec langage SUGGESTIF (pas définitif)
@@ -360,16 +512,37 @@ class MorphometryAnalyzer:
         """
         alerts = []
         alert_nuclei_ids = {}
+        if mitotic_nuclei_ids is None:
+            mitotic_nuclei_ids = []
+
+        # ==========================================
+        # INDEX MITOTIQUE (NOUVEAU)
+        # ==========================================
+        if mitotic_count > 0:
+            if mitotic_count >= 5:
+                alerts.append(f"🔍 Présence de figures évocatrices de mitoses ({mitotic_count})")
+            else:
+                alerts.append(f"ℹ️ Quelques figures évocatrices de mitoses ({mitotic_count})")
+            alert_nuclei_ids["mitose"] = mitotic_nuclei_ids
+
+        # ==========================================
+        # STATUT TILs (hot/cold) - NOUVEAU
+        # ==========================================
+        if til_status == "chaud":
+            alerts.append("ℹ️ Tumeur « chaude » : TILs infiltrant le massif tumoral")
+        elif til_status == "froid":
+            alerts.append("🔍 Tumeur « froide » : TILs bloqués en périphérie")
+        elif til_status == "exclu":
+            alerts.append("🔍 TILs exclus : immunité éloignée du site tumoral")
 
         # Coefficient de variation de l'aire (Anisocaryose)
         if mean_area > 0:
             cv_area = std_area / mean_area
             if cv_area > 0.5:
                 alerts.append(f"🔍 Suspicion d'anisocaryose marquée (CV={cv_area:.2f})")
-                # Identifier les noyaux les plus atypiques (aire > mean + 2*std)
                 threshold = mean_area + 2 * std_area
                 atypical = [n.id for n in nuclei if n.area_um2 > threshold]
-                alert_nuclei_ids["anisocaryose"] = atypical[:10]  # Top 10
+                alert_nuclei_ids["anisocaryose"] = atypical[:10]
             elif cv_area > 0.3:
                 alerts.append(f"🔍 Anisocaryose modérée à explorer (CV={cv_area:.2f})")
                 threshold = mean_area + 1.5 * std_area
@@ -379,7 +552,6 @@ class MorphometryAnalyzer:
         # Atypie de forme (circularité faible = noyaux irréguliers)
         if mean_circ < 0.6:
             alerts.append(f"🔍 Possible atypie nucléaire (Circularité={mean_circ:.2f})")
-            # Noyaux les moins circulaires
             irregular = sorted(nuclei, key=lambda n: n.circularity)[:10]
             alert_nuclei_ids["atypie_forme"] = [n.id for n in irregular]
 
@@ -391,7 +563,7 @@ class MorphometryAnalyzer:
 
         # Proportion néoplasique - LANGAGE SUGGESTIF
         if neoplastic_ratio > 0.5:
-            alerts.append(f"🔍 Suspicion de foyer néoplasique ({neoplastic_ratio:.0%} de la population)")
+            alerts.append(f"🔍 Suspicion de foyer néoplasique ({neoplastic_ratio:.0%})")
             neoplastic = [n.id for n in nuclei if n.type_name == "Neoplastic"]
             alert_nuclei_ids["neoplasique"] = neoplastic
         elif neoplastic_ratio > 0.2:
@@ -399,7 +571,7 @@ class MorphometryAnalyzer:
             neoplastic = [n.id for n in nuclei if n.type_name == "Neoplastic"]
             alert_nuclei_ids["neoplasique"] = neoplastic[:20]
 
-        # Infiltration lymphocytaire (TILs) - informatif, pas alarmant
+        # Infiltration lymphocytaire (TILs) - informatif
         if immuno_epithelial > 2.0:
             alerts.append(f"ℹ️ Infiltration lymphocytaire notable (ratio I/E={immuno_epithelial:.1f})")
             inflammatory = [n.id for n in nuclei if n.type_name == "Inflammatory"]
