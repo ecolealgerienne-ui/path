@@ -179,8 +179,8 @@ class HoVerNetLoss(nn.Module):
     Loss combinée HoVer-Net.
 
     - NP: BCE + Dice loss
-    - HV: MSE + Gradient MSE
-    - NT: CE + Dice loss
+    - HV: SmoothL1 + Gradient SmoothL1 (moins sensible aux outliers)
+    - NT: CE loss
     """
 
     def __init__(self, lambda_np: float = 1.0, lambda_hv: float = 1.0, lambda_nt: float = 1.0):
@@ -190,7 +190,7 @@ class HoVerNetLoss(nn.Module):
         self.lambda_nt = lambda_nt
 
         self.bce = nn.CrossEntropyLoss()
-        self.mse = nn.MSELoss()
+        self.smooth_l1 = nn.SmoothL1Loss()  # Remplace MSE - moins sensible aux outliers
 
     def dice_loss(self, pred: torch.Tensor, target: torch.Tensor, smooth: float = 1e-5) -> torch.Tensor:
         """Dice loss pour segmentation."""
@@ -202,8 +202,8 @@ class HoVerNetLoss(nn.Module):
         dice = (2 * intersection + smooth) / (union + smooth)
         return 1 - dice
 
-    def gradient_mse(self, pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
-        """MSE sur les gradients (pour HV maps)."""
+    def gradient_loss(self, pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+        """SmoothL1 sur les gradients (pour HV maps) - moins sensible aux outliers."""
         # Gradient horizontal
         pred_h = pred[:, :, :, 1:] - pred[:, :, :, :-1]
         target_h = target[:, :, :, 1:] - target[:, :, :, :-1]
@@ -212,7 +212,7 @@ class HoVerNetLoss(nn.Module):
         pred_v = pred[:, :, 1:, :] - pred[:, :, :-1, :]
         target_v = target[:, :, 1:, :] - target[:, :, :-1, :]
 
-        return self.mse(pred_h, target_h) + self.mse(pred_v, target_v)
+        return self.smooth_l1(pred_h, target_h) + self.smooth_l1(pred_v, target_v)
 
     def forward(
         self,
@@ -234,10 +234,10 @@ class HoVerNetLoss(nn.Module):
         np_dice = self.dice_loss(np_pred, np_target.float())
         np_loss = np_bce + np_dice
 
-        # HV loss: MSE + Gradient MSE
-        hv_mse = self.mse(hv_pred, hv_target)
-        hv_grad = self.gradient_mse(hv_pred, hv_target)
-        hv_loss = hv_mse + hv_grad
+        # HV loss: SmoothL1 + Gradient SmoothL1 (moins sensible aux outliers)
+        hv_l1 = self.smooth_l1(hv_pred, hv_target)
+        hv_grad = self.gradient_loss(hv_pred, hv_target)
+        hv_loss = hv_l1 + hv_grad
 
         # NT loss: CE (sur tous les pixels)
         nt_loss = self.bce(nt_pred, nt_target.long())
