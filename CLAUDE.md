@@ -210,10 +210,47 @@ cellvit-optimus/
 ## Décisions Techniques Clés
 
 1. **Backbone gelé** — H-optimus-0 n'est jamais fine-tuné, seules les têtes s'entraînent
-2. **UNETR pour reconstruction spatiale** — Extraction features couches 6/12/18/24 du ViT
+2. **HoVer-Net par famille** — 5 décodeurs spécialisés (Glandulaire, Digestive, Urologique, Respiratoire, Épidermoïde)
 3. **Tiling adaptatif** — Recall 0.999 sur tissu tumoral, garde-fou basse résolution
 4. **Cache d'embeddings versionné** — Hash [Backbone]+[Preprocessing]+[Resolution]+[Date]
 5. **Distillation limitée au pré-triage** — Le modèle original reste obligatoire pour diagnostic
+6. **Cartes HV pré-calculées** — Stockage int8 pour économie mémoire (voir section ci-dessous)
+
+---
+
+## Cartes HV (Horizontal/Vertical) — Séparation d'Instances
+
+### Problème
+Dans les tissus denses, les noyaux se chevauchent. Un masque binaire ne permet pas de distinguer où finit un noyau et où commence le suivant.
+
+### Solution HoVer-Net
+Pour chaque pixel d'un noyau, on calcule sa distance normalisée au centre:
+
+```
+Masque binaire:          Carte H (horizontal):       Carte V (vertical):
+┌─────────────┐          ┌─────────────┐            ┌─────────────┐
+│  ████████   │          │  -1  0  +1  │            │  -1 -1 -1   │
+│  ████████   │    →     │  -1  0  +1  │            │   0  0  0   │
+│  ████████   │          │  -1  0  +1  │            │  +1 +1 +1   │
+└─────────────┘          └─────────────┘            └─────────────┘
+```
+
+- **H** = distance horizontale normalisée au centre [-1, +1]
+- **V** = distance verticale normalisée au centre [-1, +1]
+
+### Utilité
+- Le **gradient** des cartes HV est maximal aux **frontières** entre noyaux
+- Post-processing: `sobel(HV)` → contours → watershed → instances séparées
+- Permet de séparer des noyaux qui se touchent
+
+### Optimisation Stockage
+```
+float32 [-1, 1] → int8 [-127, 127]
+Économie: 75% d'espace disque
+Précision: 127 niveaux suffisent pour le Sobel/Watershed
+```
+
+**Pré-calcul obligatoire** car `cv2.connectedComponents` est lent (~5-10ms/image).
 
 ---
 
