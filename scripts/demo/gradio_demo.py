@@ -46,6 +46,18 @@ except ImportError:
     MORPHOMETRY_AVAILABLE = False
     print("⚠️ Module morphométrie non disponible")
 
+# Import du module feedback Active Learning
+try:
+    from src.feedback.active_learning import (
+        FeedbackCollector,
+        FeedbackType,
+        get_feedback_collector,
+    )
+    FEEDBACK_AVAILABLE = True
+except ImportError:
+    FEEDBACK_AVAILABLE = False
+    print("⚠️ Module feedback non disponible")
+
 # Liste des 19 organes PanNuke pour comparaison
 PANNUKE_ORGANS = [
     "Adrenal_gland", "Bile-duct", "Bladder", "Breast", "Cervix",
@@ -1178,6 +1190,169 @@ def create_demo_interface():
                 *Système d'assistance au triage histopathologique.*
                 *Ne remplace pas le pathologiste - aide à prioriser et sécuriser.*
                 """)
+
+            # Tab 5: Feedback Expert (Active Learning)
+            with gr.TabItem("📝 Feedback Expert"):
+                if FEEDBACK_AVAILABLE:
+                    gr.Markdown("""
+                    ### Mode "Seconde Lecture" - Arbitrage Expert
+
+                    Ce panneau permet aux pathologistes de signaler les désaccords
+                    avec les prédictions du modèle. Les corrections sont collectées
+                    pour améliorer le système de manière continue.
+
+                    **Types de corrections possibles:**
+                    - 🔴 **Type cellulaire incorrect** — Le modèle a mal classifié une cellule
+                    - 🟡 **Fausse mitose** — Une figure mitotique était en fait autre chose
+                    - 🟢 **Mitose manquée** — Le modèle n'a pas détecté une vraie mitose
+                    - 🔵 **Statut TILs incorrect** — Chaud/Froid mal évalué
+                    - ⚫ **Organe incorrect** — Mauvais organe détecté
+
+                    ---
+                    """)
+
+                    with gr.Row():
+                        with gr.Column(scale=1):
+                            fb_type = gr.Dropdown(
+                                choices=[
+                                    "Type cellulaire incorrect",
+                                    "Fausse mitose (faux positif)",
+                                    "Mitose manquée (faux négatif)",
+                                    "Statut TILs incorrect",
+                                    "Organe incorrect",
+                                    "Alerte non justifiée",
+                                    "Autre",
+                                ],
+                                value="Type cellulaire incorrect",
+                                label="Type de correction"
+                            )
+
+                            fb_predicted = gr.Textbox(
+                                label="Prédiction du modèle",
+                                placeholder="ex: Neoplastic"
+                            )
+
+                            fb_corrected = gr.Textbox(
+                                label="Correction experte",
+                                placeholder="ex: Inflammatory"
+                            )
+
+                            fb_severity = gr.Radio(
+                                choices=["low", "medium", "high", "critical"],
+                                value="medium",
+                                label="Sévérité de l'erreur"
+                            )
+
+                            fb_comment = gr.Textbox(
+                                label="Commentaire (optionnel)",
+                                placeholder="Détails supplémentaires...",
+                                lines=3
+                            )
+
+                            fb_submit = gr.Button(
+                                "📝 Enregistrer la correction",
+                                variant="primary"
+                            )
+
+                        with gr.Column(scale=1):
+                            fb_status = gr.Textbox(
+                                label="Statut",
+                                lines=5,
+                                interactive=False
+                            )
+
+                            fb_stats = gr.Textbox(
+                                label="Statistiques de la session",
+                                lines=10,
+                                interactive=False
+                            )
+
+                            fb_refresh = gr.Button("🔄 Rafraîchir les statistiques")
+
+                    # Handlers
+                    def submit_feedback(fb_type, predicted, corrected, severity, comment):
+                        collector = get_feedback_collector()
+
+                        type_mapping = {
+                            "Type cellulaire incorrect": FeedbackType.CELL_TYPE_WRONG,
+                            "Fausse mitose (faux positif)": FeedbackType.MITOSIS_FALSE_POSITIVE,
+                            "Mitose manquée (faux négatif)": FeedbackType.MITOSIS_MISSED,
+                            "Statut TILs incorrect": FeedbackType.TILS_STATUS_WRONG,
+                            "Organe incorrect": FeedbackType.ORGAN_WRONG,
+                            "Alerte non justifiée": FeedbackType.FALSE_ALARM,
+                            "Autre": FeedbackType.OTHER,
+                        }
+
+                        entry = collector.add_feedback(
+                            feedback_type=type_mapping.get(fb_type, FeedbackType.OTHER),
+                            predicted_class=predicted,
+                            corrected_class=corrected,
+                            severity=severity,
+                            expert_comment=comment,
+                        )
+
+                        # Sauvegarder immédiatement
+                        path = collector.save_session()
+
+                        summary = collector.get_session_summary()
+
+                        return (
+                            f"✅ Correction enregistrée!\n\n"
+                            f"ID: {entry.id}\n"
+                            f"Type: {fb_type}\n"
+                            f"Sévérité: {severity}\n\n"
+                            f"Fichier: {path}",
+                            summary
+                        )
+
+                    def refresh_stats():
+                        collector = get_feedback_collector()
+                        stats = collector.get_statistics()
+
+                        if stats.get("total", 0) == 0:
+                            return "Aucun feedback collecté dans cette session."
+
+                        lines = [
+                            f"📊 STATISTIQUES GLOBALES",
+                            f"========================",
+                            f"Total corrections: {stats['total']}",
+                            "",
+                            "Par type:",
+                        ]
+                        for t, count in stats.get("by_type", {}).items():
+                            lines.append(f"  - {t}: {count}")
+
+                        lines.extend(["", "Par sévérité:"])
+                        for s, count in stats.get("by_severity", {}).items():
+                            if count > 0:
+                                lines.append(f"  - {s}: {count}")
+
+                        if stats.get("common_corrections"):
+                            lines.extend(["", "Corrections fréquentes:"])
+                            for corr, count in stats["common_corrections"][:5]:
+                                lines.append(f"  - {corr}: {count}x")
+
+                        return "\n".join(lines)
+
+                    fb_submit.click(
+                        fn=submit_feedback,
+                        inputs=[fb_type, fb_predicted, fb_corrected, fb_severity, fb_comment],
+                        outputs=[fb_status, fb_stats]
+                    )
+
+                    fb_refresh.click(
+                        fn=refresh_stats,
+                        inputs=[],
+                        outputs=[fb_stats]
+                    )
+
+                else:
+                    gr.Markdown("""
+                    ### ⚠️ Module Feedback non disponible
+
+                    Le module `src.feedback.active_learning` n'est pas chargé.
+                    Vérifiez l'installation du projet.
+                    """)
 
         # Charger la première image au démarrage
         interface.load(

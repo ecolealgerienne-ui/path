@@ -20,7 +20,8 @@ Métriques disponibles:
 
 import numpy as np
 from scipy import ndimage
-from scipy.spatial import Voronoi, distance
+from scipy.spatial import Voronoi, distance, ConvexHull
+from scipy.spatial.qhull import QhullError
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 import cv2
@@ -297,33 +298,46 @@ class MorphometryAnalyzer:
 
             # Élongation via ellipse ajustée (pour détection mitoses)
             elongation = 0.0
-            is_mitotic = False
             if len(contours[0]) >= 5:  # fitEllipse nécessite au moins 5 points
                 try:
                     ellipse = cv2.fitEllipse(contours[0])
                     (_, (minor_axis, major_axis), _) = ellipse
                     if minor_axis > 0:
                         elongation = major_axis / minor_axis
-                        # Critères de mitose: très allongé (sablier) ou peu circulaire
-                        # et de taille moyenne (pas trop petit, pas trop grand)
-                        if (elongation > 1.8 or circularity < 0.4) and \
-                           30 < area_pixels < 500:
-                            is_mitotic = True
                 except cv2.error:
                     pass
 
             # Intensité moyenne (densité chromatine) si image fournie
-            mean_intensity = 0.0
+            mean_intensity = 255.0  # Défaut clair (pas mitotique)
             if image is not None:
                 if len(image.shape) == 3:
                     # Convertir en niveaux de gris (H de HSV pour H&E)
                     gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
                 else:
                     gray = image
-                mean_intensity = gray[mask].mean() if mask.sum() > 0 else 0.0
-                # Chromatine dense = intensité faible (noyaux sombres)
-                # Renforcer la suspicion de mitose si très dense
-                if mean_intensity < 80 and elongation > 1.5:
+                mean_intensity = gray[mask].mean() if mask.sum() > 0 else 255.0
+
+            # ==========================================
+            # DÉTECTION MITOTIQUE RAFFINÉE
+            # ==========================================
+            # Critères combinés (AND) pour réduire les faux positifs:
+            # - Les cellules endothéliales/fibroblastes sont allongées MAIS claires
+            # - Les figures mitotiques sont allongées ET hyperchromatiques (sombres)
+            #
+            # Seuils calibrés (recommandation expert pathologiste):
+            # - elongation > 1.8 : forme "sablier" caractéristique
+            # - mean_intensity < 100 : chromatine condensée (noyau sombre)
+            # - Taille intermédiaire : 30-500 pixels (pas débris, pas artéfact)
+            is_mitotic = False
+            if 30 < area_pixels < 500:  # Taille plausible pour mitose
+                # Critère 1: Forme très allongée ET hyperchromatique
+                if elongation > 1.8 and mean_intensity < 100:
+                    is_mitotic = True
+                # Critère 2: Forme en métaphase (moins allongée mais très dense)
+                elif elongation > 1.5 and mean_intensity < 70 and circularity < 0.5:
+                    is_mitotic = True
+                # Critère 3: Anaphase/Télophase (très allongée, chromatine visible)
+                elif elongation > 2.2 and mean_intensity < 120:
                     is_mitotic = True
 
             # Type cellulaire (mode dans le masque)
@@ -380,12 +394,15 @@ class MorphometryAnalyzer:
         """
         Calcule les métriques d'invasion des TILs (Tumor-Infiltrating Lymphocytes).
 
+        Utilise l'enveloppe convexe (Convex Hull) des cellules néoplasiques
+        pour définir précisément le front tumoral.
+
         Détermine si la tumeur est "chaude" (TILs pénètrent le massif) ou
         "froide" (TILs bloqués en périphérie).
 
         Returns:
             (distance_um, status, penetration_ratio)
-            - distance_um: Distance moyenne TILs → centre tumoral
+            - distance_um: Distance moyenne TILs → front tumoral
             - status: "chaud", "froid", "exclu", "indéterminé"
             - penetration_ratio: % TILs dans le massif tumoral (vs périphérie)
         """
@@ -398,34 +415,87 @@ class MorphometryAnalyzer:
         neo_centers = np.array([n.centroid for n in neoplastic])
         inf_centers = np.array([n.centroid for n in inflammatory])
 
-        # Centre du massif tumoral (barycentre des néoplasiques)
-        tumor_centroid = neo_centers.mean(axis=0)
+        # ==========================================
+        # CONVEX HULL POUR DÉFINIR LE FRONT TUMORAL
+        # ==========================================
+        # L'enveloppe convexe des cellules néoplasiques définit
+        # le "massif tumoral" de manière plus précise qu'un cercle
+        try:
+            hull = ConvexHull(neo_centers)
+            hull_vertices = neo_centers[hull.vertices]
+        except QhullError:
+            # Fallback si les points sont colinéaires
+            tumor_centroid = neo_centers.mean(axis=0)
+            tumor_radius = np.sqrt(np.sum((neo_centers - tumor_centroid) ** 2, axis=1)).max()
+            til_distances = np.sqrt(np.sum((inf_centers - tumor_centroid) ** 2, axis=1))
+            penetration_ratio = np.sum(til_distances <= tumor_radius) / len(inflammatory)
+            return til_distances.mean() * self.pixel_size_um, "indéterminé", penetration_ratio
 
-        # Rayon du massif tumoral (distance max au centroïde)
-        tumor_radius = np.sqrt(np.sum((neo_centers - tumor_centroid) ** 2, axis=1)).max()
+        # Vérifier si chaque TIL est à l'intérieur du Convex Hull
+        # Utilisation du test de demi-plan (cross product method)
+        def point_in_hull(point: np.ndarray, hull_vertices: np.ndarray) -> bool:
+            """Test si un point est à l'intérieur de l'enveloppe convexe."""
+            n = len(hull_vertices)
+            for i in range(n):
+                v1 = hull_vertices[i]
+                v2 = hull_vertices[(i + 1) % n]
+                # Cross product pour déterminer le côté
+                cross = (v2[0] - v1[0]) * (point[1] - v1[1]) - \
+                        (v2[1] - v1[1]) * (point[0] - v1[0])
+                if cross < 0:  # Point à l'extérieur
+                    return False
+            return True
 
-        # Distance de chaque TIL au centre tumoral
-        til_distances = np.sqrt(np.sum((inf_centers - tumor_centroid) ** 2, axis=1))
-        mean_til_distance = til_distances.mean()
+        # Calculer le ratio de pénétration (TILs dans le hull)
+        tils_inside = sum(1 for inf in inf_centers if point_in_hull(inf, hull_vertices))
+        penetration_ratio = tils_inside / len(inflammatory)
 
-        # Ratio de pénétration: % de TILs à l'intérieur du rayon tumoral
-        tils_inside = np.sum(til_distances <= tumor_radius)
-        penetration_ratio = tils_inside / len(inflammatory) if len(inflammatory) > 0 else 0.0
+        # Distance moyenne au front tumoral (bord du hull)
+        # Pour chaque TIL, calculer la distance au segment de hull le plus proche
+        def distance_to_hull_edge(point: np.ndarray, hull_vertices: np.ndarray) -> float:
+            """Distance minimale d'un point au bord du hull."""
+            min_dist = float('inf')
+            n = len(hull_vertices)
+            for i in range(n):
+                v1 = hull_vertices[i]
+                v2 = hull_vertices[(i + 1) % n]
+                # Distance point → segment
+                line_vec = v2 - v1
+                point_vec = point - v1
+                line_len = np.linalg.norm(line_vec)
+                if line_len < 1e-6:
+                    continue
+                line_unitvec = line_vec / line_len
+                proj_length = np.dot(point_vec, line_unitvec)
+                proj_length = max(0, min(line_len, proj_length))
+                closest_point = v1 + proj_length * line_unitvec
+                dist = np.linalg.norm(point - closest_point)
+                min_dist = min(min_dist, dist)
+            return min_dist
+
+        # Calculer distances au front pour tous les TILs
+        til_distances_to_front = [distance_to_hull_edge(inf, hull_vertices) for inf in inf_centers]
+        mean_til_distance = np.mean(til_distances_to_front)
+
+        # Marge de périphérie (20 µm autour du front)
+        periphery_margin_pixels = 20 / self.pixel_size_um
 
         # Classification du statut
         if penetration_ratio > 0.5:
             status = "chaud"  # TILs pénètrent le massif tumoral
         elif penetration_ratio > 0.2:
             status = "intermédiaire"  # Partiellement infiltré
-        elif len(inflammatory) > 0:
-            # Vérifier si TILs sont proches mais exclus
-            mean_dist_to_front = np.abs(til_distances - tumor_radius).mean()
-            if mean_dist_to_front < 20 * self.pixel_size_um:  # < 20 µm du front
-                status = "froid"  # TILs bloqués à la périphérie
-            else:
-                status = "exclu"  # TILs éloignés
         else:
-            status = "indéterminé"
+            # Vérifier si TILs sont proches mais bloqués au front
+            tils_at_periphery = sum(1 for d in til_distances_to_front if d < periphery_margin_pixels)
+            periphery_ratio = tils_at_periphery / len(inflammatory)
+
+            if periphery_ratio > 0.5:
+                status = "froid"  # TILs bloqués à la périphérie du front
+            elif mean_til_distance * self.pixel_size_um > 50:  # > 50 µm du front
+                status = "exclu"  # TILs éloignés
+            else:
+                status = "froid"  # Par défaut si proche mais pas dedans
 
         return mean_til_distance * self.pixel_size_um, status, penetration_ratio
 
