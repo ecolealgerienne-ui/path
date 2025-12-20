@@ -261,8 +261,8 @@ class OptimusGate(nn.Module):
         # Simplification: ood_global contient déjà entropy + mahal global
         ood_combined = 0.6 * ood_global + 0.4 * ood_local
 
-        # Détection
-        is_ood = ood_combined > 0.6 or ood_global > 0.7
+        # Détection (seuils relaxés pour éviter faux positifs)
+        is_ood = ood_combined > 0.7 or ood_global > 0.8
 
         return ood_global, ood_local, ood_combined, is_ood
 

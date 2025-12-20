@@ -5,8 +5,7 @@ Interface Gradio pour la démonstration CellViT-Optimus.
 Permet de visualiser interactivement les segmentations cellulaires
 et d'explorer les différents types de tissus.
 
-Architecture cible: H-optimus-0 (backbone gelé) + HoVer-Net decoder
-Basé sur la littérature: CellViT, HoVer-Net
+Architecture cible: Optimus-Gate (H-optimus-0 + OrganHead + HoVer-Net)
 """
 
 import gradio as gr
@@ -29,29 +28,59 @@ from scripts.demo.visualize_cells import (
 )
 from scripts.demo.synthetic_cells import generate_synthetic_tissue, TISSUE_CONFIGS
 
+# Liste des 19 organes PanNuke pour comparaison
+PANNUKE_ORGANS = [
+    "Adrenal_gland", "Bile-duct", "Bladder", "Breast", "Cervix",
+    "Colon", "Esophagus", "HeadNeck", "Kidney", "Liver",
+    "Lung", "Ovarian", "Pancreatic", "Prostate", "Skin",
+    "Stomach", "Testis", "Thyroid", "Uterus"
+]
+
 # Configuration des modèles
 HOVERNET_CHECKPOINT = PROJECT_ROOT / "models" / "checkpoints" / "hovernet_best.pth"
+ORGAN_HEAD_CHECKPOINT = PROJECT_ROOT / "models" / "checkpoints" / "organ_head_best.pth"
 UNETR_CHECKPOINT = PROJECT_ROOT / "models" / "checkpoints" / "unetr_best.pth"
 
-# Tenter de charger les modèles (priorité: HoVer-Net > UNETR > simulation)
+# Tenter de charger les modèles (priorité: OptimusGate > HoVer-Net > UNETR > simulation)
 MODEL_AVAILABLE = False
 inference_model = None
 MODEL_NAME = "Simulation"
+IS_OPTIMUS_GATE = False
 
-# 1. Essayer HoVer-Net (meilleure architecture)
+# 1. Essayer OptimusGate (architecture complète: OrganHead + HoVer-Net)
 try:
-    from src.inference.hoptimus_hovernet import HOptimusHoVerNetInference
+    from src.inference.optimus_gate_inference import OptimusGateInference
 
-    if HOVERNET_CHECKPOINT.exists():
-        print(f"Chargement H-optimus-0 + HoVer-Net depuis {HOVERNET_CHECKPOINT}...")
-        inference_model = HOptimusHoVerNetInference(str(HOVERNET_CHECKPOINT))
+    if HOVERNET_CHECKPOINT.exists() and ORGAN_HEAD_CHECKPOINT.exists():
+        print(f"Chargement Optimus-Gate...")
+        inference_model = OptimusGateInference(
+            hovernet_path=str(HOVERNET_CHECKPOINT),
+            organ_head_path=str(ORGAN_HEAD_CHECKPOINT),
+        )
         MODEL_AVAILABLE = True
-        MODEL_NAME = "H-optimus-0 + HoVer-Net"
+        MODEL_NAME = "Optimus-Gate"
+        IS_OPTIMUS_GATE = True
         print(f"✅ {MODEL_NAME} chargé avec succès!")
 except Exception as e:
-    print(f"HoVer-Net non disponible: {e}")
+    print(f"OptimusGate non disponible: {e}")
+    import traceback
+    traceback.print_exc()
 
-# 2. Sinon essayer UNETR (fallback)
+# 2. Sinon essayer HoVer-Net seul
+if not MODEL_AVAILABLE:
+    try:
+        from src.inference.hoptimus_hovernet import HOptimusHoVerNetInference
+
+        if HOVERNET_CHECKPOINT.exists():
+            print(f"Chargement H-optimus-0 + HoVer-Net depuis {HOVERNET_CHECKPOINT}...")
+            inference_model = HOptimusHoVerNetInference(str(HOVERNET_CHECKPOINT))
+            MODEL_AVAILABLE = True
+            MODEL_NAME = "H-optimus-0 + HoVer-Net"
+            print(f"✅ {MODEL_NAME} chargé avec succès!")
+    except Exception as e:
+        print(f"HoVer-Net non disponible: {e}")
+
+# 3. Sinon essayer UNETR (fallback)
 if not MODEL_AVAILABLE:
     try:
         from src.inference.hoptimus_unetr import HOptimusUNETRInference
@@ -273,10 +302,10 @@ class CellVitDemo:
             new_w, new_h = int(w * scale), int(h * scale)
             image = cv2.resize(image, (new_w, new_h))
 
-        # Utiliser H-optimus-0 + HoVer-Net si disponible
+        # Utiliser le modèle si disponible
         if MODEL_AVAILABLE and inference_model is not None:
             try:
-                # Inférence avec le modèle cible
+                # Inférence avec le modèle
                 result_data = inference_model.predict(image)
 
                 # Visualisation segmentation
@@ -296,13 +325,47 @@ class CellVitDemo:
 
                 # Rapport
                 report = inference_model.generate_report(result_data)
-                report = f"""
+
+                # Header selon le modèle
+                if IS_OPTIMUS_GATE:
+                    organ_info = result_data.get('organ')
+                    organ_name = organ_info.organ_name if organ_info else "N/A"
+                    organ_conf = organ_info.confidence if organ_info else 0
+
+                    # Comparaison avec l'organe attendu
+                    expected = tissue_type
+                    predicted = organ_name
+                    # Normaliser pour comparaison (ignorer casse et underscores)
+                    match = expected.lower().replace("_", "").replace("-", "") == \
+                            predicted.lower().replace("_", "").replace("-", "")
+
+                    if match:
+                        comparison = f"✅ CORRECT — Prédit: {predicted} = Attendu: {expected}"
+                    else:
+                        comparison = f"❌ DIFFÉRENT — Prédit: {predicted} ≠ Attendu: {expected}"
+
+                    header = f"""
+✅ OPTIMUS-GATE ACTIF
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🔬 Architecture complète:
+   • Backbone: H-optimus-0 (1.1B params)
+   • Flux Global: OrganHead (classification organe)
+   • Flux Local: HoVer-Net (segmentation cellulaire)
+   • Sécurité: Triple OOD (entropie + Mahalanobis)
+
+🏥 Organe détecté: {organ_name} ({organ_conf:.1%})
+🎯 {comparison}
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+"""
+                else:
+                    header = f"""
 ✅ MODÈLE {MODEL_NAME} ACTIF
 Architecture: H-optimus-0 (1.1B params) + Décodeur HoVer-Net
 Couche 3: Estimation d'incertitude active
 
-{report}
 """
+                report = header + report
                 return image, result, uncertainty_vis, report
 
             except Exception as e:
@@ -326,9 +389,12 @@ Couche 3: Estimation d'incertitude active
 La classification des cellules est simulée.
 {MODEL_NAME} non disponible ou erreur.
 
-Pour activer le modèle:
+Pour activer Optimus-Gate:
 1. Entraîner HoVer-Net: python scripts/training/train_hovernet.py
-2. Checkpoint attendu: models/checkpoints/hovernet_best.pth
+2. Entraîner OrganHead: python scripts/training/train_organ_head.py
+3. Checkpoints attendus:
+   - models/checkpoints/hovernet_best.pth
+   - models/checkpoints/organ_head_best.pth
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -424,7 +490,27 @@ def create_demo_interface():
 
             # Tab 2: Analyser une image uploadée
             with gr.TabItem("📤 Analyser votre Image"):
-                if MODEL_AVAILABLE:
+                if IS_OPTIMUS_GATE:
+                    gr.Markdown(f"""
+                    ### Analysez votre propre image histopathologique
+
+                    Uploadez une image de tissu coloré H&E pour obtenir une analyse complète.
+
+                    **✅ OPTIMUS-GATE est actif** — Architecture double flux:
+
+                    🔬 **Flux Global (OrganHead)**
+                    - Classification d'organe (19 organes PanNuke)
+                    - Détection OOD sur CLS token
+
+                    🔎 **Flux Local (HoVer-Net)**
+                    - Segmentation cellulaire instance-aware
+                    - Typage (Neoplastic, Inflammatory, Connective, Dead, Epithelial)
+
+                    🛡️ **Triple Sécurité OOD**
+                    - Entropie softmax + Mahalanobis global + Mahalanobis local
+                    - **Sortie**: {{Fiable | À revoir | Hors domaine}}
+                    """)
+                elif MODEL_AVAILABLE:
                     gr.Markdown(f"""
                     ### Analysez votre propre image histopathologique
 
@@ -457,9 +543,9 @@ def create_demo_interface():
                             sources=["upload", "clipboard"]
                         )
                         upload_tissue = gr.Dropdown(
-                            choices=list(TISSUE_CONFIGS.keys()),
-                            value="Breast",
-                            label="Type de tissu (fallback simulation)"
+                            choices=PANNUKE_ORGANS,
+                            value="Prostate",
+                            label="🎯 Organe attendu (pour comparaison)"
                         )
                         analyze_btn = gr.Button(
                             "🔬 Analyser",
@@ -554,40 +640,50 @@ def create_demo_interface():
             # Tab 4: À propos
             with gr.TabItem("ℹ️ À propos"):
                 gr.Markdown("""
-                ## CellViT-Optimus
+                ## CellViT-Optimus — Architecture Optimus-Gate
 
-                ### Architecture
+                ### Architecture Double Flux
 
                 ```
-                ┌─────────────────────────────────────────┐
-                │           Image H&E (WSI)               │
-                └─────────────────────────────────────────┘
-                                    │
-                                    ▼
-                ┌─────────────────────────────────────────┐
-                │      H-OPTIMUS-0 (Backbone gelé)        │
-                │      ViT-Giant/14, 1.1B params          │
-                │      → Embeddings 1536-dim              │
-                └─────────────────────────────────────────┘
-                                    │
-                                    ▼
-                ┌─────────────────────────────────────────┐
-                │         Décodeur UNETR                  │
-                │      Segmentation cellulaire            │
-                └─────────────────────────────────────────┘
-                                    │
-                                    ▼
-                ┌─────────────────────────────────────────┐
-                │       Classification (5 types)          │
-                │  • Neoplastic (tumeur)                  │
-                │  • Inflammatory                         │
-                │  • Connective                           │
-                │  • Dead (nécrose)                       │
-                │  • Epithelial                           │
-                └─────────────────────────────────────────┘
+                ┌─────────────────────────────────────────────────────────┐
+                │                   Image H&E (WSI)                       │
+                └─────────────────────────────────────────────────────────┘
+                                           │
+                                           ▼
+                ┌─────────────────────────────────────────────────────────┐
+                │            H-OPTIMUS-0 (Backbone gelé)                  │
+                │            ViT-Giant/14, 1.1B params                    │
+                │                                                         │
+                │      Sortie: CLS token (1×1536) + Patches (256×1536)   │
+                └─────────────────────────────────────────────────────────┘
+                                           │
+                          ┌────────────────┴────────────────┐
+                          ▼                                 ▼
+                ┌─────────────────────────┐   ┌─────────────────────────┐
+                │   FLUX GLOBAL           │   │   FLUX LOCAL            │
+                │   OrganHead             │   │   HoVer-Net Decoder     │
+                │                         │   │                         │
+                │   • CLS token → MLP     │   │   • Patches → Upsampling│
+                │   • 19 organes PanNuke  │   │   • NP: noyaux binaire  │
+                │   • OOD Mahalanobis     │   │   • HV: séparation      │
+                │                         │   │   • NT: 5 types cell.   │
+                │   ✅ Accuracy: 96%      │   │   ✅ Dice: 0.96         │
+                └─────────────────────────┘   └─────────────────────────┘
+                          │                                 │
+                          └────────────────┬────────────────┘
+                                           ▼
+                ┌─────────────────────────────────────────────────────────┐
+                │              TRIPLE SÉCURITÉ OOD                        │
+                │                                                         │
+                │   1. Entropie softmax (incertitude classification)     │
+                │   2. Mahalanobis global (distance CLS token)           │
+                │   3. Mahalanobis local (distance patches)              │
+                │                                                         │
+                │   Sortie: {Fiable ✅ | À revoir ⚠️ | Hors domaine 🚫}  │
+                └─────────────────────────────────────────────────────────┘
                 ```
 
-                ### Types de Cellules
+                ### Types de Cellules (Flux Local)
 
                 | Type | Couleur | Description |
                 |------|---------|-------------|
@@ -595,18 +691,27 @@ def create_demo_interface():
                 | Inflammatory | 🟢 Vert | Cellules immunitaires |
                 | Connective | 🔵 Bleu | Tissu de soutien |
                 | Dead | 🟡 Jaune | Cellules nécrotiques |
-                | Epithelial | 🔷 Cyan | Cellules épithéliales |
+                | Epithelial | 🩵 Cyan | Cellules épithéliales |
+
+                ### Organes Supportés (Flux Global)
+
+                Les 19 organes du dataset PanNuke:
+                - Adrenal gland, Bile duct, Bladder, Breast, Cervix
+                - Colon, Esophagus, HeadNeck, Kidney, Liver
+                - Lung, Ovarian, Pancreatic, Prostate, Skin
+                - Stomach, Testis, Thyroid, Uterus
 
                 ### Références
 
                 - **H-optimus-0**: [Bioptimus](https://huggingface.co/bioptimus/H-optimus-0)
                 - **CellViT**: [TIO-IKIM](https://github.com/TIO-IKIM/CellViT)
+                - **HoVer-Net**: [Warwick TIA](https://github.com/vqdang/hover_net)
                 - **PanNuke**: [Warwick TIA](https://warwick.ac.uk/fac/sci/dcs/research/tia/data/pannuke/)
 
                 ---
 
-                *Ce démo utilise des données synthétiques pour illustration.*
-                *En production, le système utilise de vraies images histopathologiques.*
+                *Système d'assistance au triage histopathologique.*
+                *Ne remplace pas le pathologiste - aide à prioriser et sécuriser.*
                 """)
 
         # Charger la première image au démarrage

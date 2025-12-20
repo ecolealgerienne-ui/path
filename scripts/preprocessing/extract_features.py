@@ -5,14 +5,20 @@ Script d'extraction de features avec H-optimus-0 sur PanNuke.
 Ce script :
 1. Charge les images PanNuke
 2. Les prétraite pour H-optimus-0 (resize 224x224, normalisation)
-3. Extrait les features des couches 6, 12, 18, 24 (pour UNETR)
-4. Sauvegarde les features pour entraînement UNETR
+3. Extrait les features (layer 24 par défaut, ou couches 6, 12, 18, 24 pour UNETR)
+4. Sauvegarde les features pour entraînement
 
 Usage:
+    # Extraction rapide (layer 24 seulement - recommandé)
+    python scripts/preprocessing/extract_features.py \
+        --data_dir /home/amar/data/PanNuke \
+        --fold 0
+
+    # Extraction complète (4 couches pour UNETR)
     python scripts/preprocessing/extract_features.py \
         --data_dir /home/amar/data/PanNuke \
         --fold 0 \
-        --output_dir data/cache/pannuke_features
+        --all_layers
 """
 
 import argparse
@@ -72,7 +78,12 @@ def create_transform():
 class HOptimusFeatureExtractor:
     """Extracteur de features multi-couches pour H-optimus-0."""
 
-    def __init__(self, device="cuda"):
+    def __init__(self, device="cuda", all_layers=False):
+        """
+        Args:
+            device: Device pour l'inférence
+            all_layers: Si True, extrait couches 6,12,18,24. Sinon seulement 24.
+        """
         print("Chargement de H-optimus-0...")
         self.model = timm.create_model(
             "hf-hub:bioptimus/H-optimus-0",
@@ -82,6 +93,13 @@ class HOptimusFeatureExtractor:
         )
         self.model = self.model.eval().to(device).half()
         self.device = device
+        self.all_layers = all_layers
+
+        # Définir les couches à extraire
+        if all_layers:
+            self.extract_layers = [5, 11, 17, 23]  # Couches 6, 12, 18, 24
+        else:
+            self.extract_layers = [23]  # Seulement couche 24
 
         # Hooks pour extraire les features intermédiaires
         self.features = {}
@@ -89,7 +107,7 @@ class HOptimusFeatureExtractor:
 
         num_params = sum(p.numel() for p in self.model.parameters()) / 1e9
         print(f"  → Modèle chargé: {num_params:.2f}B paramètres")
-        print(f"  → Couches extraites: {[i+1 for i in EXTRACT_LAYERS]}")
+        print(f"  → Couches extraites: {[i+1 for i in self.extract_layers]}")
 
     def _register_hooks(self):
         def get_hook(name):
@@ -97,22 +115,27 @@ class HOptimusFeatureExtractor:
                 self.features[name] = output.cpu().float()
             return hook
 
-        for idx in EXTRACT_LAYERS:
+        for idx in self.extract_layers:
             self.model.blocks[idx].register_forward_hook(get_hook(f'layer_{idx}'))
 
     @torch.no_grad()
     def extract(self, batch: torch.Tensor):
-        """Extrait les features des 4 couches."""
+        """Extrait les features des couches configurées."""
         self.features = {}
         batch = batch.to(self.device).half()
         _ = self.model.forward_features(batch)
 
-        return {
-            'layer_6': self.features['layer_5'].numpy(),
-            'layer_12': self.features['layer_11'].numpy(),
-            'layer_18': self.features['layer_17'].numpy(),
-            'layer_24': self.features['layer_23'].numpy(),
-        }
+        if self.all_layers:
+            return {
+                'layer_6': self.features['layer_5'].numpy(),
+                'layer_12': self.features['layer_11'].numpy(),
+                'layer_18': self.features['layer_17'].numpy(),
+                'layer_24': self.features['layer_23'].numpy(),
+            }
+        else:
+            return {
+                'layer_24': self.features['layer_23'].numpy(),
+            }
 
 
 @torch.no_grad()
@@ -122,15 +145,21 @@ def extract_features(
     transform,
     batch_size: int = 8,
 ):
-    """Extrait les features multi-couches pour toutes les images."""
+    """Extrait les features pour toutes les images."""
     n_images = len(images)
 
-    all_features = {
-        'layer_6': [],
-        'layer_12': [],
-        'layer_18': [],
-        'layer_24': [],
-    }
+    # Initialiser selon les couches à extraire
+    if extractor.all_layers:
+        all_features = {
+            'layer_6': [],
+            'layer_12': [],
+            'layer_18': [],
+            'layer_24': [],
+        }
+    else:
+        all_features = {
+            'layer_24': [],
+        }
 
     print(f"Extraction de features pour {n_images} images...")
 
@@ -155,7 +184,7 @@ def extract_features(
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Extraction features H-optimus-0 pour UNETR")
+    parser = argparse.ArgumentParser(description="Extraction features H-optimus-0")
     parser.add_argument("--data_dir", type=str, required=True,
                         help="Chemin vers PanNuke (ex: /home/amar/data/PanNuke)")
     parser.add_argument("--output_dir", type=str, default="data/cache/pannuke_features",
@@ -164,6 +193,8 @@ def main():
                         help="Fold PanNuke (0, 1, ou 2)")
     parser.add_argument("--batch_size", type=int, default=8,
                         help="Taille des batchs (8 recommandé pour 12GB VRAM)")
+    parser.add_argument("--all_layers", action="store_true",
+                        help="Extraire 4 couches (6,12,18,24) au lieu de layer_24 seule")
     args = parser.parse_args()
 
     # Chemins
@@ -175,7 +206,7 @@ def main():
     images, masks, types = load_pannuke_fold(data_dir, fold=args.fold)
 
     # Créer l'extracteur
-    extractor = HOptimusFeatureExtractor()
+    extractor = HOptimusFeatureExtractor(all_layers=args.all_layers)
     transform = create_transform()
 
     # Mesurer le temps
@@ -203,20 +234,11 @@ def main():
     # Sauvegarder les features (format NPZ sans compression - plus rapide)
     output_path = output_dir / f"fold{args.fold}_features.npz"
     print(f"\nSauvegarde features (sans compression)...")
-    np.savez(
-        output_path,
-        layer_6=features['layer_6'],
-        layer_12=features['layer_12'],
-        layer_18=features['layer_18'],
-        layer_24=features['layer_24'],
-    )
+    np.savez(output_path, **features)
     print(f"Features sauvegardées: {output_path}")
 
-    # Sauvegarder les masks (pour entraînement)
-    if masks is not None:
-        masks_path = output_dir / f"fold{args.fold}_masks.npy"
-        np.save(masks_path, masks)
-        print(f"Masks sauvegardés: {masks_path}")
+    # Note: Les masks ne sont PAS dupliqués ici - ils restent dans le dossier PanNuke original
+    # Le script d'entraînement les charge depuis: {data_dir}/fold{X}/masks.npy
 
     # Taille des fichiers
     features_size = output_path.stat().st_size / 1e9

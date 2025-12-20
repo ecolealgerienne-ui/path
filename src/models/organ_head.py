@@ -260,13 +260,13 @@ class OrganHead(nn.Module):
         # Score combiné
         ood_score = entropy_weight * entropy + mahalanobis_weight * mahal_score
 
-        # Détection OOD
+        # Détection OOD (seuils relaxés pour éviter faux positifs)
         is_ood = False
-        if entropy > 0.7:  # Entropie très haute
+        if entropy > 0.8:  # Entropie très haute (était 0.7)
             is_ood = True
         if self.ood_fitted and mahal_score > 1.0:  # Au-delà du seuil
             is_ood = True
-        if ood_score > 0.6:  # Score combiné élevé
+        if ood_score > 0.75:  # Score combiné élevé (était 0.6)
             is_ood = True
 
         return ood_score, is_ood

@@ -48,14 +48,28 @@
      ▼                                                   ▼
 ┌─────────────────────────────┐        ┌─────────────────────────────┐
 │  COUCHE 2A — FLUX GLOBAL    │        │  COUCHE 2B — FLUX LOCAL     │
-│       OrganHead             │        │       HoVer-Net             │
+│       OrganHead             │        │   5 HoVer-Net Spécialisés   │
 │                             │        │                             │
-│  • CLS token → MLP          │        │  • Patches → Décodeur       │
-│  • Classification organe    │        │  • NP : présence noyaux     │
-│  • 19 organes PanNuke       │        │  • HV : séparation          │
-│  ✅ Accuracy 96.05%         │        │  • NT : typage (5 cls)      │
-│                             │        │  ✅ Dice 0.9601             │
+│  • CLS token → MLP          │        │  • Patches → Router         │
+│  • Classification organe    │        │  • Router → Famille         │
+│  • 19 organes PanNuke       │        │  • HoVer-Net spécialisé     │
+│  ✅ Accuracy 99.56%         │        │  • NP/HV/NT par famille     │
 └─────────────────────────────┘        └─────────────────────────────┘
+          │                                      │
+          │    ┌─────────────────────────────────┘
+          │    │
+          ▼    ▼
+┌────────────────────────────────────────────────────────────────┐
+│                    ROUTAGE PAR FAMILLE                         │
+│                                                                │
+│  OrganHead prédit l'organe → Router sélectionne le décodeur   │
+│                                                                │
+│  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐
+│  │ Digestif │ │Glandulaire│ │Urologique│ │Respirat. │ │Épiderm.  │
+│  │ HoVerNet │ │ HoVerNet │ │ HoVerNet │ │ HoVerNet │ │ HoVerNet │
+│  └──────────┘ └──────────┘ └──────────┘ └──────────┘ └──────────┘
+│                                                                │
+└────────────────────────────────────────────────────────────────┘
                                │
                                ▼
 ┌────────────────────────────────────────────────────────────────┐
@@ -196,10 +210,47 @@ cellvit-optimus/
 ## Décisions Techniques Clés
 
 1. **Backbone gelé** — H-optimus-0 n'est jamais fine-tuné, seules les têtes s'entraînent
-2. **UNETR pour reconstruction spatiale** — Extraction features couches 6/12/18/24 du ViT
+2. **HoVer-Net par famille** — 5 décodeurs spécialisés (Glandulaire, Digestive, Urologique, Respiratoire, Épidermoïde)
 3. **Tiling adaptatif** — Recall 0.999 sur tissu tumoral, garde-fou basse résolution
 4. **Cache d'embeddings versionné** — Hash [Backbone]+[Preprocessing]+[Resolution]+[Date]
 5. **Distillation limitée au pré-triage** — Le modèle original reste obligatoire pour diagnostic
+6. **Cartes HV pré-calculées** — Stockage int8 pour économie mémoire (voir section ci-dessous)
+
+---
+
+## Cartes HV (Horizontal/Vertical) — Séparation d'Instances
+
+### Problème
+Dans les tissus denses, les noyaux se chevauchent. Un masque binaire ne permet pas de distinguer où finit un noyau et où commence le suivant.
+
+### Solution HoVer-Net
+Pour chaque pixel d'un noyau, on calcule sa distance normalisée au centre:
+
+```
+Masque binaire:          Carte H (horizontal):       Carte V (vertical):
+┌─────────────┐          ┌─────────────┐            ┌─────────────┐
+│  ████████   │          │  -1  0  +1  │            │  -1 -1 -1   │
+│  ████████   │    →     │  -1  0  +1  │            │   0  0  0   │
+│  ████████   │          │  -1  0  +1  │            │  +1 +1 +1   │
+└─────────────┘          └─────────────┘            └─────────────┘
+```
+
+- **H** = distance horizontale normalisée au centre [-1, +1]
+- **V** = distance verticale normalisée au centre [-1, +1]
+
+### Utilité
+- Le **gradient** des cartes HV est maximal aux **frontières** entre noyaux
+- Post-processing: `sobel(HV)` → contours → watershed → instances séparées
+- Permet de séparer des noyaux qui se touchent
+
+### Optimisation Stockage
+```
+float32 [-1, 1] → int8 [-127, 127]
+Économie: 75% d'espace disque
+Précision: 127 niveaux suffisent pour le Sobel/Watershed
+```
+
+**Pré-calcul obligatoire** car `cv2.connectedComponents` est lent (~5-10ms/image).
 
 ---
 
@@ -692,13 +743,13 @@ OrganHead   HoVerNet
 + OOD       + Cellules
 ```
 
-**Résultats entraînement:**
+**Résultats entraînement (3 folds):**
 | Composant | Métrique | Valeur |
 |-----------|----------|--------|
-| OrganHead | Val Accuracy | **96.05%** |
-| OrganHead | Organes à 100% | 14/19 |
+| OrganHead | Val Accuracy | **99.56%** |
+| OrganHead | Organes à 100% | 15/19 |
 | HoVer-Net | Dice | **0.9601** |
-| OOD | Threshold | 39.26 |
+| OOD | Threshold | 46.69 |
 
 **Triple Sécurité OOD:**
 - Entropie organe (softmax uncertainty)
@@ -728,6 +779,191 @@ print(result.confidence_level)      # ConfidenceLevel.FIABLE
 print(model.generate_report(result))
 ```
 
+### 2025-12-20 — Intégration Gradio Demo ✅
+
+**OptimusGateInference** intégré dans la démo Gradio:
+
+- **Fichier créé**: `src/inference/optimus_gate_inference.py`
+  - Wrapper complet: image → H-optimus-0 → OptimusGate → résultats
+  - Méthodes: `predict()`, `visualize()`, `visualize_uncertainty()`, `generate_report()`
+
+- **Démo mise à jour**: `scripts/demo/gradio_demo.py`
+  - OptimusGate chargé en priorité (avant HoVer-Net seul)
+  - UI mise à jour avec architecture double flux
+  - Affichage organe détecté + cellules + OOD
+  - Onglet "À propos" avec schéma Optimus-Gate
+
+**Lancement:**
+```bash
+python scripts/demo/gradio_demo.py
+# URL: http://localhost:7860
+```
+
+### 2025-12-20 — Entraînement Multi-Folds (3 folds) ✅
+
+**Support multi-folds ajouté** aux scripts d'entraînement pour améliorer la généralisation.
+
+#### Distribution des données PanNuke (3 folds)
+
+| Organe | Samples | % du total |
+|--------|---------|------------|
+| Colon | 1,323 | 17.2% |
+| Breast | 2,437 | 31.6% |
+| Adrenal_gland | 487 | 6.3% |
+| Bile-duct | 379 | 4.9% |
+| Bladder | 149 | 1.9% |
+| Cervix | 325 | 4.2% |
+| Esophagus | 427 | 5.5% |
+| HeadNeck | 396 | 5.1% |
+| Kidney | 141 | 1.8% |
+| Liver | 186 | 2.4% |
+| Lung | 178 | 2.3% |
+| Ovarian | 129 | 1.7% |
+| Pancreatic | 213 | 2.8% |
+| Prostate | 207 | 2.7% |
+| Skin | 178 | 2.3% |
+| Stomach | 145 | 1.9% |
+| Testis | 193 | 2.5% |
+| Thyroid | 191 | 2.5% |
+| Uterus | 216 | 2.8% |
+| **Total** | **7,900** | 100% |
+
+#### Résultats OrganHead (3 folds vs 1 fold)
+
+| Métrique | 1 fold | 3 folds | Amélioration |
+|----------|--------|---------|--------------|
+| Val Accuracy | 96.05% | **99.56%** | +3.51% |
+| Organes à 100% | 14/19 | 15/19 | +1 |
+| OOD Threshold | 39.26 | **46.69** | +19% |
+| Données train | ~2,100 | ~6,300 | 3x |
+
+#### Accuracy par organe (validation, 3 folds)
+
+| Organe | Accuracy | Samples Val |
+|--------|----------|-------------|
+| Bladder | 100.0% | 30 |
+| Cervix | 100.0% | 65 |
+| Colon | 100.0% | 265 |
+| Esophagus | 100.0% | 85 |
+| Kidney | 100.0% | 28 |
+| Liver | 100.0% | 37 |
+| Lung | 100.0% | 36 |
+| Ovarian | 100.0% | 26 |
+| Pancreatic | 100.0% | 43 |
+| Prostate | 100.0% | 41 |
+| Skin | 100.0% | 36 |
+| Stomach | 100.0% | 29 |
+| Testis | 100.0% | 39 |
+| Thyroid | 100.0% | 38 |
+| Uterus | 100.0% | 43 |
+| Breast | 99.4% | 487 |
+| Adrenal_gland | 99.0% | 97 |
+| HeadNeck | 98.7% | 79 |
+| Bile-duct | 97.4% | 76 |
+
+**Commandes d'entraînement (3 folds) :**
+```bash
+# OrganHead (~10 min)
+python scripts/training/train_organ_head.py --folds 0 1 2 --epochs 50
+
+# HoVerNet par famille (voir section suivante)
+python scripts/training/train_hovernet_family.py --family glandular --epochs 50 --augment
+```
+
+### 2025-12-20 — Architecture 5 Familles HoVer-Net ✅
+
+**Décision architecturale** : Au lieu d'un seul HoVer-Net global, utiliser 5 décodeurs spécialisés par famille d'organes.
+
+**Justification scientifique** (littérature MICCAI, Nature Communications) :
+- **Feature Sharing** : Les noyaux partagent des propriétés physiques → backbone commun
+- **Domain-Specific Variance** : L'erreur augmente entre organes de textures différentes
+- **Domain Adaptation** : Le transfert fonctionne mieux entre organes de même famille embryologique
+
+**Avantages techniques** :
+- RAM par entraînement : ~27 GB → **~5-6 GB** ✅
+- Gradient propre (pas de signaux contradictoires)
+- Meilleure classification NT par famille
+- Convergence plus rapide
+
+#### Distribution par Famille (PanNuke)
+
+| Famille | Organes | Samples | % | RAM estimée |
+|---------|---------|---------|---|-------------|
+| **Glandulaire** | Breast, Prostate, Thyroid, Pancreatic, Adrenal_gland | 3,535 | 45% | ~5 GB |
+| **Digestive** | Colon, Stomach, Esophagus, Bile-duct | 2,274 | 29% | ~3.5 GB |
+| **Urologique** | Kidney, Bladder, Testis, Ovarian, Uterus, Cervix | 1,153 | 15% | ~2 GB |
+| **Épidermoïde** | Skin, HeadNeck | 574 | 7% | ~1 GB |
+| **Respiratoire** | Lung, Liver | 364 | 5% | ~0.6 GB |
+
+#### Mapping Organe → Famille
+
+```python
+ORGAN_TO_FAMILY = {
+    # Glandulaire & Hormonale (acini, sécrétions)
+    "Breast": "glandular",
+    "Prostate": "glandular",
+    "Thyroid": "glandular",
+    "Pancreatic": "glandular",
+    "Adrenal_gland": "glandular",
+
+    # Digestive (formes tubulaires)
+    "Colon": "digestive",
+    "Stomach": "digestive",
+    "Esophagus": "digestive",
+    "Bile-duct": "digestive",
+
+    # Urologique & Reproductif (densité nucléaire)
+    "Kidney": "urologic",
+    "Bladder": "urologic",
+    "Testis": "urologic",
+    "Ovarian": "urologic",
+    "Uterus": "urologic",
+    "Cervix": "urologic",
+
+    # Respiratoire & Hépatique (structures ouvertes)
+    "Lung": "respiratory",
+    "Liver": "respiratory",
+
+    # Épidermoïde (couches stratifiées)
+    "Skin": "epidermal",
+    "HeadNeck": "epidermal",
+}
+
+FAMILIES = ["glandular", "digestive", "urologic", "respiratory", "epidermal"]
+```
+
+#### Pipeline d'Inférence
+
+```python
+# 1. OrganHead prédit l'organe (99.56% accuracy)
+organ = organ_head.predict(cls_token)  # "Prostate"
+
+# 2. Router sélectionne le bon décodeur
+family = ORGAN_TO_FAMILY[organ]  # "glandular"
+
+# 3. Décodeur spécialisé segmente
+cells = hovernet_decoders[family].predict(patch_tokens)
+```
+
+#### Commandes d'entraînement par famille
+
+```bash
+# Famille Glandulaire (priorité - 45% des données)
+python scripts/training/train_hovernet_family.py --family glandular --epochs 50 --augment
+
+# Famille Digestive
+python scripts/training/train_hovernet_family.py --family digestive --epochs 50 --augment
+
+# Famille Urologique
+python scripts/training/train_hovernet_family.py --family urologic --epochs 50 --augment
+
+# Famille Épidermoïde
+python scripts/training/train_hovernet_family.py --family epidermal --epochs 50 --augment
+
+# Famille Respiratoire
+python scripts/training/train_hovernet_family.py --family respiratory --epochs 50 --augment
+```
+
 ---
 
 ## Fichiers Créés (Inventaire)
@@ -741,7 +977,8 @@ src/
 │   └── organ_head.py             # OrganHead (Flux Global)
 ├── inference/
 │   ├── __init__.py
-│   ├── optimus_gate.py           # 🆕 Architecture unifiée Optimus-Gate
+│   ├── optimus_gate.py           # Architecture unifiée Optimus-Gate
+│   ├── optimus_gate_inference.py # 🆕 Wrapper Gradio (image → résultats)
 │   ├── hoptimus_hovernet.py      # Wrapper H-optimus-0 + HoVer-Net
 │   ├── hoptimus_unetr.py         # Wrapper H-optimus-0 + UNETR (fallback)
 │   └── cellvit_official.py       # Wrapper pour repo officiel TIO-IKIM

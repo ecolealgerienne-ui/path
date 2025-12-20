@@ -19,6 +19,8 @@ from .optimus_gate import (
     CellDetection,
 )
 
+from .optimus_gate_inference import OptimusGateInference
+
 __all__ = [
     # Legacy CellViT
     "CellViTInference",
@@ -32,4 +34,5 @@ __all__ = [
     "OptimusGate",
     "OptimusGateResult",
     "CellDetection",
+    "OptimusGateInference",
 ]
