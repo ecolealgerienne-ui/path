@@ -63,8 +63,13 @@ class MorphometryReport:
     neoplastic_ratio: float  # Neoplastic / Total
     stroma_tumor_distance_um: float  # Distance moyenne connective-neoplastic
 
-    # Alertes cliniques
+    # Topographie / Architecture tissulaire
+    spatial_distribution: str  # "diffuse", "clustered", "peritumoral"
+    clustering_score: float  # 0-1, haut = cellules regroupées
+
+    # Alertes cliniques (langage suggestif)
     alerts: List[str]
+    alert_nuclei_ids: Dict[str, List[int]]  # IDs des noyaux ayant déclenché chaque alerte
 
     # Niveau de confiance
     confidence_level: str  # "Haute", "Modérée", "Faible"
@@ -161,9 +166,12 @@ class MorphometryAnalyzer:
         # Distance Stroma-Tumeur
         stroma_tumor_dist = self._compute_stroma_tumor_distance(nuclei)
 
-        # Générer les alertes cliniques
-        alerts = self._generate_alerts(
-            mean_area, std_area, mean_circ, std_circ,
+        # Analyse spatiale / Topographie
+        spatial_dist, clustering_score = self._analyze_spatial_distribution(nuclei)
+
+        # Générer les alertes cliniques (langage suggestif + IDs des noyaux)
+        alerts, alert_nuclei_ids = self._generate_alerts_with_ids(
+            nuclei, mean_area, std_area, mean_circ,
             nuclear_density, neoplastic_ratio, immuno_epithelial
         )
 
@@ -183,7 +191,10 @@ class MorphometryAnalyzer:
             immuno_epithelial_ratio=immuno_epithelial,
             neoplastic_ratio=neoplastic_ratio,
             stroma_tumor_distance_um=stroma_tumor_dist,
+            spatial_distribution=spatial_dist,
+            clustering_score=clustering_score,
             alerts=alerts,
+            alert_nuclei_ids=alert_nuclei_ids,
             confidence_level=confidence,
         )
 
@@ -269,50 +280,134 @@ class MorphometryAnalyzer:
         mean_dist_pixels = np.mean(distances)
         return mean_dist_pixels * self.pixel_size_um
 
-    def _generate_alerts(
+    def _analyze_spatial_distribution(
         self,
+        nuclei: List[NucleusMetrics],
+    ) -> Tuple[str, float]:
+        """
+        Analyse la distribution spatiale des cellules (architecture tissulaire).
+
+        Returns:
+            (distribution_type, clustering_score)
+            - distribution_type: "diffuse", "clustered", "peritumoral"
+            - clustering_score: 0-1 (haut = cellules très regroupées)
+        """
+        if len(nuclei) < 10:
+            return "indéterminée", 0.0
+
+        # Centres des noyaux
+        centers = np.array([n.centroid for n in nuclei])
+
+        # Calculer les distances au plus proche voisin
+        from scipy.spatial import distance_matrix
+        dist_mat = distance_matrix(centers, centers)
+        np.fill_diagonal(dist_mat, np.inf)
+        nn_distances = dist_mat.min(axis=1)
+
+        mean_nn = nn_distances.mean()
+        std_nn = nn_distances.std()
+
+        # Coefficient de variation des distances (clustering)
+        cv_nn = std_nn / (mean_nn + 1e-6)
+
+        # Interprétation
+        # CV bas = espacement régulier (diffus)
+        # CV haut = distances très variables (clusters)
+        if cv_nn < 0.3:
+            distribution = "diffuse"
+            clustering_score = 0.2
+        elif cv_nn < 0.6:
+            distribution = "hétérogène"
+            clustering_score = 0.5
+        else:
+            distribution = "en amas"
+            clustering_score = min(cv_nn, 1.0)
+
+        # Vérifier si inflammatoires sont péri-tumoraux
+        neoplastic = [n for n in nuclei if n.type_name == "Neoplastic"]
+        inflammatory = [n for n in nuclei if n.type_name == "Inflammatory"]
+
+        if len(neoplastic) > 5 and len(inflammatory) > 5:
+            neo_centers = np.array([n.centroid for n in neoplastic])
+            inf_centers = np.array([n.centroid for n in inflammatory])
+
+            # Distance moyenne des inflammatoires aux néoplasiques
+            dist_inf_neo = distance_matrix(inf_centers, neo_centers).min(axis=1)
+            mean_dist_inf_neo = dist_inf_neo.mean()
+
+            # Si inflammatoires sont proches des néoplasiques → péritumoral
+            if mean_dist_inf_neo < 30 * self.pixel_size_um:  # < 30 µm
+                distribution = "péritumoral"
+
+        return distribution, clustering_score
+
+    def _generate_alerts_with_ids(
+        self,
+        nuclei: List[NucleusMetrics],
         mean_area: float,
         std_area: float,
         mean_circ: float,
-        std_circ: float,
         nuclear_density: float,
         neoplastic_ratio: float,
         immuno_epithelial: float,
-    ) -> List[str]:
-        """Génère des alertes cliniques basées sur les métriques."""
+    ) -> Tuple[List[str], Dict[str, List[int]]]:
+        """
+        Génère des alertes cliniques avec langage SUGGESTIF (pas définitif)
+        et identifie les noyaux responsables de chaque alerte (XAI).
+
+        Returns:
+            (alerts, alert_nuclei_ids)
+        """
         alerts = []
+        alert_nuclei_ids = {}
 
         # Coefficient de variation de l'aire (Anisocaryose)
         if mean_area > 0:
             cv_area = std_area / mean_area
             if cv_area > 0.5:
-                alerts.append(f"⚠️ Anisocaryose marquée (CV={cv_area:.2f})")
+                alerts.append(f"🔍 Suspicion d'anisocaryose marquée (CV={cv_area:.2f})")
+                # Identifier les noyaux les plus atypiques (aire > mean + 2*std)
+                threshold = mean_area + 2 * std_area
+                atypical = [n.id for n in nuclei if n.area_um2 > threshold]
+                alert_nuclei_ids["anisocaryose"] = atypical[:10]  # Top 10
             elif cv_area > 0.3:
-                alerts.append(f"⚡ Anisocaryose modérée (CV={cv_area:.2f})")
+                alerts.append(f"🔍 Anisocaryose modérée à explorer (CV={cv_area:.2f})")
+                threshold = mean_area + 1.5 * std_area
+                atypical = [n.id for n in nuclei if n.area_um2 > threshold]
+                alert_nuclei_ids["anisocaryose"] = atypical[:5]
 
         # Atypie de forme (circularité faible = noyaux irréguliers)
         if mean_circ < 0.6:
-            alerts.append(f"⚠️ Atypie nucléaire (Circularité={mean_circ:.2f})")
+            alerts.append(f"🔍 Possible atypie nucléaire (Circularité={mean_circ:.2f})")
+            # Noyaux les moins circulaires
+            irregular = sorted(nuclei, key=lambda n: n.circularity)[:10]
+            alert_nuclei_ids["atypie_forme"] = [n.id for n in irregular]
 
         # Hypercellularité
         if nuclear_density > 50:
-            alerts.append(f"🔴 Hypercellularité sévère ({nuclear_density:.0f}%)")
+            alerts.append(f"🔍 Aspect hypercellulaire à confirmer ({nuclear_density:.0f}%)")
         elif nuclear_density > 30:
-            alerts.append(f"⚠️ Hypercellularité modérée ({nuclear_density:.0f}%)")
+            alerts.append(f"🔍 Densité cellulaire élevée ({nuclear_density:.0f}%)")
 
-        # Proportion néoplasique
+        # Proportion néoplasique - LANGAGE SUGGESTIF
         if neoplastic_ratio > 0.5:
-            alerts.append(f"🔴 Prédominance néoplasique ({neoplastic_ratio:.0%})")
+            alerts.append(f"🔍 Suspicion de foyer néoplasique ({neoplastic_ratio:.0%} de la population)")
+            neoplastic = [n.id for n in nuclei if n.type_name == "Neoplastic"]
+            alert_nuclei_ids["neoplasique"] = neoplastic
         elif neoplastic_ratio > 0.2:
-            alerts.append(f"⚠️ Composante néoplasique significative ({neoplastic_ratio:.0%})")
+            alerts.append(f"🔍 Composante atypique à évaluer ({neoplastic_ratio:.0%})")
+            neoplastic = [n.id for n in nuclei if n.type_name == "Neoplastic"]
+            alert_nuclei_ids["neoplasique"] = neoplastic[:20]
 
-        # Infiltration lymphocytaire (TILs)
+        # Infiltration lymphocytaire (TILs) - informatif, pas alarmant
         if immuno_epithelial > 2.0:
-            alerts.append(f"🔵 Infiltration lymphocytaire importante (ratio={immuno_epithelial:.1f})")
+            alerts.append(f"ℹ️ Infiltration lymphocytaire notable (ratio I/E={immuno_epithelial:.1f})")
+            inflammatory = [n.id for n in nuclei if n.type_name == "Inflammatory"]
+            alert_nuclei_ids["infiltration"] = inflammatory
         elif immuno_epithelial > 0.5:
-            alerts.append(f"🔵 Infiltration lymphocytaire modérée (ratio={immuno_epithelial:.1f})")
+            alerts.append(f"ℹ️ Présence inflammatoire modérée (ratio I/E={immuno_epithelial:.1f})")
 
-        return alerts
+        return alerts, alert_nuclei_ids
 
     def _assess_confidence(
         self,
@@ -342,7 +437,10 @@ class MorphometryAnalyzer:
             immuno_epithelial_ratio=0.0,
             neoplastic_ratio=0.0,
             stroma_tumor_distance_um=0.0,
-            alerts=["⚠️ Aucun noyau détecté"],
+            spatial_distribution="indéterminée",
+            clustering_score=0.0,
+            alerts=["ℹ️ Aucun noyau détecté sur ce patch"],
+            alert_nuclei_ids={},
             confidence_level="Faible",
         )
 
@@ -351,6 +449,7 @@ class MorphometryAnalyzer:
         Génère un compte-rendu textuel clinique.
 
         Format adapté pour être directement copié dans un rapport médical.
+        Utilise un langage SUGGESTIF, jamais affirmatif.
         """
         # Déterminer le type tissulaire dominant
         dominant_type = max(report.type_percentages.items(), key=lambda x: x[1])
@@ -359,6 +458,7 @@ class MorphometryAnalyzer:
         lines = [
             f"ANALYSE MORPHOMÉTRIQUE AUTOMATISÉE",
             f"{'=' * 50}",
+            f"⚠️ Document d'aide à la décision - Validation médicale requise",
             f"",
             f"Tissu analysé : {organ.upper()} (Famille {family})",
             f"Noyaux détectés : {report.n_nuclei}",
@@ -382,10 +482,19 @@ class MorphometryAnalyzer:
             f"  • Circularité      : {report.mean_circularity:.2f} ± {report.std_circularity:.2f}",
             f"  • Hypercellularité : {report.nuclear_density_percent:.1f}%",
             f"",
+            f"ARCHITECTURE TISSULAIRE",
+            f"-" * 30,
+            f"  • Topographie      : {report.spatial_distribution.capitalize()}",
+            f"  • Score clustering : {report.clustering_score:.2f}",
         ])
 
+        if report.stroma_tumor_distance_um > 0:
+            lines.append(f"  • Dist. stroma-tumeur : {report.stroma_tumor_distance_um:.1f} µm")
+
+        lines.append("")
+
         if report.alerts:
-            lines.append("ALERTES CLINIQUES")
+            lines.append("POINTS D'ATTENTION")
             lines.append("-" * 30)
             for alert in report.alerts:
                 lines.append(f"  {alert}")
@@ -393,26 +502,42 @@ class MorphometryAnalyzer:
 
         # Résumé narratif
         lines.extend([
-            "SYNTHÈSE",
+            "SYNTHÈSE AUTOMATIQUE",
             "-" * 30,
         ])
 
-        # Construire le texte narratif
+        # Construire le texte narratif - LANGAGE SUGGESTIF
         narrative = f"L'analyse automatisée sur tissu {organ.upper()} révèle "
         narrative += f"une population de {report.n_nuclei} noyaux "
         narrative += f"avec prédominance {dominant_type[0].lower()} ({dominant_type[1]:.0f}%). "
 
-        if report.neoplastic_ratio > 0.2:
-            narrative += f"Présence significative de cellules néoplasiques ({report.neoplastic_ratio:.0%}). "
-        else:
-            narrative += "Absence de massif néoplasique significatif. "
+        # Architecture
+        if report.spatial_distribution != "indéterminée":
+            narrative += f"Répartition {report.spatial_distribution} des cellules. "
 
+        # Néoplasie - langage suggestif
+        if report.neoplastic_ratio > 0.5:
+            narrative += f"Suspicion de foyer néoplasique à confirmer ({report.neoplastic_ratio:.0%}). "
+        elif report.neoplastic_ratio > 0.2:
+            narrative += f"Composante atypique à évaluer ({report.neoplastic_ratio:.0%}). "
+        else:
+            narrative += "Absence de massif néoplasique significatif sur ce patch. "
+
+        # TILs
         if report.immuno_epithelial_ratio > 0.5:
             narrative += f"Infiltration inflammatoire notable (ratio I/E={report.immuno_epithelial_ratio:.1f}). "
 
-        narrative += f"Confiance du modèle : {report.confidence_level}."
+        narrative += f"\n\nConfiance du modèle : {report.confidence_level}."
 
         lines.append(narrative)
+
+        # Disclaimer
+        lines.extend([
+            "",
+            "-" * 50,
+            "Ce rapport est généré par un algorithme d'aide au",
+            "diagnostic et ne remplace pas l'expertise médicale.",
+        ])
 
         return "\n".join(lines)
 
