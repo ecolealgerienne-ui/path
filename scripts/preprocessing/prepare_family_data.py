@@ -94,9 +94,7 @@ def prepare_family(data_dir: Path, output_dir: Path, family: str, folds: list = 
     """
     Prépare les données pour une famille d'organes.
 
-    Args:
-        chunk_size: Si spécifié, traite les données par chunks de N samples
-                   pour réduire l'utilisation mémoire. Ex: 500 = ~1GB par chunk.
+    Traite fold par fold pour éviter de surcharger la RAM.
 
     Sauvegarde:
     - {family}_features.npz : features H-optimus-0 filtrées
@@ -112,8 +110,11 @@ def prepare_family(data_dir: Path, output_dir: Path, family: str, folds: list = 
     print(f"Organes: {', '.join(family_organs)}")
     print(f"Description: {FAMILY_DESCRIPTIONS[family]}")
 
+    # Listes pour accumuler les résultats
     all_features = []
-    all_masks = []
+    all_np_targets = []
+    all_hv_targets = []
+    all_nt_targets = []
     all_fold_ids = []
     all_original_indices = []
 
@@ -124,7 +125,7 @@ def prepare_family(data_dir: Path, output_dir: Path, family: str, folds: list = 
             print(f"  ⚠️ Features fold {fold} non trouvées, ignoré")
             continue
 
-        print(f"\nFold {fold}:")
+        print(f"\n--- Fold {fold} ---")
 
         # Charger les types pour filtrer
         types_path = data_dir / f"fold{fold}" / "types.npy"
@@ -144,48 +145,55 @@ def prepare_family(data_dir: Path, output_dir: Path, family: str, folds: list = 
         indices = np.array(indices)
         print(f"  → {len(indices)} samples sélectionnés")
 
-        # Charger features (memory-mapped pour économiser la RAM)
+        # Charger features (memory-mapped)
+        print(f"  Chargement features...")
         data = np.load(features_path, mmap_mode='r')
         features = data['layer_24'] if 'layer_24' in data else data['layer_23']
+        family_features = features[indices].copy()
+        print(f"    Features: {family_features.shape}")
 
         # Charger masks (memory-mapped)
+        print(f"  Chargement masks...")
         masks_path = data_dir / f"fold{fold}" / "masks.npy"
         masks = np.load(masks_path, mmap_mode='r')
-
-        # Extraire seulement les samples de cette famille
-        family_features = features[indices].copy()  # Copie nécessaire car mmap
         family_masks = masks[indices].copy()
 
+        # Calculer targets pour CE FOLD uniquement
+        print(f"  Calcul targets HV...")
+        np_targets, hv_targets, nt_targets = prepare_targets_chunk(family_masks, start_idx=0)
+
+        # Convertir HV en int8 immédiatement pour économiser la RAM
+        hv_targets_int8 = (hv_targets * 127).astype(np.int8)
+        del hv_targets  # Libérer la mémoire
+
+        # Accumuler
         all_features.append(family_features)
-        all_masks.append(family_masks)
+        all_np_targets.append(np_targets)
+        all_hv_targets.append(hv_targets_int8)
+        all_nt_targets.append(nt_targets)
         all_fold_ids.extend([fold] * len(indices))
         all_original_indices.extend(indices.tolist())
 
-        print(f"  → Features: {family_features.shape}")
-        print(f"  → Masks: {family_masks.shape}")
+        # Libérer la mémoire du fold
+        del family_masks, np_targets, nt_targets
+        print(f"  ✓ Fold {fold} traité")
 
     if not all_features:
         print(f"\n❌ Aucun sample trouvé pour la famille {family}")
         return
 
-    # Concaténer
+    # Concaténer les résultats
+    print(f"\n📊 Concaténation des {len(folds)} folds...")
     features = np.concatenate(all_features, axis=0)
-    masks = np.concatenate(all_masks, axis=0)
+    np_targets = np.concatenate(all_np_targets, axis=0)
+    hv_targets_int8 = np.concatenate(all_hv_targets, axis=0)
+    nt_targets = np.concatenate(all_nt_targets, axis=0)
     fold_ids = np.array(all_fold_ids)
     original_indices = np.array(all_original_indices)
 
-    print(f"\n📊 Total famille {family}:")
-    print(f"  → {len(features)} samples")
-    print(f"  → Features: {features.shape} ({features.nbytes / 1e9:.2f} GB)")
-
-    # Pré-calculer les targets HV (c'est le plus lent)
-    print(f"\n🔄 Pré-calcul des targets HoVer-Net...")
-    np_targets, hv_targets, nt_targets = prepare_targets_chunk(masks)
-
-    # Convertir HV en int8 pour économiser 75% d'espace disque
-    # float32 [-1, 1] → int8 [-127, 127]
-    hv_targets_int8 = (hv_targets * 127).astype(np.int8)
-    print(f"  → HV converti en int8: {hv_targets.nbytes / 1e9:.2f} GB → {hv_targets_int8.nbytes / 1e9:.2f} GB")
+    print(f"  → {len(features)} samples total")
+    print(f"  → Features: {features.nbytes / 1e9:.2f} GB")
+    print(f"  → Targets: {(np_targets.nbytes + hv_targets_int8.nbytes + nt_targets.nbytes) / 1e9:.2f} GB")
 
     # Sauvegarder
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -203,7 +211,7 @@ def prepare_family(data_dir: Path, output_dir: Path, family: str, folds: list = 
     print(f"Sauvegarde targets: {targets_path}")
     np.savez(targets_path,
              np_targets=np_targets,
-             hv_targets=hv_targets_int8,  # int8 pour économiser l'espace
+             hv_targets=hv_targets_int8,
              nt_targets=nt_targets)
 
     # Afficher les tailles
