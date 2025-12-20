@@ -237,6 +237,10 @@ def train_epoch(model, loader, optimizer, criterion, device):
     model.train()
     total_loss = 0
     losses = {'np': 0, 'hv': 0, 'nt': 0}
+    total_dice = 0
+    total_hv_mse = 0
+    total_nt_acc = 0
+    n_samples = 0
 
     pbar = tqdm(loader, desc="Train")
     for features, np_target, hv_target, nt_target in pbar:
@@ -257,17 +261,30 @@ def train_epoch(model, loader, optimizer, criterion, device):
         loss.backward()
         optimizer.step()
 
+        batch_size = features.shape[0]
         total_loss += loss.item()
         for k in losses:
             losses[k] += loss_dict[k]
 
+        # Métriques (sans gradient)
+        with torch.no_grad():
+            total_dice += compute_dice(np_pred, np_target) * batch_size
+            total_hv_mse += compute_hv_mse(hv_pred, hv_target, np_target) * batch_size
+            total_nt_acc += compute_nt_accuracy(nt_pred, nt_target, np_target) * batch_size
+        n_samples += batch_size
+
         pbar.set_postfix({
             'loss': f"{loss.item():.4f}",
-            'np': f"{loss_dict['np']:.4f}",
+            'dice': f"{total_dice/n_samples:.4f}",
         })
 
     n = len(loader)
-    return total_loss / n, {k: v / n for k, v in losses.items()}
+    metrics = {
+        'dice': total_dice / n_samples,
+        'hv_mse': total_hv_mse / n_samples,
+        'nt_acc': total_nt_acc / n_samples,
+    }
+    return total_loss / n, {k: v / n for k, v in losses.items()}, metrics
 
 
 @torch.no_grad()
@@ -395,8 +412,9 @@ def main():
         print(f"Epoch {epoch+1}/{args.epochs}")
         print(f"{'='*60}")
 
-        train_loss, train_losses = train_epoch(model, train_loader, optimizer, criterion, device)
-        print(f"Train - Loss: {train_loss:.4f} (NP: {train_losses['np']:.4f}, HV: {train_losses['hv']:.4f})")
+        train_loss, train_losses, train_metrics = train_epoch(model, train_loader, optimizer, criterion, device)
+        print(f"Train - Loss: {train_loss:.4f}")
+        print(f"        NP Dice: {train_metrics['dice']:.4f} | HV MSE: {train_metrics['hv_mse']:.4f} | NT Acc: {train_metrics['nt_acc']:.4f}")
 
         val_loss, val_metrics = validate(model, val_loader, criterion, device)
         print(f"Val   - Loss: {val_loss:.4f}")
