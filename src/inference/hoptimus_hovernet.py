@@ -16,6 +16,7 @@ import cv2
 from pathlib import Path
 from typing import Dict, Tuple, Optional
 from scipy import ndimage
+from torchvision import transforms
 
 # Importer l'estimateur d'incertitude
 try:
@@ -27,6 +28,21 @@ except ImportError:
 # Normalisation H-optimus-0
 HOPTIMUS_MEAN = (0.707223, 0.578729, 0.703617)
 HOPTIMUS_STD = (0.211883, 0.230117, 0.177517)
+
+
+def create_hoptimus_transform():
+    """
+    Crée la transformation EXACTE utilisée pendant l'extraction des features.
+
+    IMPORTANT: Doit être identique à scripts/preprocessing/extract_features.py
+    pour garantir la cohérence entre entraînement et inférence.
+    """
+    return transforms.Compose([
+        transforms.ToPILImage(),
+        transforms.Resize((224, 224)),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=HOPTIMUS_MEAN, std=HOPTIMUS_STD),
+    ])
 
 # Couleurs pour visualisation (RGB)
 CELL_COLORS = {
@@ -112,35 +128,37 @@ class HOptimusHoVerNetInference:
         else:
             print("✅ Modèle chargé")
 
+        # Créer le transform (DOIT être identique à extract_features.py)
+        self.transform = create_hoptimus_transform()
+
     def preprocess(self, image: np.ndarray) -> torch.Tensor:
         """
         Prétraitement de l'image pour H-optimus-0.
 
+        IMPORTANT: Utilise EXACTEMENT le même pipeline torchvision que
+        l'extraction des features (scripts/preprocessing/extract_features.py)
+        pour garantir la cohérence entre entraînement et inférence.
+
         Gère automatiquement:
-        - uint8 [0, 255] → normalisé
-        - float [0, 1] → normalisé directement
-        - float [0, 255] → converti puis normalisé
+        - uint8 [0, 255] → via ToPILImage + ToTensor + Normalize
+        - float [0, 1] → converti en uint8 d'abord
+        - float [0, 255] → converti en uint8 d'abord
         """
-        # Redimensionner à 224x224
-        if image.shape[:2] != (self.img_size, self.img_size):
-            image = cv2.resize(image, (self.img_size, self.img_size))
+        # Convertir en uint8 [0, 255] pour ToPILImage
+        # (ToPILImage attend uint8 ou float [0,1], pas float [0,255])
+        if image.dtype != np.uint8:
+            if image.max() <= 1.0:
+                # float [0, 1] → uint8 [0, 255]
+                image = (image * 255).clip(0, 255).astype(np.uint8)
+            else:
+                # float [0, 255] → uint8 [0, 255]
+                image = image.clip(0, 255).astype(np.uint8)
 
-        # Détection automatique du format et conversion vers [0, 1]
-        img = image.astype(np.float32)
-        if img.max() > 1.0:
-            # Image en [0, 255] → convertir vers [0, 1]
-            img = img / 255.0
-        # Si déjà en [0, 1], ne pas diviser à nouveau
+        # Appliquer le transform torchvision (identique à l'entraînement)
+        tensor = self.transform(image)
 
-        # Appliquer la normalisation H-optimus-0
-        for c in range(3):
-            img[:, :, c] = (img[:, :, c] - HOPTIMUS_MEAN[c]) / HOPTIMUS_STD[c]
-
-        # HWC -> CHW -> BCHW
-        img = np.transpose(img, (2, 0, 1))
-        img = np.expand_dims(img, 0)
-
-        return torch.from_numpy(img).to(self.device)
+        # Ajouter dimension batch
+        return tensor.unsqueeze(0).to(self.device)
 
     def post_process_hv(
         self,

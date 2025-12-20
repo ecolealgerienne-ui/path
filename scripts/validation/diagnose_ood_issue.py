@@ -250,7 +250,9 @@ def run_live_inference_test(images: np.ndarray, types: np.ndarray):
             # Prédiction
             result = model.predict(img)
 
-            predicted = result.get('organ_name', 'Unknown')
+            # Accès correct à l'organe via l'objet OrganPrediction
+            organ = result.get('organ')
+            predicted = organ.organ_name if organ else 'Unknown'
             ood_score = result.get('ood_score_global', 0)
             is_ood = result.get('is_ood', False)
 
