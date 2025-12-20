@@ -748,8 +748,22 @@ OrganHead   HoVerNet
 |-----------|----------|--------|
 | OrganHead | Val Accuracy | **99.56%** |
 | OrganHead | Organes à 100% | 15/19 |
-| HoVer-Net | Dice | **0.9601** |
 | OOD | Threshold | 46.69 |
+
+**Résultats HoVer-Net par Famille:**
+| Famille | Samples | Dice | Checkpoint | Statut |
+|---------|---------|------|------------|--------|
+| Glandulaire | 3391 | **0.9645** | `hovernet_glandular_best.pth` | ✅ Entraîné |
+| Digestive | 2274 | - | - | 🔜 À faire |
+| Urologique | 1153 | - | - | 🔜 À faire |
+| Épidermoïde | 574 | - | - | 🔜 À faire |
+| Respiratoire | 364 | - | - | 🔜 À faire |
+
+**Comparaison HoVer-Net global vs par famille:**
+| Modèle | Dice | Amélioration |
+|--------|------|--------------|
+| HoVer-Net global (tous organes) | 0.9601 | baseline |
+| HoVer-Net Glandulaire (spécialisé) | **0.9645** | **+0.46%** |
 
 **Triple Sécurité OOD:**
 - Entropie organe (softmax uncertainty)
