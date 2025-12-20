@@ -48,20 +48,34 @@
           ▼                                         ▼
 ┌──────────────────────────┐          ┌──────────────────────────┐
 │  COUCHE 2A — CELLULAIRE  │          │  COUCHE 2B — LAME        │
-│    Décodeur UNETR        │          │    Attention-MIL         │
+│    Décodeur HoVer-Net    │          │    Attention-MIL         │
 │                          │          │                          │
 │  • NP : présence noyaux  │          │  • Agrégation régions    │
 │  • HV : séparation       │          │  • Score biomarqueur     │
 │  • NT : typage (5 cls)   │          │                          │
+│  ✅ Dice 0.9587          │          │                          │
 └──────────────────────────┘          └──────────────────────────┘
                                │
                                ▼
 ┌────────────────────────────────────────────────────────────────┐
 │              COUCHE 3 — SÉCURITÉ & INCERTITUDE                 │
+│                                                                │
 │  • Incertitude aléatorique (entropie NP/HV)                   │
 │  • Incertitude épistémique (Conformal Prediction)             │
-│  • Détection OOD (distance Mahalanobis)                       │
+│  • Détection OOD (distance latente Mahalanobis)               │
+│  • Calibration locale (Temperature Scaling par centre)        │
+│                                                                │
 │  Sortie : {Fiable | À revoir | Hors domaine}                  │
+└────────────────────────────────────────────────────────────────┘
+                               │
+                               ▼
+┌────────────────────────────────────────────────────────────────┐
+│              COUCHE 4 — INTERACTION EXPERT                     │
+│                                                                │
+│  • Sélection automatique des ROIs                             │
+│  • Visualisation (cellules + heatmaps attention)              │
+│  • Validation humaine finale                                   │
+│                                                                │
 └────────────────────────────────────────────────────────────────┘
 ```
 
@@ -254,7 +268,7 @@ cellvit-optimus/
 - [x] UNETR entraîné sur PanNuke (backbone H-optimus-0 gelé)
 - [x] Dice ≈ 0.7 sur PanNuke validation (0.6935 accepté pour POC)
 
-### Phase 3 : Interface Démo & Packaging (Semaines 5-6)
+### Phase 3 : Interface Démo (Semaine 5)
 
 | Étape | Description | Validation | Statut |
 |-------|-------------|------------|--------|
@@ -262,21 +276,44 @@ cellvit-optimus/
 | 3.2 | Intégration HoVer-Net dans démo | Inférence H-optimus-0 + HoVer-Net | ✅ FAIT |
 | 3.3 | Rapport avec couleurs/emojis | Correspondance visuelle | ✅ FAIT |
 | 3.4 | Scripts OOD/calibration | Utilitaires prêts | ✅ FAIT |
-| 3.5 | Docker packaging | `docker-compose up` fonctionne | ⏳ À FAIRE |
-| 3.6 | Documentation utilisateur | README complet | ⏳ À FAIRE |
+
+### Phase 4 : Sécurité & Interaction Expert (Semaine 6) ⬅️ PRIORITÉ ACTUELLE
+
+| Étape | Description | Validation | Statut |
+|-------|-------------|------------|--------|
+| 4.1 | Incertitude aléatorique | Entropie NP/HV calculée | ⏳ À FAIRE |
+| 4.2 | Incertitude épistémique | Conformal Prediction intégré | ⏳ À FAIRE |
+| 4.3 | Détection OOD | Distance Mahalanobis sur embeddings | ⏳ À FAIRE |
+| 4.4 | Calibration locale | Temperature Scaling fonctionnel | ⏳ À FAIRE |
+| 4.5 | Sortie 3 niveaux | {Fiable \| À revoir \| Hors domaine} | ⏳ À FAIRE |
+| 4.6 | Sélection automatique ROIs | Régions prioritaires identifiées | ⏳ À FAIRE |
+| 4.7 | Heatmaps attention | Visualisation attention dans démo | ⏳ À FAIRE |
+
+### Phase 5 : Packaging (Post-POC)
+
+| Étape | Description | Validation | Statut |
+|-------|-------------|------------|--------|
+| 5.1 | Docker packaging | `docker-compose up` fonctionne | 🔜 DIFFÉRÉ |
+| 5.2 | Documentation utilisateur | README complet | 🔜 DIFFÉRÉ |
 
 **Critères de livraison POC :**
 - [x] Démo fonctionnelle avec architecture cible (H-optimus-0 + HoVer-Net, Dice 0.9587)
-- [ ] Docker déployable
-- [ ] Documentation claire
+- [ ] Couche 3 : Sécurité & Incertitude intégrée
+- [ ] Couche 4 : Interaction Expert (ROIs, heatmaps)
 
 ---
 
 ## Statut Actuel
 
-**Phase en cours :** Phase 3 (étapes 3.1-3.4 validées)
+**Phase en cours :** Phase 4 — Sécurité & Interaction Expert
 **Blocage actuel :** Aucun
-**Prochaine action :** Étape 3.5 (Docker packaging)
+**Prochaine action :** Étape 4.1 (Incertitude aléatorique - entropie NP/HV)
+
+### Résumé des accomplissements
+- ✅ Couche 1 : H-optimus-0 intégré (embeddings 1536-dim)
+- ✅ Couche 2A : HoVer-Net decoder entraîné (Dice 0.9587)
+- ⏳ Couche 3 : Sécurité & Incertitude (EN COURS)
+- ⏳ Couche 4 : Interaction Expert (À VENIR)
 
 ---
 
