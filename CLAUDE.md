@@ -1464,3 +1464,137 @@ mapie
 fastapi
 gradio  # ou streamlit
 ```
+
+---
+
+## Fonctionnalités Futures (Roadmap Expert)
+
+### Suggestions d'un pathologiste expert pour transformer le prototype en outil clinique.
+
+### 1. Incertitude Technique vs Biologique (Priorité Haute)
+
+**Problème actuel:** Le calque HEAT mélange deux types d'incertitude.
+
+**Solution proposée:** Diviser en deux calques distincts:
+
+```
+HEAT_TECH (Incertitude Technique - OOD)
+├── Problèmes de focus
+├── Plis du tissu
+├── Artefacts (bulles, poussières)
+└── Zones hors domaine (coloration atypique)
+
+HEAT_BIO (Incertitude Biologique)
+├── Classification ambiguë (Inflammatory ↔ Neoplastic)
+├── Bordures de noyaux floues
+└── Types cellulaires intermédiaires
+```
+
+**Bénéfice clinique:** Le médecin ne réagit pas de la même façon à une bulle d'air qu'à une cellule de type "indéterminé".
+
+### 2. Galerie de Noyaux de Référence (Visual Benchmarking)
+
+**Concept:** Afficher une galerie comparative:
+- Noyau "typique sain" de l'organe détecté
+- Noyau "atypique" sélectionné par l'alerte
+
+**Implémentation suggérée:**
+```python
+class ReferenceNucleiGallery:
+    def __init__(self, organ: str):
+        # Charger noyaux de référence par organe
+        self.healthy_refs = load_reference_nuclei(organ, "healthy")
+        self.atypical_refs = load_reference_nuclei(organ, "atypical")
+
+    def compare(self, nucleus_crop: np.ndarray) -> np.ndarray:
+        # Afficher côte à côte: [Healthy] [Query] [Atypical]
+        return create_comparison_strip(
+            self.healthy_refs[0], nucleus_crop, self.atypical_refs[0]
+        )
+```
+
+**Bénéfice clinique:** Échelle de comparaison visuelle immédiate.
+
+### 3. Navigation WSI avec Mini-Map (Priorité Haute pour Production)
+
+**Concept:** Interface de navigation pour lames entières (Whole Slide Images).
+
+```
+┌───────────────────────────────────────────────────────────┐
+│ ┌─────────┐                                               │
+│ │ Mini-Map│  ← Vue d'ensemble de la lame                  │
+│ │ ●●○○●   │    • = Points d'intérêt (POIs) pré-calculés  │
+│ │ ○●●○○   │                                               │
+│ └─────────┘                                               │
+│                                                           │
+│ ┌───────────────────────────────────────────────────────┐ │
+│ │                                                       │ │
+│ │              PATCH HAUTE RÉSOLUTION                   │ │
+│ │              (Clic sur POI → zoom ici)                │ │
+│ │                                                       │ │
+│ └───────────────────────────────────────────────────────┘ │
+│                                                           │
+│ ┌─────────────────────────────────────────┐               │
+│ │ PANNEAU MORPHOMÉTRIQUE (temps réel)     │               │
+│ └─────────────────────────────────────────┘               │
+└───────────────────────────────────────────────────────────┘
+```
+
+**Workflow proposé:**
+1. Pré-calculer les POIs (ROIs à haute incertitude ou néoplasie)
+2. Le pathologiste clique sur un POI dans la Mini-Map
+3. L'IHM saute au patch correspondant
+4. Le panneau morphométrique s'actualise
+
+**Implémentation:**
+- Utiliser OpenSlide pour lecture WSI pyramidale
+- Pré-calculer les POIs avec `ROISelector` existant
+- Stocker les embeddings H-optimus-0 par patch pour navigation rapide
+
+### 4. Export vers DICOM-SR (Structured Report)
+
+**Concept:** Générer un rapport DICOM-SR compatible avec les PACS hospitaliers.
+
+**Champs suggérés:**
+- Numéro d'analyse
+- Date/Heure
+- Métriques morphométriques
+- Alertes cliniques
+- Niveau de confiance
+- Captures d'écran annotées
+
+### 5. Mode "Deuxième Lecture" (Quality Assurance)
+
+**Concept:** Comparer automatiquement la prédiction du modèle avec la lecture du pathologiste.
+
+**Workflow:**
+1. Le pathologiste enregistre son diagnostic initial
+2. Le système compare avec ses propres alertes
+3. Affiche les discordances pour révision
+4. Génère des statistiques de concordance
+
+---
+
+## Fonctionnalités Implémentées (IHM Clinique)
+
+### Commit 575869a — Index Mitotique et TILs Hot/Cold
+
+#### Index Mitotique Estimé
+- Détection des figures évocatrices de mitoses (élongation + chromatine dense)
+- Calcul de l'index pour 10 HPF (High Power Fields)
+- XAI: Surbrillance jaune des noyaux mitotiques
+
+#### Statut TILs (Tumor-Infiltrating Lymphocytes)
+- Classification: 🔥 Chaud / ❄️ Froid / 🚫 Exclu / 〰️ Intermédiaire
+- Calcul du ratio de pénétration (% TILs dans le massif tumoral)
+- Distance au front d'invasion
+
+**Signification clinique:**
+- **Tumeur chaude:** Bon pronostic pour immunothérapie (TILs actifs)
+- **Tumeur froide:** Immunité bloquée en périphérie (checkpoint inhibitors moins efficaces)
+
+### Commit 66ba584 — IHM Clinique Complète
+
+- Panneau morphométrique avec métriques pathologiques
+- Gestion des calques (RAW/SEG/HEAT/BOTH)
+- XAI: Cliquer sur les alertes pour localiser les noyaux
