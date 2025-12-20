@@ -254,6 +254,153 @@ Précision: 127 niveaux suffisent pour le Sobel/Watershed
 
 ---
 
+## Explication du Modèle HoVer-Net
+
+### Architecture à 3 Branches
+
+HoVer-Net est un réseau de segmentation et classification de noyaux cellulaires conçu spécifiquement pour l'histopathologie. Il produit **3 sorties simultanées** à partir d'une seule image :
+
+```
+                    Image H&E (256×256)
+                           │
+                           ▼
+                    ┌─────────────┐
+                    │ H-optimus-0 │  ← Backbone gelé (1.1B params)
+                    │   Encoder   │
+                    └─────────────┘
+                           │
+                    features (1536-dim)
+                           │
+                           ▼
+                    ┌─────────────┐
+                    │  HoVer-Net  │  ← Décodeur entraînable
+                    │   Decoder   │
+                    └─────────────┘
+                           │
+         ┌─────────────────┼─────────────────┐
+         ▼                 ▼                 ▼
+    ┌─────────┐       ┌─────────┐       ┌─────────┐
+    │   NP    │       │   HV    │       │   NT    │
+    │ Branch  │       │ Branch  │       │ Branch  │
+    └─────────┘       └─────────┘       └─────────┘
+         │                 │                 │
+         ▼                 ▼                 ▼
+    Masque binaire    Cartes H/V      Classification
+    (noyau/fond)     (distances)       (5 types)
+```
+
+### Branche NP (Nuclei Presence)
+
+**Objectif** : Détecter la présence de noyaux cellulaires
+
+```
+Entrée : Features encodeur
+Sortie : Masque binaire 256×256 (2 classes : fond/noyau)
+Métrique : Dice Score (chevauchement prédit/réel)
+
+Interprétation :
+  Dice = 2 × |Prédit ∩ Réel| / (|Prédit| + |Réel|)
+
+  0.96+ = Excellent - Détecte 96%+ des noyaux
+```
+
+### Branche HV (Horizontal/Vertical)
+
+**Objectif** : Séparer les noyaux qui se touchent
+
+```
+Problème : Dans les tissus denses, les noyaux se chevauchent.
+           Un masque binaire ne distingue pas où finit un noyau
+           et où commence le suivant.
+
+Solution : Pour chaque pixel d'un noyau, calculer sa distance
+           normalisée au centre de l'instance.
+
+Masque binaire:          Carte H:              Carte V:
+┌─────────────┐       ┌─────────────┐       ┌─────────────┐
+│  ████████   │       │  -1  0  +1  │       │  -1 -1 -1   │
+│  ████████   │   →   │  -1  0  +1  │       │   0  0  0   │
+│  ████████   │       │  -1  0  +1  │       │  +1 +1 +1   │
+└─────────────┘       └─────────────┘       └─────────────┘
+
+H = distance horizontale normalisée [-1, +1]
+V = distance verticale normalisée [-1, +1]
+
+Post-processing :
+  1. Sobel(H, V) → Gradient maximal aux frontières
+  2. Watershed sur les gradients → Instances séparées
+```
+
+**Métrique** : MSE (Mean Squared Error)
+```
+MSE = moyenne((H_prédit - H_réel)² + (V_prédit - V_réel)²)
+
+Calculé uniquement sur les pixels de noyaux (masque NP)
+
+  < 0.02 = Excellent (frontières nettes)
+  0.02-0.05 = Bon
+  > 0.1 = Problématique (fusions possibles)
+```
+
+### Branche NT (Nuclei Type)
+
+**Objectif** : Classifier le type de chaque noyau
+
+```
+5 classes PanNuke :
+  🔴 Neoplastic   - Cellules tumorales
+  🟢 Inflammatory - Lymphocytes, macrophages
+  🔵 Connective   - Fibroblastes, stroma
+  🟡 Dead         - Cellules apoptotiques/nécrotiques
+  🩵 Epithelial   - Cellules épithéliales normales
+
+Sortie : 256×256×5 (probabilités par classe)
+Métrique : Accuracy (% pixels correctement classifiés)
+```
+
+### Fonction de Perte Combinée
+
+```python
+L_total = λ_np × L_np + λ_hv × L_hv + λ_nt × L_nt
+
+Où :
+  L_np = CrossEntropy (classification binaire)
+  L_hv = SmoothL1Loss (régression robuste aux outliers)
+  L_nt = CrossEntropy (classification 5 classes)
+
+Poids optimaux :
+  λ_np = 1.0
+  λ_hv = 2.0  ← Plus important pour séparation instances
+  λ_nt = 1.0
+```
+
+### Résultats par Famille (PanNuke)
+
+| Famille | Organes | NP Dice | HV MSE | NT Acc | Statut |
+|---------|---------|---------|--------|--------|--------|
+| **Glandulaire** | Breast, Prostate, Thyroid, Pancreatic, Adrenal | 0.9645 | 0.015 | 0.88 | ✅ |
+| **Digestive** | Colon, Stomach, Esophagus, Bile-duct | 0.9634 | 0.016 | 0.88 | ✅ |
+| Urologique | Kidney, Bladder, Testis, Ovarian, Uterus, Cervix | - | - | - | 🔜 |
+| Respiratoire | Lung, Liver | - | - | - | 🔜 |
+| Épidermoïde | Skin, HeadNeck | - | - | - | 🔜 |
+
+### Pourquoi 5 Familles ?
+
+```
+Justification scientifique :
+  1. Les noyaux partagent des propriétés physiques → backbone commun
+  2. L'erreur augmente entre organes de textures différentes
+  3. Le transfert fonctionne mieux entre organes de même origine embryologique
+
+Avantages techniques :
+  - RAM réduite : ~27 GB → ~5 GB par entraînement
+  - Gradient propre (pas de signaux contradictoires)
+  - Meilleure classification NT par famille
+  - Convergence plus rapide
+```
+
+---
+
 ## Stratégie de Sécurité Clinique
 
 ### Sortie en 3 niveaux
@@ -751,13 +898,13 @@ OrganHead   HoVerNet
 | OOD | Threshold | 46.69 |
 
 **Résultats HoVer-Net par Famille:**
-| Famille | Samples | Dice | Checkpoint | Statut |
-|---------|---------|------|------------|--------|
-| Glandulaire | 3391 | **0.9645** | `hovernet_glandular_best.pth` | ✅ Entraîné |
-| Digestive | 2274 | - | - | 🔜 À faire |
-| Urologique | 1153 | - | - | 🔜 À faire |
-| Épidermoïde | 574 | - | - | 🔜 À faire |
-| Respiratoire | 364 | - | - | 🔜 À faire |
+| Famille | Samples | Dice | HV MSE | NT Acc | Checkpoint | Statut |
+|---------|---------|------|--------|--------|------------|--------|
+| Glandulaire | 3391 | **0.9645** | 0.015 | 0.88 | `hovernet_glandular_best.pth` | ✅ Entraîné |
+| Digestive | 2274 | **0.9634** | 0.016 | 0.88 | `hovernet_digestive_best.pth` | ✅ Entraîné |
+| Urologique | 1153 | - | - | - | - | 🔜 À faire |
+| Épidermoïde | 574 | - | - | - | - | 🔜 À faire |
+| Respiratoire | 364 | - | - | - | - | 🔜 À faire |
 
 **Comparaison HoVer-Net global vs par famille:**
 | Modèle | Dice | Amélioration |
@@ -958,6 +1105,23 @@ family = ORGAN_TO_FAMILY[organ]  # "glandular"
 # 3. Décodeur spécialisé segmente
 cells = hovernet_decoders[family].predict(patch_tokens)
 ```
+
+### 2025-12-20 — Entraînement Famille Digestive ✅
+
+**Résultats finaux (50 epochs):**
+| Métrique | Train | Validation | Best |
+|----------|-------|------------|------|
+| Loss | 0.6369 | 0.6890 | 0.6995 |
+| NP Dice | 0.9677 | 0.9627 | **0.9634** |
+| HV MSE | 0.0227 | 0.0152 | **0.0163** |
+| NT Acc | 0.8748 | 0.8748 | **0.8824** |
+
+**Observations:**
+- HV MSE amélioré de 0.27 (epoch 6) → 0.016 (epoch 50) = **94% d'amélioration**
+- Pas d'overfitting : Train Loss (0.64) ≈ Val Loss (0.69)
+- Performances comparables à Glandulaire
+
+**Checkpoint:** `models/checkpoints/hovernet_digestive_best.pth`
 
 #### Commandes d'entraînement par famille
 
