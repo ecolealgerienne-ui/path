@@ -11,6 +11,35 @@ Couche 3 de l'architecture:
 Sortie: {Fiable | À revoir | Hors domaine}
 """
 
-from .uncertainty_estimator import UncertaintyEstimator, UncertaintyResult
+from .uncertainty_estimator import (
+    UncertaintyEstimator,
+    UncertaintyResult,
+    ConfidenceLevel,
+)
+from .conformal_prediction import (
+    ConformalPredictor,
+    ConformalResult,
+    ConformalMethod,
+    PixelwiseConformalPredictor,
+)
+from .roi_selection import (
+    ROISelector,
+    ROI,
+    ROIPriority,
+)
 
-__all__ = ['UncertaintyEstimator', 'UncertaintyResult']
+__all__ = [
+    # Uncertainty Estimation
+    'UncertaintyEstimator',
+    'UncertaintyResult',
+    'ConfidenceLevel',
+    # Conformal Prediction
+    'ConformalPredictor',
+    'ConformalResult',
+    'ConformalMethod',
+    'PixelwiseConformalPredictor',
+    # ROI Selection
+    'ROISelector',
+    'ROI',
+    'ROIPriority',
+]

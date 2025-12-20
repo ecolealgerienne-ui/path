@@ -277,16 +277,16 @@ cellvit-optimus/
 | 3.3 | Rapport avec couleurs/emojis | Correspondance visuelle | ✅ FAIT |
 | 3.4 | Scripts OOD/calibration | Utilitaires prêts | ✅ FAIT |
 
-### Phase 4 : Sécurité & Interaction Expert (Semaine 6) ⬅️ EN COURS
+### Phase 4 : Sécurité & Interaction Expert (Semaine 6) ✅ COMPLÈTE
 
 | Étape | Description | Validation | Statut |
 |-------|-------------|------------|--------|
 | 4.1 | Incertitude aléatorique | Entropie NP/HV calculée | ✅ FAIT |
-| 4.2 | Incertitude épistémique | Conformal Prediction intégré | ⏳ À FAIRE |
+| 4.2 | Incertitude épistémique | Conformal Prediction intégré | ✅ FAIT |
 | 4.3 | Détection OOD | Distance Mahalanobis sur embeddings | ✅ FAIT |
-| 4.4 | Calibration locale | Temperature Scaling fonctionnel | ⏳ À FAIRE |
+| 4.4 | Calibration locale | Temperature Scaling fonctionnel | ✅ FAIT |
 | 4.5 | Sortie 3 niveaux | {Fiable \| À revoir \| Hors domaine} | ✅ FAIT |
-| 4.6 | Sélection automatique ROIs | Régions prioritaires identifiées | ⏳ À FAIRE |
+| 4.6 | Sélection automatique ROIs | Régions prioritaires identifiées | ✅ FAIT |
 | 4.7 | Carte d'incertitude | Heatmap rouge/vert dans démo | ✅ FAIT |
 
 ### Phase 5 : Packaging (Post-POC)
@@ -297,23 +297,23 @@ cellvit-optimus/
 | 5.2 | Documentation utilisateur | README complet | 🔜 DIFFÉRÉ |
 
 **Critères de livraison POC :**
-- [x] Démo fonctionnelle avec architecture cible (H-optimus-0 + HoVer-Net, Dice 0.9587)
-- [ ] Couche 3 : Sécurité & Incertitude intégrée
-- [ ] Couche 4 : Interaction Expert (ROIs, heatmaps)
+- [x] Démo fonctionnelle avec architecture cible (H-optimus-0 + HoVer-Net, Dice 0.9601)
+- [x] Couche 3 : Sécurité & Incertitude intégrée
+- [x] Couche 4 : Interaction Expert (ROIs, heatmaps)
 
 ---
 
 ## Statut Actuel
 
-**Phase en cours :** Phase 4 — Sécurité & Interaction Expert (4/7 étapes complétées)
+**Phase en cours :** Phase 4 — COMPLÈTE ✅
 **Blocage actuel :** Aucun
-**Prochaine action :** Étape 4.6 (Sélection automatique ROIs)
+**Prochaine action :** Phase 5 (Packaging) ou démo avec pathologistes
 
 ### Résumé des accomplissements
 - ✅ Couche 1 : H-optimus-0 intégré (embeddings 1536-dim)
-- ✅ Couche 2A : HoVer-Net decoder entraîné (Dice 0.9587)
-- ✅ Couche 3 : Sécurité & Incertitude (entropie + Mahalanobis + sortie 3 niveaux)
-- ⏳ Couche 4 : Interaction Expert (ROIs, calibration à venir)
+- ✅ Couche 2A : HoVer-Net decoder entraîné (Dice 0.9601)
+- ✅ Couche 3 : Sécurité & Incertitude (entropie + Mahalanobis + Conformal Prediction)
+- ✅ Couche 4 : Interaction Expert (ROIs, calibration, heatmaps)
 
 ---
 
@@ -629,6 +629,45 @@ Tronc Commun (upsampling partagé 16→224)
 python scripts/training/train_hovernet.py --fold 0 --epochs 50 --augment --dropout 0.1
 ```
 
+### 2025-12-20 — Phase 4 Complète: Conformal Prediction + ROI Selection ✅
+
+**Modules implémentés:**
+
+1. **Conformal Prediction** (`src/uncertainty/conformal_prediction.py`)
+   - Méthodes: LAC, APS, RAPS
+   - Garantie de couverture (1 - alpha)
+   - Support pixel-wise pour segmentation
+   - Usage:
+   ```python
+   cp = ConformalPredictor(method=ConformalMethod.APS, alpha=0.1)
+   cp.calibrate(val_probs, val_labels)
+   result = cp.predict_set(test_probs)  # Returns prediction set
+   ```
+
+2. **Temperature Scaling intégré** (`uncertainty_estimator.py`)
+   - Calibration post-hoc des probabilités
+   - Minimisation NLL ou ECE
+   - Intégré dans UncertaintyEstimator:
+   ```python
+   estimator.calibrate_temperature(logits, labels)
+   probs = estimator.apply_temperature(logits)
+   ```
+
+3. **Sélection automatique ROIs** (`src/uncertainty/roi_selection.py`)
+   - Score combiné: incertitude + densité + néoplasiques
+   - Priorités: CRITICAL, HIGH, MEDIUM, LOW
+   - Fenêtre glissante avec suppression chevauchement
+   - Usage:
+   ```python
+   selector = ROISelector(roi_size=64, stride=32)
+   rois = selector.select_rois(uncertainty_map, np_mask, nt_probs, n_rois=5)
+   ```
+
+**Tests de validation:**
+```bash
+python -c "from src.uncertainty import ConformalPredictor, ROISelector; print('OK')"
+```
+
 ---
 
 ## Fichiers Créés (Inventaire)
@@ -644,9 +683,11 @@ src/
 │   ├── hoptimus_hovernet.py      # Wrapper H-optimus-0 + HoVer-Net (cible)
 │   ├── hoptimus_unetr.py         # Wrapper H-optimus-0 + UNETR (fallback)
 │   └── cellvit_official.py       # Wrapper pour repo officiel TIO-IKIM
-└── uncertainty/                   # Couche 3: Sécurité & Incertitude
+└── uncertainty/                   # Couche 3 & 4: Sécurité & Interaction Expert
     ├── __init__.py
-    └── uncertainty_estimator.py  # Entropie + Mahalanobis + 3 niveaux
+    ├── uncertainty_estimator.py  # Entropie + Mahalanobis + Temperature Scaling
+    ├── conformal_prediction.py   # Conformal Prediction (APS/LAC/RAPS)
+    └── roi_selection.py          # Sélection automatique ROIs
 
 scripts/
 ├── setup/

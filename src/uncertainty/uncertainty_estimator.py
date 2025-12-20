@@ -12,8 +12,10 @@ Sortie en 3 niveaux: {Fiable | À revoir | Hors domaine}
 
 import numpy as np
 from dataclasses import dataclass
-from typing import Dict, Optional, Tuple
+from typing import Dict, Optional, Tuple, List
 from enum import Enum
+from scipy.special import softmax
+from scipy.optimize import minimize_scalar
 
 
 class ConfidenceLevel(Enum):
@@ -362,6 +364,72 @@ class UncertaintyEstimator:
         ])
 
         return "\n".join(lines)
+
+    def calibrate_temperature(
+        self,
+        logits: np.ndarray,
+        labels: np.ndarray,
+        method: str = "nll"
+    ) -> float:
+        """
+        Calibre la température pour améliorer la fiabilité des probabilités.
+
+        Args:
+            logits: Logits non-calibrés (N, C) ou (N, H, W, C)
+            labels: Labels ground truth (N,) ou (N, H, W)
+            method: 'nll' ou 'ece'
+
+        Returns:
+            Température optimale
+        """
+        # Aplatir si nécessaire
+        if logits.ndim > 2:
+            logits = logits.reshape(-1, logits.shape[-1])
+            labels = labels.flatten()
+
+        def objective(T):
+            if T <= 0:
+                return np.inf
+            scaled = logits / T
+            probs = softmax(scaled, axis=-1)
+
+            if method == "nll":
+                correct_probs = probs[np.arange(len(labels)), labels]
+                return -np.log(correct_probs + 1e-10).mean()
+            else:
+                return self._compute_ece(probs, labels)
+
+        result = minimize_scalar(objective, bounds=(0.1, 10.0), method='bounded')
+        self.temperature = result.x
+
+        return self.temperature
+
+    def _compute_ece(
+        self,
+        probs: np.ndarray,
+        labels: np.ndarray,
+        n_bins: int = 15
+    ) -> float:
+        """Calcule l'Expected Calibration Error."""
+        confidences = probs.max(axis=1)
+        predictions = probs.argmax(axis=1)
+        accuracies = (predictions == labels)
+
+        bins = np.linspace(0, 1, n_bins + 1)
+        ece = 0.0
+
+        for i in range(n_bins):
+            mask = (confidences > bins[i]) & (confidences <= bins[i + 1])
+            if mask.sum() > 0:
+                bin_acc = accuracies[mask].mean()
+                bin_conf = confidences[mask].mean()
+                ece += mask.sum() * np.abs(bin_acc - bin_conf)
+
+        return ece / len(labels)
+
+    def apply_temperature(self, logits: np.ndarray) -> np.ndarray:
+        """Applique le temperature scaling aux logits."""
+        return softmax(logits / self.temperature, axis=-1)
 
 
 # Test
