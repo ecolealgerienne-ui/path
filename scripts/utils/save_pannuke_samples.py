@@ -40,17 +40,25 @@ def main():
     # Charger les données PanNuke
     print(f"Chargement des données depuis {data_dir}...")
 
-    # Chercher les fichiers dans fold_0 ou directement
-    if (data_dir / "fold_0" / "images.npy").exists():
-        images_path = data_dir / "fold_0" / "images.npy"
-        types_path = data_dir / "fold_0" / "types.npy"
-    elif (data_dir / "images.npy").exists():
-        images_path = data_dir / "images.npy"
-        types_path = data_dir / "types.npy"
-    else:
+    # Chercher les fichiers (différentes conventions de nommage)
+    possible_paths = [
+        data_dir / "fold0" / "images.npy",      # fold0 (convention PanNuke)
+        data_dir / "fold_0" / "images.npy",     # fold_0
+        data_dir / "images.npy",                 # directement
+    ]
+
+    images_path = None
+    for p in possible_paths:
+        if p.exists():
+            images_path = p
+            types_path = p.parent / "types.npy"
+            break
+
+    if images_path is None:
         print(f"❌ Données PanNuke non trouvées dans {data_dir}")
-        print(f"   Attendu: {data_dir}/fold_0/images.npy")
-        print(f"   ou:      {data_dir}/images.npy")
+        print(f"   Chemins testés:")
+        for p in possible_paths:
+            print(f"     - {p}")
         return
 
     images = np.load(images_path)
