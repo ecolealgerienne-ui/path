@@ -182,6 +182,11 @@ def prepare_family(data_dir: Path, output_dir: Path, family: str, folds: list = 
     print(f"\n🔄 Pré-calcul des targets HoVer-Net...")
     np_targets, hv_targets, nt_targets = prepare_targets_chunk(masks)
 
+    # Convertir HV en int8 pour économiser 75% d'espace disque
+    # float32 [-1, 1] → int8 [-127, 127]
+    hv_targets_int8 = (hv_targets * 127).astype(np.int8)
+    print(f"  → HV converti en int8: {hv_targets.nbytes / 1e9:.2f} GB → {hv_targets_int8.nbytes / 1e9:.2f} GB")
+
     # Sauvegarder
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -193,12 +198,12 @@ def prepare_family(data_dir: Path, output_dir: Path, family: str, folds: list = 
              fold_ids=fold_ids,
              original_indices=original_indices)
 
-    # Targets pré-calculés (NP, HV, NT)
+    # Targets pré-calculés (NP, HV en int8, NT)
     targets_path = output_dir / f"{family}_targets.npz"
     print(f"Sauvegarde targets: {targets_path}")
     np.savez(targets_path,
              np_targets=np_targets,
-             hv_targets=hv_targets,
+             hv_targets=hv_targets_int8,  # int8 pour économiser l'espace
              nt_targets=nt_targets)
 
     # Afficher les tailles

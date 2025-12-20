@@ -137,10 +137,12 @@ class FamilyHoVerDataset(Dataset):
         print(f"Chargement {targets_path.name}...")
         targets_data = np.load(targets_path)
         self.np_targets = targets_data['np_targets']
-        self.hv_targets = targets_data['hv_targets']
+        # HV stocké en int8 [-127, 127] → reconvertir en float32 [-1, 1]
+        hv_int8 = targets_data['hv_targets']
+        self.hv_targets = hv_int8.astype(np.float32) / 127.0
         self.nt_targets = targets_data['nt_targets']
         total_targets_gb = (self.np_targets.nbytes + self.hv_targets.nbytes + self.nt_targets.nbytes) / 1e9
-        print(f"  → Targets: {total_targets_gb:.2f} GB")
+        print(f"  → Targets: {total_targets_gb:.2f} GB (HV reconverti int8→float32)")
 
         print(f"\n📊 Dataset famille {family}: {self.n_samples} samples (tout en RAM)")
 
