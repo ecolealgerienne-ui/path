@@ -87,6 +87,7 @@ class HoVerNetDecoder(nn.Module):
         patch_size: int = 14,
         img_size: int = 224,
         n_classes: int = 5,
+        dropout: float = 0.1,  # Dropout pour régularisation
     ):
         super().__init__()
 
@@ -99,6 +100,7 @@ class HoVerNetDecoder(nn.Module):
             nn.Conv2d(embed_dim, bottleneck_dim, 1, bias=False),
             nn.BatchNorm2d(bottleneck_dim),
             nn.ReLU(inplace=True),
+            nn.Dropout2d(dropout) if dropout > 0 else nn.Identity(),
         )
 
         # ===== TRONC COMMUN (upsampling partagé) =====
@@ -107,6 +109,9 @@ class HoVerNetDecoder(nn.Module):
         self.up2 = UpsampleBlock(128, 64)               # 32→64, 128→64
         self.up3 = UpsampleBlock(64, 64)                # 64→128, 64→64
         self.up4 = UpsampleBlock(64, 64)                # 128→256, 64→64
+
+        # Dropout entre les blocs d'upsampling
+        self.dropout = nn.Dropout2d(dropout) if dropout > 0 else nn.Identity()
 
         # ===== TÊTES SPÉCIALISÉES (légères) =====
         self.np_head = DecoderHead(64, 2)        # Nuclei Presence (binaire)
@@ -152,14 +157,17 @@ class HoVerNetDecoder(nn.Module):
         # Reshape tokens → spatial
         x = self.reshape_features(features)  # (B, 1536, 16, 16)
 
-        # Bottleneck partagé (économie VRAM: 1536 → 256)
+        # Bottleneck partagé (économie VRAM: 1536 → 256, + dropout)
         x = self.bottleneck(x)  # (B, 256, 16, 16)
 
-        # Tronc commun (upsampling partagé)
-        x = self.up1(x)  # (B, 128, 32, 32)
-        x = self.up2(x)  # (B, 64, 64, 64)
-        x = self.up3(x)  # (B, 64, 128, 128)
-        x = self.up4(x)  # (B, 64, 256, 256)
+        # Tronc commun (upsampling partagé avec dropout)
+        x = self.up1(x)         # (B, 128, 32, 32)
+        x = self.dropout(x)
+        x = self.up2(x)         # (B, 64, 64, 64)
+        x = self.dropout(x)
+        x = self.up3(x)         # (B, 64, 128, 128)
+        x = self.dropout(x)
+        x = self.up4(x)         # (B, 64, 256, 256)
 
         # Ajuster à la taille cible (224x224)
         if x.shape[-1] != self.img_size:

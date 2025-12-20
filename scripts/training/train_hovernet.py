@@ -29,6 +29,76 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from src.models.hovernet_decoder import HoVerNetDecoder, HoVerNetLoss
 
 
+class FeatureAugmentation:
+    """
+    Augmentation pour features H-optimus-0 et targets.
+
+    Applique des transformations géométriques cohérentes sur:
+    - Features: reshape 256 patch tokens en 16x16, augmenter, re-flatten
+    - Targets: augmentation spatiale directe
+    """
+
+    def __init__(self, p_flip: float = 0.5, p_rot90: float = 0.5):
+        self.p_flip = p_flip
+        self.p_rot90 = p_rot90
+
+    def __call__(self, features, np_target, hv_target, nt_target):
+        """
+        Args:
+            features: (261, 1536) - 1 CLS + 256 patches + 4 registers
+            np_target: (224, 224)
+            hv_target: (2, 224, 224)
+            nt_target: (224, 224)
+        """
+        # Séparer CLS, patches, registres
+        cls_token = features[0:1]        # (1, 1536)
+        patches = features[1:257]        # (256, 1536)
+        registers = features[257:261]    # (4, 1536)
+
+        # Reshape patches en grille 16x16
+        patches_grid = patches.reshape(16, 16, -1)  # (16, 16, 1536)
+
+        # Flip horizontal
+        if np.random.random() < self.p_flip:
+            patches_grid = np.flip(patches_grid, axis=1).copy()
+            np_target = np.flip(np_target, axis=1).copy()
+            hv_target = np.flip(hv_target, axis=2).copy()
+            hv_target[0] = -hv_target[0]  # Inverser la composante H
+            nt_target = np.flip(nt_target, axis=1).copy()
+
+        # Flip vertical
+        if np.random.random() < self.p_flip:
+            patches_grid = np.flip(patches_grid, axis=0).copy()
+            np_target = np.flip(np_target, axis=0).copy()
+            hv_target = np.flip(hv_target, axis=1).copy()
+            hv_target[1] = -hv_target[1]  # Inverser la composante V
+            nt_target = np.flip(nt_target, axis=0).copy()
+
+        # Rotation 90°
+        if np.random.random() < self.p_rot90:
+            k = np.random.choice([1, 2, 3])  # 90, 180, 270 degrés
+            patches_grid = np.rot90(patches_grid, k, axes=(0, 1)).copy()
+            np_target = np.rot90(np_target, k).copy()
+            hv_target = np.rot90(hv_target, k, axes=(1, 2)).copy()
+            nt_target = np.rot90(nt_target, k).copy()
+
+            # Ajuster les composantes H/V selon la rotation
+            if k == 1:  # 90°
+                hv_target = np.stack([-hv_target[1], hv_target[0]])
+            elif k == 2:  # 180°
+                hv_target = np.stack([-hv_target[0], -hv_target[1]])
+            elif k == 3:  # 270°
+                hv_target = np.stack([hv_target[1], -hv_target[0]])
+
+        # Re-flatten patches
+        patches = patches_grid.reshape(256, -1)
+
+        # Reconstruire features
+        features = np.concatenate([cls_token, patches, registers], axis=0)
+
+        return features, np_target, hv_target, nt_target
+
+
 class PanNukeHoVerDataset(Dataset):
     """
     Dataset PanNuke avec targets HoVer-Net.
@@ -39,10 +109,14 @@ class PanNukeHoVerDataset(Dataset):
     - nt_target: type de noyau par pixel
     """
 
-    def __init__(self, data_dir: str, fold: int = 0, split: str = 'train'):
+    def __init__(self, data_dir: str, fold: int = 0, split: str = 'train', augment: bool = False):
         self.data_dir = Path(data_dir)
         self.fold = fold
         self.split = split
+        self.augment = augment
+
+        # Augmentation (seulement pour train)
+        self.augmenter = FeatureAugmentation() if augment else None
 
         # Charger les features pré-extraites (layer 24 seulement)
         features_path = PROJECT_ROOT / "data" / "cache" / "pannuke_features" / f"fold{fold}_features.npz"
@@ -166,19 +240,40 @@ class PanNukeHoVerDataset(Dataset):
         return self.n_samples
 
     def __getitem__(self, idx):
-        features = torch.from_numpy(self.features[idx])
-        np_target = torch.from_numpy(self.np_targets[idx])
-        hv_target = torch.from_numpy(self.hv_targets[idx])
-        nt_target = torch.from_numpy(self.nt_targets[idx])
+        features = self.features[idx].copy()  # (261, 1536)
+        np_target = self.np_targets[idx].copy()  # (256, 256)
+        hv_target = self.hv_targets[idx].copy()  # (2, 256, 256)
+        nt_target = self.nt_targets[idx].copy()  # (256, 256)
 
         # Resize targets de 256 à 224 pour correspondre à la sortie
-        np_target = F.interpolate(np_target.unsqueeze(0).unsqueeze(0),
-                                  size=(224, 224), mode='nearest').squeeze()
-        hv_target = F.interpolate(hv_target.unsqueeze(0),
-                                  size=(224, 224), mode='bilinear',
-                                  align_corners=False).squeeze(0)
-        nt_target = F.interpolate(nt_target.float().unsqueeze(0).unsqueeze(0),
-                                  size=(224, 224), mode='nearest').squeeze().long()
+        np_target_t = torch.from_numpy(np_target)
+        hv_target_t = torch.from_numpy(hv_target)
+        nt_target_t = torch.from_numpy(nt_target)
+
+        np_target_t = F.interpolate(np_target_t.unsqueeze(0).unsqueeze(0),
+                                    size=(224, 224), mode='nearest').squeeze()
+        hv_target_t = F.interpolate(hv_target_t.unsqueeze(0),
+                                    size=(224, 224), mode='bilinear',
+                                    align_corners=False).squeeze(0)
+        nt_target_t = F.interpolate(nt_target_t.float().unsqueeze(0).unsqueeze(0),
+                                    size=(224, 224), mode='nearest').squeeze().long()
+
+        # Convertir en numpy pour augmentation
+        np_target = np_target_t.numpy()
+        hv_target = hv_target_t.numpy()
+        nt_target = nt_target_t.numpy()
+
+        # Appliquer augmentation si activée
+        if self.augmenter is not None:
+            features, np_target, hv_target, nt_target = self.augmenter(
+                features, np_target, hv_target, nt_target
+            )
+
+        # Convertir en tenseurs
+        features = torch.from_numpy(features)
+        np_target = torch.from_numpy(np_target.copy())
+        hv_target = torch.from_numpy(hv_target.copy())
+        nt_target = torch.from_numpy(nt_target.copy()).long()
 
         return features, np_target, hv_target, nt_target
 
@@ -277,6 +372,10 @@ def main():
     parser.add_argument('--lr', type=float, default=1e-4)
     parser.add_argument('--val_split', type=float, default=0.2)
     parser.add_argument('--output_dir', type=str, default='models/checkpoints')
+    parser.add_argument('--augment', action='store_true',
+                       help='Activer data augmentation (flip, rot90)')
+    parser.add_argument('--dropout', type=float, default=0.1,
+                       help='Dropout rate dans le décodeur')
 
     args = parser.parse_args()
 
@@ -288,21 +387,29 @@ def main():
 
     if args.train_fold is not None and args.val_fold is not None:
         # Validation croisée
-        train_dataset = PanNukeHoVerDataset(args.data_dir, args.train_fold, 'train')
-        val_dataset = PanNukeHoVerDataset(args.data_dir, args.val_fold, 'val')
+        train_dataset = PanNukeHoVerDataset(args.data_dir, args.train_fold, 'train', augment=args.augment)
+        val_dataset = PanNukeHoVerDataset(args.data_dir, args.val_fold, 'val', augment=False)
         print(f"  Train fold: {args.train_fold} ({len(train_dataset)} samples)")
         print(f"  Val fold: {args.val_fold} ({len(val_dataset)} samples)")
     else:
-        # Split interne
-        full_dataset = PanNukeHoVerDataset(args.data_dir, args.fold, 'train')
-        n_val = int(len(full_dataset) * args.val_split)
-        n_train = len(full_dataset) - n_val
+        # Split interne - charger 2 fois: avec et sans augmentation
+        train_base = PanNukeHoVerDataset(args.data_dir, args.fold, 'train', augment=args.augment)
+        val_base = PanNukeHoVerDataset(args.data_dir, args.fold, 'val', augment=False)
 
-        train_dataset, val_dataset = torch.utils.data.random_split(
-            full_dataset, [n_train, n_val],
-            generator=torch.Generator().manual_seed(42)
-        )
-        print(f"  Fold {args.fold} split: {n_train} train / {n_val} val")
+        n_total = len(train_base)
+        n_val = int(n_total * args.val_split)
+        n_train = n_total - n_val
+
+        # Créer les indices pour le split
+        indices = torch.randperm(n_total, generator=torch.Generator().manual_seed(42)).tolist()
+        train_indices = indices[:n_train]
+        val_indices = indices[n_train:]
+
+        train_dataset = torch.utils.data.Subset(train_base, train_indices)
+        val_dataset = torch.utils.data.Subset(val_base, val_indices)
+
+        aug_str = " (augmenté)" if args.augment else ""
+        print(f"  Fold {args.fold} split: {n_train} train{aug_str} / {n_val} val")
 
     train_loader = DataLoader(train_dataset, batch_size=args.batch_size,
                               shuffle=True, num_workers=0, pin_memory=False)
@@ -311,11 +418,15 @@ def main():
 
     # Modèle
     print("\n🔧 Initialisation du décodeur HoVer-Net...")
-    model = HoVerNetDecoder(embed_dim=1536, n_classes=5)
+    model = HoVerNetDecoder(embed_dim=1536, n_classes=5, dropout=args.dropout)
     model.to(device)
 
     n_params = sum(p.numel() for p in model.parameters())
     print(f"  Paramètres: {n_params:,} ({n_params/1e6:.1f}M)")
+    if args.dropout > 0:
+        print(f"  Dropout: {args.dropout}")
+    if args.augment:
+        print(f"  Augmentation: activée (flip + rot90)")
 
     # Loss et optimizer
     criterion = HoVerNetLoss()
