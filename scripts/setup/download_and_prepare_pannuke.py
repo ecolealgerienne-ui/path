@@ -95,10 +95,10 @@ def extract_and_reorganize(zip_path: Path, output_dir: Path, fold_official: int)
     """
     Extrait le ZIP et réorganise pour correspondre à extract_features.py.
 
-    PanNuke officiel:
-        Fold1/images/images.npy
-        Fold1/masks/masks.npy
-        Fold1/images/types.npy
+    PanNuke officiel (structure réelle):
+        Fold 1/images/fold1/images.npy
+        Fold 1/images/fold1/types.npy
+        Fold 1/masks/fold1/masks.npy
 
     Notre structure:
         fold0/images.npy
@@ -118,43 +118,41 @@ def extract_and_reorganize(zip_path: Path, output_dir: Path, fold_official: int)
         with zipfile.ZipFile(zip_path, 'r') as zf:
             zf.extractall(temp_dir)
 
-        # Trouver les fichiers extraits
-        # Structure possible: Fold1/images/images.npy ou directement images/images.npy
-        possible_roots = [
-            temp_dir / f"Fold{fold_official}",
-            temp_dir / f"Fold {fold_official}",
-            temp_dir / f"fold{fold_official}",
-            temp_dir,
-        ]
+        # Chercher les fichiers .npy dans l'extraction
+        npy_files = list(temp_dir.rglob("*.npy"))
+        print(f"  Fichiers trouvés: {len(npy_files)}")
 
-        source_dir = None
-        for root in possible_roots:
-            if (root / "images" / "images.npy").exists():
-                source_dir = root
-                break
-            elif (root / "images.npy").exists():
-                source_dir = root
-                break
+        # Trouver images.npy, masks.npy, types.npy
+        images_file = None
+        masks_file = None
+        types_file = None
 
-        if source_dir is None:
-            # Lister le contenu pour debug
-            print(f"  Contenu extrait: {list(temp_dir.rglob('*.npy'))[:10]}")
-            raise FileNotFoundError("Structure PanNuke non reconnue")
+        for f in npy_files:
+            if f.name == "images.npy":
+                images_file = f
+            elif f.name == "masks.npy":
+                masks_file = f
+            elif f.name == "types.npy":
+                types_file = f
+
+        if images_file is None or masks_file is None or types_file is None:
+            print(f"  ❌ Fichiers manquants:")
+            print(f"     images.npy: {images_file}")
+            print(f"     masks.npy: {masks_file}")
+            print(f"     types.npy: {types_file}")
+            raise FileNotFoundError("Fichiers PanNuke incomplets")
+
+        print(f"  📄 images.npy: {images_file}")
+        print(f"  📄 masks.npy: {masks_file}")
+        print(f"  📄 types.npy: {types_file}")
 
         # Créer le répertoire cible
         target_dir.mkdir(parents=True, exist_ok=True)
 
-        # Copier et réorganiser les fichiers
-        if (source_dir / "images" / "images.npy").exists():
-            # Structure officielle avec sous-dossiers
-            shutil.copy(source_dir / "images" / "images.npy", target_dir / "images.npy")
-            shutil.copy(source_dir / "masks" / "masks.npy", target_dir / "masks.npy")
-            shutil.copy(source_dir / "images" / "types.npy", target_dir / "types.npy")
-        else:
-            # Structure plate
-            shutil.copy(source_dir / "images.npy", target_dir / "images.npy")
-            shutil.copy(source_dir / "masks.npy", target_dir / "masks.npy")
-            shutil.copy(source_dir / "types.npy", target_dir / "types.npy")
+        # Copier les fichiers
+        shutil.copy(images_file, target_dir / "images.npy")
+        shutil.copy(masks_file, target_dir / "masks.npy")
+        shutil.copy(types_file, target_dir / "types.npy")
 
         print(f"  ✅ Réorganisé dans {target_dir}")
 
