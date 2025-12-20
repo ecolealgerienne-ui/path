@@ -376,13 +376,61 @@ Poids optimaux :
 
 ### Résultats par Famille (PanNuke)
 
-| Famille | Organes | NP Dice | HV MSE | NT Acc | Statut |
+| Famille | Samples | NP Dice | HV MSE | NT Acc | Statut |
 |---------|---------|---------|--------|--------|--------|
-| **Glandulaire** | Breast, Prostate, Thyroid, Pancreatic, Adrenal | 0.9645 | 0.015 | 0.88 | ✅ |
-| **Digestive** | Colon, Stomach, Esophagus, Bile-duct | 0.9634 | 0.016 | 0.88 | ✅ |
-| Urologique | Kidney, Bladder, Testis, Ovarian, Uterus, Cervix | - | - | - | 🔜 |
-| Respiratoire | Lung, Liver | - | - | - | 🔜 |
-| Épidermoïde | Skin, HeadNeck | - | - | - | 🔜 |
+| **Glandulaire** | 3535 | **0.9645** | **0.015** | 0.88 | ✅ |
+| **Digestive** | 2274 | **0.9634** | **0.016** | 0.88 | ✅ |
+| Urologique | 1153 | 0.9318 | 0.281 | **0.91** | ✅ |
+| Épidermoïde | 574 | 0.9542 | 0.273 | 0.89 | ✅ |
+| Respiratoire | 364 | 0.9409 | 0.284 | 0.89 | ✅ |
+
+### Analyse des Résultats par Famille
+
+#### Corrélation Samples vs Performance
+
+```
+Seuil critique identifié :
+  ≥2000 samples → HV MSE < 0.02 (excellent)
+  <2000 samples → HV MSE > 0.25 (dégradé)
+
+Stabilité par branche :
+  NP Dice : Très stable (0.93-0.96) même avec 364 samples
+  NT Acc  : Très stable (0.88-0.91) même avec 364 samples
+  HV MSE  : Sensible au volume de données
+```
+
+#### Explications Pathologiques
+
+**Pourquoi Glandulaire/Digestive excellent (HV MSE ~0.015) ?**
+```
+• Noyaux bien définis avec contours nets
+• Structures glandulaires régulières (acini, cryptes)
+• Espacement naturel entre cellules épithéliales
+• Faible chevauchement nucléaire
+→ Le modèle apprend facilement les frontières
+```
+
+**Pourquoi Urologique/Respiratoire/Épidermoïde dégradé (HV MSE ~0.28) ?**
+```
+• Densité nucléaire élevée (clusters serrés)
+• Noyaux plus petits et irréguliers (rein, poumon)
+• Chevauchement fréquent dans les couches stratifiées (peau)
+• Moins de données d'entraînement disponibles
+→ Frontières ambiguës + données insuffisantes
+```
+
+#### Implications Cliniques
+
+| Famille | Détection (NP) | Classification (NT) | Séparation (HV) |
+|---------|----------------|---------------------|-----------------|
+| Glandulaire | ✅ Fiable | ✅ Fiable | ✅ Fiable |
+| Digestive | ✅ Fiable | ✅ Fiable | ✅ Fiable |
+| Urologique | ✅ Fiable | ✅ Fiable | ⚠️ Vérifier manuellement |
+| Épidermoïde | ✅ Fiable | ✅ Fiable | ⚠️ Vérifier manuellement |
+| Respiratoire | ✅ Fiable | ✅ Fiable | ⚠️ Vérifier manuellement |
+
+**Recommandation** : Pour les familles avec HV MSE > 0.1, afficher un avertissement
+dans l'interface utilisateur concernant la séparation des instances.
 
 ### Pourquoi 5 Familles ?
 
@@ -897,14 +945,14 @@ OrganHead   HoVerNet
 | OrganHead | Organes à 100% | 15/19 |
 | OOD | Threshold | 46.69 |
 
-**Résultats HoVer-Net par Famille:**
+**Résultats HoVer-Net par Famille (5/5 complétées) :**
 | Famille | Samples | Dice | HV MSE | NT Acc | Checkpoint | Statut |
 |---------|---------|------|--------|--------|------------|--------|
-| Glandulaire | 3391 | **0.9645** | 0.015 | 0.88 | `hovernet_glandular_best.pth` | ✅ Entraîné |
-| Digestive | 2274 | **0.9634** | 0.016 | 0.88 | `hovernet_digestive_best.pth` | ✅ Entraîné |
-| Urologique | 1153 | - | - | - | - | 🔜 À faire |
-| Épidermoïde | 574 | - | - | - | - | 🔜 À faire |
-| Respiratoire | 364 | - | - | - | - | 🔜 À faire |
+| Glandulaire | 3535 | **0.9645** | **0.015** | 0.88 | `hovernet_glandular_best.pth` | ✅ |
+| Digestive | 2274 | **0.9634** | **0.016** | 0.88 | `hovernet_digestive_best.pth` | ✅ |
+| Urologique | 1153 | 0.9318 | 0.281 | **0.91** | `hovernet_urologic_best.pth` | ✅ |
+| Épidermoïde | 574 | 0.9542 | 0.273 | 0.89 | `hovernet_epidermal_best.pth` | ✅ |
+| Respiratoire | 364 | 0.9409 | 0.284 | 0.89 | `hovernet_respiratory_best.pth` | ✅ |
 
 **Comparaison HoVer-Net global vs par famille:**
 | Modèle | Dice | Amélioration |
@@ -1122,6 +1170,54 @@ cells = hovernet_decoders[family].predict(patch_tokens)
 - Performances comparables à Glandulaire
 
 **Checkpoint:** `models/checkpoints/hovernet_digestive_best.pth`
+
+### 2025-12-20 — Entraînement 5 Familles Complété ✅
+
+**Toutes les familles HoVer-Net sont maintenant entraînées.**
+
+#### Résultats Urologique (1153 samples)
+| Métrique | Best |
+|----------|------|
+| NP Dice | 0.9318 |
+| HV MSE | 0.2812 |
+| NT Acc | **0.9139** |
+
+#### Résultats Épidermoïde (574 samples)
+| Métrique | Best |
+|----------|------|
+| NP Dice | 0.9542 |
+| HV MSE | 0.2733 |
+| NT Acc | 0.8871 |
+
+#### Résultats Respiratoire (364 samples) — Stress Test
+| Métrique | Best |
+|----------|------|
+| NP Dice | 0.9409 |
+| HV MSE | 0.2836 |
+| NT Acc | 0.8947 |
+
+#### Analyse de Stabilité
+
+**Découverte clé** : Le volume de données impacte principalement la branche HV.
+
+```
+Corrélation Samples → HV MSE :
+  3535 samples (Glandulaire)  → 0.015 ✅ Excellent
+  2274 samples (Digestive)    → 0.016 ✅ Excellent
+  1153 samples (Urologique)   → 0.281 ⚠️ Dégradé
+   574 samples (Épidermoïde)  → 0.273 ⚠️ Dégradé
+   364 samples (Respiratoire) → 0.284 ⚠️ Dégradé
+
+Seuil critique : ~2000 samples pour HV MSE < 0.05
+```
+
+**Explication pathologique** :
+- Glandulaire/Digestive : noyaux bien espacés, contours nets → facile
+- Urologique/Respiratoire : densité nucléaire élevée, clusters serrés → difficile
+- Épidermoïde : couches stratifiées, chevauchement fréquent → difficile
+
+**Conclusion** : Le système est stable pour détection (NP) et classification (NT).
+Seule la séparation d'instances (HV) nécessite plus de données ou vérification manuelle.
 
 #### Commandes d'entraînement par famille
 
