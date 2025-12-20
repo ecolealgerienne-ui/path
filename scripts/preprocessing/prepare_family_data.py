@@ -2,8 +2,8 @@
 """
 Prépare les données par famille d'organes pour entraînement HoVer-Net.
 
-Filtre les features et masks par famille et sauvegarde des fichiers séparés.
-Cela évite de charger toutes les données en RAM pendant l'entraînement.
+Pré-calcule les targets HV (horizontal/vertical maps) pour éviter le calcul
+coûteux pendant l'entraînement.
 
 Usage:
     # Préparer toutes les familles
@@ -18,6 +18,7 @@ import sys
 from pathlib import Path
 import numpy as np
 from tqdm import tqdm
+import cv2
 
 # Ajouter le projet au path
 PROJECT_ROOT = Path(__file__).parent.parent.parent
@@ -26,13 +27,77 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from src.models.organ_families import FAMILIES, FAMILY_TO_ORGANS, FAMILY_DESCRIPTIONS
 
 
+def compute_hv_maps(binary_mask: np.ndarray) -> np.ndarray:
+    """Calcule les cartes H/V depuis un masque binaire."""
+    hv = np.zeros((2, 256, 256), dtype=np.float32)
+
+    if not binary_mask.any():
+        return hv
+
+    binary_uint8 = (binary_mask * 255).astype(np.uint8)
+    n_labels, labels = cv2.connectedComponents(binary_uint8)
+
+    for label_id in range(1, n_labels):
+        instance_mask = labels == label_id
+        coords = np.where(instance_mask)
+
+        if len(coords[0]) == 0:
+            continue
+
+        cy = coords[0].mean()
+        cx = coords[1].mean()
+
+        for y, x in zip(coords[0], coords[1]):
+            h_dist = (x - cx)
+            v_dist = (y - cy)
+            radius = max(np.sqrt(len(coords[0]) / np.pi), 1)
+            hv[0, y, x] = h_dist / radius
+            hv[1, y, x] = v_dist / radius
+
+    hv = np.clip(hv, -1, 1)
+    return hv
+
+
+def prepare_targets(masks: np.ndarray) -> tuple:
+    """
+    Pré-calcule tous les targets HoVer-Net.
+
+    Returns:
+        np_targets: (N, 256, 256) float32 - binary nuclei mask
+        hv_targets: (N, 2, 256, 256) float32 - horizontal/vertical maps
+        nt_targets: (N, 256, 256) int64 - nuclei type
+    """
+    N = len(masks)
+    np_targets = np.zeros((N, 256, 256), dtype=np.float32)
+    hv_targets = np.zeros((N, 2, 256, 256), dtype=np.float32)
+    nt_targets = np.zeros((N, 256, 256), dtype=np.int64)
+
+    print("  Pré-calcul des targets HV...")
+    for i in tqdm(range(N), desc="  HV maps"):
+        mask = masks[i]
+
+        # NP: union de tous les types
+        np_mask = mask[:, :, 1:].sum(axis=-1) > 0
+        np_targets[i] = np_mask.astype(np.float32)
+
+        # NT: argmax sur canaux 1-5
+        for c in range(5):
+            type_mask = mask[:, :, c + 1] > 0
+            nt_targets[i][type_mask] = c
+
+        # HV: cartes horizontal/vertical (le plus coûteux)
+        hv_targets[i] = compute_hv_maps(np_mask)
+
+    return np_targets, hv_targets, nt_targets
+
+
 def prepare_family(data_dir: Path, output_dir: Path, family: str, folds: list = None):
     """
     Prépare les données pour une famille d'organes.
 
     Sauvegarde:
     - {family}_features.npz : features H-optimus-0 filtrées
-    - {family}_masks.npz : masks + indices originaux
+    - {family}_targets.npz : targets pré-calculés (NP, HV, NT)
     """
     if folds is None:
         folds = [0, 1, 2]
@@ -109,12 +174,15 @@ def prepare_family(data_dir: Path, output_dir: Path, family: str, folds: list = 
     print(f"\n📊 Total famille {family}:")
     print(f"  → {len(features)} samples")
     print(f"  → Features: {features.shape} ({features.nbytes / 1e9:.2f} GB)")
-    print(f"  → Masks: {masks.shape} ({masks.nbytes / 1e9:.2f} GB)")
+
+    # Pré-calculer les targets HV (c'est le plus lent)
+    print(f"\n🔄 Pré-calcul des targets HoVer-Net...")
+    np_targets, hv_targets, nt_targets = prepare_targets(masks)
 
     # Sauvegarder
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Features (compressées pour économiser l'espace)
+    # Features
     features_path = output_dir / f"{family}_features.npz"
     print(f"\nSauvegarde features: {features_path}")
     np.savez(features_path,
@@ -122,18 +190,21 @@ def prepare_family(data_dir: Path, output_dir: Path, family: str, folds: list = 
              fold_ids=fold_ids,
              original_indices=original_indices)
 
-    # Masks (compressées)
-    masks_path = output_dir / f"{family}_masks.npz"
-    print(f"Sauvegarde masks: {masks_path}")
-    np.savez(masks_path, masks=masks)
+    # Targets pré-calculés (NP, HV, NT)
+    targets_path = output_dir / f"{family}_targets.npz"
+    print(f"Sauvegarde targets: {targets_path}")
+    np.savez(targets_path,
+             np_targets=np_targets,
+             hv_targets=hv_targets,
+             nt_targets=nt_targets)
 
     # Afficher les tailles
     features_size = features_path.stat().st_size / 1e9
-    masks_size = masks_path.stat().st_size / 1e9
+    targets_size = targets_path.stat().st_size / 1e9
     print(f"\n✅ Famille {family} préparée:")
     print(f"   Features: {features_size:.2f} GB")
-    print(f"   Masks: {masks_size:.2f} GB")
-    print(f"   Total: {features_size + masks_size:.2f} GB")
+    print(f"   Targets: {targets_size:.2f} GB")
+    print(f"   Total: {features_size + targets_size:.2f} GB")
 
     return len(features)
 

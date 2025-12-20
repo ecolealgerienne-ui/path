@@ -32,7 +32,6 @@ from torch.utils.data import Dataset, DataLoader
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import CosineAnnealingLR
 from tqdm import tqdm
-import cv2
 
 # Ajouter le projet au path
 PROJECT_ROOT = Path(__file__).parent.parent.parent
@@ -97,15 +96,10 @@ class FeatureAugmentation:
 
 class FamilyHoVerDataset(Dataset):
     """
-    Dataset lazy-loading par famille d'organes.
+    Dataset par famille d'organes avec targets pré-calculés.
 
-    Utilise memory-mapping pour éviter de charger toutes les données en RAM.
-    Les targets HoVer-Net sont calculés à la demande pour chaque sample.
-
-    Avantages:
-    - RAM minimale: seulement le batch courant en mémoire
-    - Pas de pré-calcul des targets HV
-    - Scalable pour de grands datasets
+    Charge tout en RAM pour un entraînement rapide.
+    Les targets HV sont pré-calculés par prepare_family_data.py.
     """
 
     def __init__(self, family: str, cache_dir: str = None, augment: bool = False):
@@ -119,10 +113,10 @@ class FamilyHoVerDataset(Dataset):
         else:
             cache_dir = Path(cache_dir)
 
-        self.features_path = cache_dir / f"{family}_features.npz"
-        self.masks_path = cache_dir / f"{family}_masks.npz"
+        features_path = cache_dir / f"{family}_features.npz"
+        targets_path = cache_dir / f"{family}_targets.npz"
 
-        if not self.features_path.exists() or not self.masks_path.exists():
+        if not features_path.exists() or not targets_path.exists():
             raise FileNotFoundError(
                 f"Données famille {family} non trouvées.\n"
                 f"Lancez d'abord:\n"
@@ -133,75 +127,31 @@ class FamilyHoVerDataset(Dataset):
         print(f"   Organes: {', '.join(get_organs(family))}")
         print(f"   Description: {FAMILY_DESCRIPTIONS[family]}")
 
-        # Ouvrir les fichiers en memory-map (lecture à la demande)
-        print(f"\nOuverture {self.features_path.name} (memory-mapped)...")
-        self._features_file = np.load(self.features_path, mmap_mode='r')
-        self.n_samples = self._features_file['layer_24'].shape[0]
-        print(f"  → {self.n_samples} samples disponibles")
+        # Charger tout en RAM
+        print(f"\nChargement {features_path.name}...")
+        features_data = np.load(features_path)
+        self.features = features_data['layer_24']
+        self.n_samples = len(self.features)
+        print(f"  → {self.n_samples} samples, {self.features.nbytes / 1e9:.2f} GB")
 
-        print(f"Ouverture {self.masks_path.name} (memory-mapped)...")
-        self._masks_file = np.load(self.masks_path, mmap_mode='r')
+        print(f"Chargement {targets_path.name}...")
+        targets_data = np.load(targets_path)
+        self.np_targets = targets_data['np_targets']
+        self.hv_targets = targets_data['hv_targets']
+        self.nt_targets = targets_data['nt_targets']
+        total_targets_gb = (self.np_targets.nbytes + self.hv_targets.nbytes + self.nt_targets.nbytes) / 1e9
+        print(f"  → Targets: {total_targets_gb:.2f} GB")
 
-        print(f"\n📊 Dataset famille {family}: {self.n_samples} samples (lazy-loading)")
-        print(f"   Mode: Chargement à la demande (RAM minimale)")
-
-    def _compute_hv_maps(self, binary_mask: np.ndarray) -> np.ndarray:
-        """Calcule les cartes H/V depuis un masque binaire."""
-        hv = np.zeros((2, 256, 256), dtype=np.float32)
-
-        if not binary_mask.any():
-            return hv
-
-        binary_uint8 = (binary_mask * 255).astype(np.uint8)
-        n_labels, labels = cv2.connectedComponents(binary_uint8)
-
-        for label_id in range(1, n_labels):
-            instance_mask = labels == label_id
-            coords = np.where(instance_mask)
-
-            if len(coords[0]) == 0:
-                continue
-
-            cy = coords[0].mean()
-            cx = coords[1].mean()
-
-            for y, x in zip(coords[0], coords[1]):
-                h_dist = (x - cx)
-                v_dist = (y - cy)
-                radius = max(np.sqrt(len(coords[0]) / np.pi), 1)
-                hv[0, y, x] = h_dist / radius
-                hv[1, y, x] = v_dist / radius
-
-        hv = np.clip(hv, -1, 1)
-        return hv
-
-    def _prepare_sample_targets(self, mask: np.ndarray):
-        """Prépare les targets HoVer-Net pour un seul sample."""
-        # NP: union de tous les types
-        np_mask = mask[:, :, 1:].sum(axis=-1) > 0
-        np_target = np_mask.astype(np.float32)
-
-        # NT: argmax sur canaux 1-5
-        nt_target = np.zeros((256, 256), dtype=np.int64)
-        for c in range(5):
-            type_mask = mask[:, :, c + 1] > 0
-            nt_target[type_mask] = c
-
-        # HV: cartes horizontal/vertical
-        hv_target = self._compute_hv_maps(np_mask)
-
-        return np_target, hv_target, nt_target
+        print(f"\n📊 Dataset famille {family}: {self.n_samples} samples (tout en RAM)")
 
     def __len__(self):
         return self.n_samples
 
     def __getitem__(self, idx):
-        # Lazy-loading: charger un seul sample depuis les fichiers memory-mapped
-        features = self._features_file['layer_24'][idx].copy()
-        mask = self._masks_file['masks'][idx].copy()
-
-        # Calculer les targets à la volée
-        np_target, hv_target, nt_target = self._prepare_sample_targets(mask)
+        features = self.features[idx].copy()
+        np_target = self.np_targets[idx].copy()
+        hv_target = self.hv_targets[idx].copy()
+        nt_target = self.nt_targets[idx].copy()
 
         # Resize targets de 256 à 224
         np_target_t = torch.from_numpy(np_target)
@@ -337,16 +287,16 @@ def main():
     print(f"{'='*60}")
     print(f"Description: {FAMILY_DESCRIPTIONS[args.family]}")
 
-    # Charger le dataset (lazy-loading)
-    print("\n📦 Chargement des données (lazy-loading)...")
-    full_dataset = FamilyHoVerDataset(
+    # Charger le dataset (tout en RAM)
+    print("\n📦 Chargement des données...")
+    dataset = FamilyHoVerDataset(
         family=args.family,
         cache_dir=args.cache_dir,
-        augment=False  # On gère l'augmentation différemment pour train/val
+        augment=args.augment
     )
 
     # Split train/val
-    n_total = len(full_dataset)
+    n_total = len(dataset)
     n_val = int(n_total * args.val_split)
     n_train = n_total - n_val
 
@@ -354,14 +304,15 @@ def main():
     train_indices = indices[:n_train]
     val_indices = indices[n_train:]
 
-    # Créer les datasets train/val avec wrapper pour augmentation
-    train_dataset = FamilyHoVerDataset(
+    train_subset = torch.utils.data.Subset(dataset, train_indices)
+
+    # Val sans augmentation - créer dataset séparé
+    val_dataset = FamilyHoVerDataset(
         family=args.family,
         cache_dir=args.cache_dir,
-        augment=args.augment
+        augment=False
     )
-    train_subset = torch.utils.data.Subset(train_dataset, train_indices)
-    val_subset = torch.utils.data.Subset(full_dataset, val_indices)
+    val_subset = torch.utils.data.Subset(val_dataset, val_indices)
 
     aug_str = " (augmenté)" if args.augment else ""
     print(f"  {n_train} train{aug_str} / {n_val} val")
