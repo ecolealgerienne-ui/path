@@ -6,8 +6,14 @@ Utilise les CLS tokens pré-extraits de H-optimus-0 pour entraîner
 un classifieur d'organe sur les 19 classes PanNuke.
 
 Usage:
+    # Entraîner sur un seul fold (legacy)
     python scripts/training/train_organ_head.py --fold 0 --epochs 50
-    python scripts/training/train_organ_head.py --fold 0 --epochs 50 --linear_probe
+
+    # Entraîner sur les 3 folds (recommandé)
+    python scripts/training/train_organ_head.py --folds 0 1 2 --epochs 50
+
+    # Cross-validation: train sur 0,1 val sur 2
+    python scripts/training/train_organ_head.py --train_folds 0 1 --val_fold 2 --epochs 50
 """
 
 import argparse
@@ -34,12 +40,51 @@ class OrganDataset(Dataset):
     Dataset pour classification d'organe.
 
     Charge les CLS tokens pré-extraits et les labels organe.
+    Supporte le chargement de plusieurs folds.
     """
 
-    def __init__(self, data_dir: str, fold: int = 0):
+    def __init__(self, data_dir: str, folds: list = None, fold: int = None):
+        """
+        Args:
+            data_dir: Répertoire des données PanNuke
+            folds: Liste des folds à charger (ex: [0, 1, 2])
+            fold: Fold unique (legacy, équivaut à folds=[fold])
+        """
         self.data_dir = Path(data_dir)
-        self.fold = fold
 
+        # Compatibilité legacy: fold unique → liste
+        if folds is None and fold is not None:
+            folds = [fold]
+        elif folds is None:
+            folds = [0]  # Default
+
+        self.folds = folds
+        self.organ_to_idx = {organ: i for i, organ in enumerate(PANNUKE_ORGANS)}
+
+        all_cls_tokens = []
+        all_labels = []
+
+        for f in folds:
+            cls_tokens, labels = self._load_fold(f)
+            all_cls_tokens.append(cls_tokens)
+            all_labels.append(labels)
+
+        # Concatener tous les folds
+        self.cls_tokens = np.concatenate(all_cls_tokens, axis=0)
+        self.labels = np.concatenate(all_labels, axis=0)
+
+        print(f"\n📊 Dataset total: {len(self.cls_tokens)} samples de {len(folds)} fold(s)")
+
+        # Statistiques globales
+        unique, counts = np.unique(self.labels, return_counts=True)
+        print(f"  Organes uniques: {len(unique)}")
+        for idx, count in zip(unique, counts):
+            print(f"    {PANNUKE_ORGANS[idx]:20}: {count:5} ({count/len(self.labels)*100:.1f}%)")
+
+        self.n_samples = len(self.cls_tokens)
+
+    def _load_fold(self, fold: int):
+        """Charge un fold unique et retourne (cls_tokens, labels)."""
         # Charger les features pré-extraites
         features_path = PROJECT_ROOT / "data" / "cache" / "pannuke_features" / f"fold{fold}_features.npz"
 
@@ -60,8 +105,8 @@ class OrganDataset(Dataset):
         else:
             raise KeyError("Features layer_24 non trouvées")
 
-        self.cls_tokens = features[:, 0, :]  # (N, 1536)
-        print(f"  CLS tokens: {self.cls_tokens.shape}")
+        cls_tokens = features[:, 0, :]  # (N, 1536)
+        print(f"  CLS tokens: {cls_tokens.shape}")
 
         # Charger les labels organe
         types_path = self.data_dir / f"fold{fold}" / "types.npy"
@@ -72,16 +117,9 @@ class OrganDataset(Dataset):
         print(f"  Types: {types.shape}")
 
         # Convertir les noms d'organes en indices
-        self.organ_to_idx = {organ: i for i, organ in enumerate(PANNUKE_ORGANS)}
-        self.labels = np.array([self._get_organ_idx(t) for t in types])
+        labels = np.array([self._get_organ_idx(t) for t in types])
 
-        # Statistiques
-        unique, counts = np.unique(self.labels, return_counts=True)
-        print(f"  Organes uniques: {len(unique)}")
-        for idx, count in zip(unique, counts):
-            print(f"    {PANNUKE_ORGANS[idx]:20}: {count:5} ({count/len(self.labels)*100:.1f}%)")
-
-        self.n_samples = len(self.cls_tokens)
+        return cls_tokens, labels
 
     def _get_organ_idx(self, organ_name: str) -> int:
         """Convertit un nom d'organe en index."""
@@ -182,10 +220,18 @@ def compute_per_class_accuracy(preds, labels, n_classes=19):
 
 def main():
     parser = argparse.ArgumentParser(description="Entraînement OrganHead")
-    parser.add_argument("--data_dir", type=str, default="data/pannuke",
+    parser.add_argument("--data_dir", type=str, default="/home/amar/data/PanNuke",
                        help="Répertoire des données PanNuke")
-    parser.add_argument("--fold", type=int, default=0,
-                       help="Fold PanNuke (0, 1 ou 2)")
+    # Options de folds
+    parser.add_argument("--fold", type=int, default=None,
+                       help="Fold unique (legacy, équivaut à --folds FOLD)")
+    parser.add_argument("--folds", type=int, nargs="+", default=None,
+                       help="Liste des folds pour train+val (ex: 0 1 2)")
+    parser.add_argument("--train_folds", type=int, nargs="+", default=None,
+                       help="Folds pour entraînement (cross-validation)")
+    parser.add_argument("--val_fold", type=int, default=None,
+                       help="Fold pour validation (cross-validation)")
+    # Hyperparamètres
     parser.add_argument("--epochs", type=int, default=50,
                        help="Nombre d'epochs")
     parser.add_argument("--batch_size", type=int, default=64,
@@ -197,7 +243,7 @@ def main():
     parser.add_argument("--dropout", type=float, default=0.1,
                        help="Dropout rate")
     parser.add_argument("--val_split", type=float, default=0.2,
-                       help="Proportion de validation")
+                       help="Proportion de validation (si pas de val_fold)")
     parser.add_argument("--linear_probe", action="store_true",
                        help="Utiliser un simple classificateur linéaire")
     parser.add_argument("--label_smoothing", type=float, default=0.1,
@@ -210,17 +256,47 @@ def main():
 
     # Charger les données
     print("\n📦 Chargement des données...")
-    dataset = OrganDataset(args.data_dir, args.fold)
 
-    # Split train/val
-    n_val = int(len(dataset) * args.val_split)
-    n_train = len(dataset) - n_val
-    train_dataset, val_dataset = random_split(
-        dataset, [n_train, n_val],
-        generator=torch.Generator().manual_seed(42)
-    )
+    # Déterminer les folds à utiliser
+    if args.train_folds is not None and args.val_fold is not None:
+        # Mode cross-validation explicite
+        print(f"Mode: Cross-validation (train={args.train_folds}, val={args.val_fold})")
+        train_dataset = OrganDataset(args.data_dir, folds=args.train_folds)
+        val_dataset = OrganDataset(args.data_dir, folds=[args.val_fold])
+        use_external_val = True
+    elif args.folds is not None:
+        # Multi-folds avec split interne
+        print(f"Mode: Multi-folds {args.folds} avec split interne")
+        dataset = OrganDataset(args.data_dir, folds=args.folds)
+        use_external_val = False
+    elif args.fold is not None:
+        # Fold unique (legacy)
+        print(f"Mode: Fold unique {args.fold}")
+        dataset = OrganDataset(args.data_dir, fold=args.fold)
+        use_external_val = False
+    else:
+        # Default: tous les folds
+        print("Mode: Tous les folds (0, 1, 2)")
+        dataset = OrganDataset(args.data_dir, folds=[0, 1, 2])
+        use_external_val = False
 
-    print(f"\n  Train: {n_train}, Val: {n_val}")
+    # Split train/val (si pas de validation externe)
+    if use_external_val:
+        n_train = len(train_dataset)
+        n_val = len(val_dataset)
+        print(f"\n  Train: {n_train} (folds {args.train_folds})")
+        print(f"  Val: {n_val} (fold {args.val_fold})")
+        # Pour la calibration OOD, on utilise le dataset d'entraînement complet
+        full_dataset = train_dataset
+    else:
+        n_val = int(len(dataset) * args.val_split)
+        n_train = len(dataset) - n_val
+        train_dataset, val_dataset = random_split(
+            dataset, [n_train, n_val],
+            generator=torch.Generator().manual_seed(42)
+        )
+        print(f"\n  Train: {n_train}, Val: {n_val}")
+        full_dataset = dataset
 
     train_loader = DataLoader(
         train_dataset,
@@ -260,7 +336,7 @@ def main():
     print(f"  Paramètres: {n_params:,}")
 
     # Calculer les class weights
-    all_labels = dataset.labels
+    all_labels = full_dataset.labels
     class_weights = OrganHeadLoss.compute_class_weights(all_labels)
     class_weights = class_weights.to(device)
     print(f"\n  Class weights calculés (min={class_weights.min():.2f}, max={class_weights.max():.2f})")
@@ -343,7 +419,7 @@ def main():
     # Calibrer OOD si c'est un OrganHead
     if isinstance(model, OrganHead):
         print("\n🔧 Calibration OOD...")
-        all_cls_tokens = torch.from_numpy(dataset.cls_tokens).float().to(device)
+        all_cls_tokens = torch.from_numpy(full_dataset.cls_tokens).float().to(device)
         model.fit_ood(all_cls_tokens)
 
         # Re-sauvegarder avec OOD calibré

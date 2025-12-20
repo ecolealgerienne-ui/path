@@ -6,8 +6,11 @@ Usage:
     # Entraîner sur fold 0 avec validation interne
     python scripts/training/train_hovernet.py --fold 0 --epochs 50
 
-    # Entraîner sur fold 0, valider sur fold 1
-    python scripts/training/train_hovernet.py --train_fold 0 --val_fold 1 --epochs 50
+    # Entraîner sur les 3 folds (recommandé)
+    python scripts/training/train_hovernet.py --folds 0 1 2 --epochs 50
+
+    # Cross-validation: train sur 0,1 val sur 2
+    python scripts/training/train_hovernet.py --train_folds 0 1 --val_fold 2 --epochs 50
 """
 
 import argparse
@@ -107,17 +110,58 @@ class PanNukeHoVerDataset(Dataset):
     - np_target: masque binaire noyaux
     - hv_target: cartes horizontal/vertical (normalisées)
     - nt_target: type de noyau par pixel
+
+    Supporte le chargement de plusieurs folds.
     """
 
-    def __init__(self, data_dir: str, fold: int = 0, split: str = 'train', augment: bool = False):
+    def __init__(self, data_dir: str, folds: list = None, fold: int = None,
+                 split: str = 'train', augment: bool = False):
+        """
+        Args:
+            data_dir: Répertoire des données PanNuke
+            folds: Liste des folds à charger (ex: [0, 1, 2])
+            fold: Fold unique (legacy, équivaut à folds=[fold])
+            split: 'train' ou 'val' (legacy, non utilisé)
+            augment: Activer l'augmentation de données
+        """
         self.data_dir = Path(data_dir)
-        self.fold = fold
         self.split = split
         self.augment = augment
+
+        # Compatibilité legacy: fold unique → liste
+        if folds is None and fold is not None:
+            folds = [fold]
+        elif folds is None:
+            folds = [0]  # Default
+
+        self.folds = folds
 
         # Augmentation (seulement pour train)
         self.augmenter = FeatureAugmentation() if augment else None
 
+        all_features = []
+        all_np_targets = []
+        all_hv_targets = []
+        all_nt_targets = []
+
+        for f in folds:
+            features, np_targets, hv_targets, nt_targets = self._load_fold(f)
+            all_features.append(features)
+            all_np_targets.append(np_targets)
+            all_hv_targets.append(hv_targets)
+            all_nt_targets.append(nt_targets)
+
+        # Concatener tous les folds
+        self.features = np.concatenate(all_features, axis=0)
+        self.np_targets = np.concatenate(all_np_targets, axis=0)
+        self.hv_targets = np.concatenate(all_hv_targets, axis=0)
+        self.nt_targets = np.concatenate(all_nt_targets, axis=0)
+
+        self.n_samples = len(self.features)
+        print(f"\n📊 Dataset total: {self.n_samples} samples de {len(folds)} fold(s)")
+
+    def _load_fold(self, fold: int):
+        """Charge un fold et retourne (features, np_targets, hv_targets, nt_targets)."""
         # Charger les features pré-extraites (layer 24 seulement)
         features_path = PROJECT_ROOT / "data" / "cache" / "pannuke_features" / f"fold{fold}_features.npz"
 
@@ -131,15 +175,14 @@ class PanNukeHoVerDataset(Dataset):
         data = np.load(features_path)
 
         # On utilise SEULEMENT layer_24 (features finales)
-        # Pas besoin des couches intermédiaires grâce au bottleneck partagé
         if 'layer_24' in data:
-            self.features = data['layer_24']  # (N, 261, 1536)
+            features = data['layer_24']  # (N, 261, 1536)
         elif 'layer_23' in data:
             # Compatibilité avec l'ancien format (0-indexed)
-            self.features = data['layer_23']
+            features = data['layer_23']
         else:
             raise KeyError("Features layer_24 non trouvées dans le fichier")
-        print(f"  Features: {self.features.shape}")
+        print(f"  Features: {features.shape}")
 
         # Charger les masques PanNuke
         masks_path = self.data_dir / f"fold{fold}" / "masks.npy"
@@ -150,10 +193,9 @@ class PanNukeHoVerDataset(Dataset):
         print(f"  Masques: {masks.shape}")
 
         # Préparer les targets
-        self.np_targets, self.hv_targets, self.nt_targets = self._prepare_targets(masks)
+        np_targets, hv_targets, nt_targets = self._prepare_targets(masks)
 
-        self.n_samples = len(self.features)
-        print(f"  Total samples: {self.n_samples}")
+        return features, np_targets, hv_targets, nt_targets
 
     def _prepare_targets(self, masks: np.ndarray):
         """
@@ -361,16 +403,21 @@ def main():
     parser = argparse.ArgumentParser(description="Entraîner HoVer-Net decoder")
     parser.add_argument('--data_dir', type=str, default='/home/amar/data/PanNuke',
                        help='Répertoire PanNuke')
-    parser.add_argument('--fold', type=int, default=0,
-                       help='Fold unique (avec split interne)')
-    parser.add_argument('--train_fold', type=int, default=None,
-                       help='Fold entraînement (si validation croisée)')
+    # Options de folds
+    parser.add_argument('--fold', type=int, default=None,
+                       help='Fold unique (legacy, équivaut à --folds FOLD)')
+    parser.add_argument('--folds', type=int, nargs='+', default=None,
+                       help='Liste des folds pour train+val (ex: 0 1 2)')
+    parser.add_argument('--train_folds', type=int, nargs='+', default=None,
+                       help='Folds pour entraînement (cross-validation)')
     parser.add_argument('--val_fold', type=int, default=None,
-                       help='Fold validation (si validation croisée)')
+                       help='Fold pour validation (cross-validation)')
+    # Hyperparamètres
     parser.add_argument('--epochs', type=int, default=50)
     parser.add_argument('--batch_size', type=int, default=16)
     parser.add_argument('--lr', type=float, default=1e-4)
-    parser.add_argument('--val_split', type=float, default=0.2)
+    parser.add_argument('--val_split', type=float, default=0.2,
+                       help='Proportion de validation (si pas de val_fold)')
     parser.add_argument('--output_dir', type=str, default='models/checkpoints')
     parser.add_argument('--augment', action='store_true',
                        help='Activer data augmentation (flip, rot90)')
@@ -385,16 +432,39 @@ def main():
     # Charger le dataset
     print("\n📦 Chargement des données...")
 
-    if args.train_fold is not None and args.val_fold is not None:
-        # Validation croisée
-        train_dataset = PanNukeHoVerDataset(args.data_dir, args.train_fold, 'train', augment=args.augment)
-        val_dataset = PanNukeHoVerDataset(args.data_dir, args.val_fold, 'val', augment=False)
-        print(f"  Train fold: {args.train_fold} ({len(train_dataset)} samples)")
-        print(f"  Val fold: {args.val_fold} ({len(val_dataset)} samples)")
-    else:
-        # Split interne - charger 2 fois: avec et sans augmentation
-        train_base = PanNukeHoVerDataset(args.data_dir, args.fold, 'train', augment=args.augment)
-        val_base = PanNukeHoVerDataset(args.data_dir, args.fold, 'val', augment=False)
+    # Déterminer les folds à utiliser
+    if args.train_folds is not None and args.val_fold is not None:
+        # Mode cross-validation explicite
+        print(f"Mode: Cross-validation (train={args.train_folds}, val={args.val_fold})")
+        train_dataset = PanNukeHoVerDataset(args.data_dir, folds=args.train_folds, augment=args.augment)
+        val_dataset = PanNukeHoVerDataset(args.data_dir, folds=[args.val_fold], augment=False)
+        print(f"  Train: {len(train_dataset)} (folds {args.train_folds})")
+        print(f"  Val: {len(val_dataset)} (fold {args.val_fold})")
+    elif args.folds is not None:
+        # Multi-folds avec split interne
+        print(f"Mode: Multi-folds {args.folds} avec split interne")
+        train_base = PanNukeHoVerDataset(args.data_dir, folds=args.folds, augment=args.augment)
+        val_base = PanNukeHoVerDataset(args.data_dir, folds=args.folds, augment=False)
+
+        n_total = len(train_base)
+        n_val = int(n_total * args.val_split)
+        n_train = n_total - n_val
+
+        # Créer les indices pour le split
+        indices = torch.randperm(n_total, generator=torch.Generator().manual_seed(42)).tolist()
+        train_indices = indices[:n_train]
+        val_indices = indices[n_train:]
+
+        train_dataset = torch.utils.data.Subset(train_base, train_indices)
+        val_dataset = torch.utils.data.Subset(val_base, val_indices)
+
+        aug_str = " (augmenté)" if args.augment else ""
+        print(f"  {n_train} train{aug_str} / {n_val} val")
+    elif args.fold is not None:
+        # Fold unique (legacy)
+        print(f"Mode: Fold unique {args.fold}")
+        train_base = PanNukeHoVerDataset(args.data_dir, fold=args.fold, augment=args.augment)
+        val_base = PanNukeHoVerDataset(args.data_dir, fold=args.fold, augment=False)
 
         n_total = len(train_base)
         n_val = int(n_total * args.val_split)
@@ -410,6 +480,26 @@ def main():
 
         aug_str = " (augmenté)" if args.augment else ""
         print(f"  Fold {args.fold} split: {n_train} train{aug_str} / {n_val} val")
+    else:
+        # Default: tous les folds
+        print("Mode: Tous les folds (0, 1, 2)")
+        train_base = PanNukeHoVerDataset(args.data_dir, folds=[0, 1, 2], augment=args.augment)
+        val_base = PanNukeHoVerDataset(args.data_dir, folds=[0, 1, 2], augment=False)
+
+        n_total = len(train_base)
+        n_val = int(n_total * args.val_split)
+        n_train = n_total - n_val
+
+        # Créer les indices pour le split
+        indices = torch.randperm(n_total, generator=torch.Generator().manual_seed(42)).tolist()
+        train_indices = indices[:n_train]
+        val_indices = indices[n_train:]
+
+        train_dataset = torch.utils.data.Subset(train_base, train_indices)
+        val_dataset = torch.utils.data.Subset(val_base, val_indices)
+
+        aug_str = " (augmenté)" if args.augment else ""
+        print(f"  {n_train} train{aug_str} / {n_val} val")
 
     train_loader = DataLoader(train_dataset, batch_size=args.batch_size,
                               shuffle=True, num_workers=0, pin_memory=False)
