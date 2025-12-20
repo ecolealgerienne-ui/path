@@ -263,7 +263,7 @@ class CellVitDemo:
     def analyze_uploaded_image(self, image, tissue_type: str):
         """Analyse une image uploadée par l'utilisateur."""
         if image is None:
-            return None, None, "⚠️ Veuillez uploader une image"
+            return None, None, None, "⚠️ Veuillez uploader une image"
 
         # Redimensionner si nécessaire
         h, w = image.shape[:2]
@@ -273,13 +273,13 @@ class CellVitDemo:
             new_w, new_h = int(w * scale), int(h * scale)
             image = cv2.resize(image, (new_w, new_h))
 
-        # Utiliser H-optimus-0 + UNETR si disponible
+        # Utiliser H-optimus-0 + HoVer-Net si disponible
         if MODEL_AVAILABLE and inference_model is not None:
             try:
                 # Inférence avec le modèle cible
                 result_data = inference_model.predict(image)
 
-                # Visualisation
+                # Visualisation segmentation
                 result = inference_model.visualize(
                     image, result_data,
                     show_contours=True,
@@ -287,15 +287,23 @@ class CellVitDemo:
                     alpha=0.4
                 )
 
+                # Visualisation incertitude (si disponible)
+                uncertainty_vis = None
+                if hasattr(inference_model, 'visualize_uncertainty'):
+                    uncertainty_vis = inference_model.visualize_uncertainty(
+                        image, result_data, alpha=0.4
+                    )
+
                 # Rapport
                 report = inference_model.generate_report(result_data)
                 report = f"""
 ✅ MODÈLE {MODEL_NAME} ACTIF
 Architecture: H-optimus-0 (1.1B params) + Décodeur HoVer-Net
+Couche 3: Estimation d'incertitude active
 
 {report}
 """
-                return image, result, report
+                return image, result, uncertainty_vis, report
 
             except Exception as e:
                 print(f"Erreur {MODEL_NAME}: {e}")
@@ -327,7 +335,7 @@ Pour activer le modèle:
 """
         report += generate_report(mask, tissue_type)
 
-        return image, result, report
+        return image, result, None, report
 
 
 def create_demo_interface():
@@ -425,6 +433,8 @@ def create_demo_interface():
                     **✅ {MODEL_NAME} est actif** — L'analyse utilise l'architecture cible:
                     - **Backbone**: H-optimus-0 (1.1B paramètres, gelé)
                     - **Décodeur**: HoVer-Net (3 branches: NP, HV, NT)
+                    - **Couche 3**: Estimation d'incertitude (entropie + Mahalanobis)
+                    - **Sortie**: {{Fiable | À revoir | Hors domaine}}
                     """)
                 else:
                     gr.Markdown(f"""
@@ -463,19 +473,24 @@ def create_demo_interface():
                                 type="numpy"
                             )
                             upload_result = gr.Image(
-                                label="Analyse",
+                                label="Segmentation cellulaire",
+                                type="numpy"
+                            )
+                        with gr.Row():
+                            upload_uncertainty = gr.Image(
+                                label="Carte d'incertitude (vert=fiable, rouge=incertain)",
                                 type="numpy"
                             )
 
                 upload_report = gr.Textbox(
-                    label="Rapport d'analyse",
-                    lines=15
+                    label="Rapport d'analyse (inclut niveau de confiance)",
+                    lines=20
                 )
 
                 analyze_btn.click(
                     fn=demo.analyze_uploaded_image,
                     inputs=[upload_image, upload_tissue],
-                    outputs=[upload_original, upload_result, upload_report]
+                    outputs=[upload_original, upload_result, upload_uncertainty, upload_report]
                 )
 
             # Tab 3: Générer de nouveaux tissus
