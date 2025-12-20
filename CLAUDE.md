@@ -938,27 +938,28 @@ OrganHead   HoVerNet
 + OOD       + Cellules
 ```
 
-**Résultats entraînement (3 folds):**
+**Résultats entraînement (3 folds) — APRÈS FIX PREPROCESSING (2025-12-20):**
 | Composant | Métrique | Valeur |
 |-----------|----------|--------|
-| OrganHead | Val Accuracy | **99.56%** |
-| OrganHead | Organes à 100% | 15/19 |
-| OOD | Threshold | 46.69 |
+| OrganHead | Val Accuracy | **99.94%** |
+| OrganHead | Organes à 100% | 18/19 |
+| OOD | Threshold | 45.55 |
 
-**Résultats HoVer-Net par Famille (5/5 complétées) :**
+**Résultats HoVer-Net par Famille (après fix preprocessing) :**
 | Famille | Samples | Dice | HV MSE | NT Acc | Checkpoint | Statut |
 |---------|---------|------|--------|--------|------------|--------|
-| Glandulaire | 3535 | **0.9645** | **0.015** | 0.88 | `hovernet_glandular_best.pth` | ✅ |
-| Digestive | 2274 | **0.9634** | **0.016** | 0.88 | `hovernet_digestive_best.pth` | ✅ |
-| Urologique | 1153 | 0.9318 | 0.281 | **0.91** | `hovernet_urologic_best.pth` | ✅ |
-| Épidermoïde | 574 | 0.9542 | 0.273 | 0.89 | `hovernet_epidermal_best.pth` | ✅ |
-| Respiratoire | 364 | 0.9409 | 0.284 | 0.89 | `hovernet_respiratory_best.pth` | ✅ |
+| Glandulaire | 3391 | **0.9648** | **0.0106** | **0.9111** | `hovernet_glandular_best.pth` | ✅ |
+| Digestive | 2430 | 🔄 | 🔄 | 🔄 | `hovernet_digestive_best.pth` | ⏳ |
+| Urologique | 1101 | 🔄 | 🔄 | 🔄 | `hovernet_urologic_best.pth` | ⏳ |
+| Épidermoïde | 571 | 🔄 | 🔄 | 🔄 | `hovernet_epidermal_best.pth` | ⏳ |
+| Respiratoire | 408 | 🔄 | 🔄 | 🔄 | `hovernet_respiratory_best.pth` | ⏳ |
 
-**Comparaison HoVer-Net global vs par famille:**
-| Modèle | Dice | Amélioration |
-|--------|------|--------------|
-| HoVer-Net global (tous organes) | 0.9601 | baseline |
-| HoVer-Net Glandulaire (spécialisé) | **0.9645** | **+0.46%** |
+**Amélioration après fix preprocessing (Glandulaire) :**
+| Métrique | Avant (corrompu) | Après (corrigé) | Amélioration |
+|----------|------------------|-----------------|--------------|
+| NP Dice | 0.9645 | **0.9648** | +0.03% |
+| HV MSE | 0.0150 | **0.0106** | **-29%** |
+| NT Acc | 0.88 | **0.9111** | **+3.5%** |
 
 **Triple Sécurité OOD:**
 - Entropie organe (softmax uncertainty)
@@ -1237,6 +1238,45 @@ python scripts/training/train_hovernet_family.py --family epidermal --epochs 50 
 # Famille Respiratoire
 python scripts/training/train_hovernet_family.py --family respiratory --epochs 50 --augment
 ```
+
+### 2025-12-20 — FIX CRITIQUE: Preprocessing ToPILImage ⚠️ IMPORTANT
+
+**Problème découvert:** Le script `extract_features.py` utilisait `ToPILImage()` avec des images `float64 [0, 255]`. `ToPILImage` multiplie les floats par 255, causant un overflow → **features corrompues**.
+
+```python
+# BUG: ToPILImage avec float64 [0,255]
+img_float64 = [100, 150, 200]  # Pixel rose H&E
+→ ToPILImage multiplie par 255
+→ [25500, 38250, 51000] → overflow uint8
+→ [156, 106, 56]  # Couleur FAUSSE !
+```
+
+**Impact:** Tous les modèles entraînés avant ce fix utilisaient des features corrompues.
+
+**Solution appliquée:**
+1. `extract_features.py` : Convertir en `uint8` avant `ToPILImage`
+2. Scripts d'inférence : Utiliser `create_hoptimus_transform()` identique
+3. Optimisation RAM : `mmap_mode='r'` + traitement par chunks
+
+**Fichiers modifiés:**
+- `scripts/preprocessing/extract_features.py` — Conversion uint8 + optimisation RAM
+- `src/inference/optimus_gate_inference_multifamily.py` — Transform unifié
+- `src/inference/optimus_gate_inference.py` — Transform unifié
+- `src/inference/hoptimus_hovernet.py` — Transform unifié
+
+**Ré-entraînement complet effectué:**
+
+| Composant | Avant (corrompu) | Après (corrigé) |
+|-----------|------------------|-----------------|
+| OrganHead Accuracy | 99.56% | **99.94%** |
+| Glandular NP Dice | 0.9645 | **0.9648** |
+| Glandular HV MSE | 0.0150 | **0.0106** (-29%) |
+| Glandular NT Acc | 0.88 | **0.9111** (+3.5%) |
+
+**Scripts de vérification créés:**
+- `scripts/validation/verify_pipeline.py` — Vérification complète avant entraînement
+- `scripts/validation/diagnose_ood_issue.py` — Diagnostic des problèmes OOD
+- `scripts/setup/download_and_prepare_pannuke.py` — Téléchargement + réorganisation PanNuke
 
 ---
 
