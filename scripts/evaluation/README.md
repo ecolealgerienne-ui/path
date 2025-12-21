@@ -42,8 +42,28 @@ python scripts/evaluation/download_evaluation_datasets.py --info
 
 ### Télécharger CoNSeP (rapide, 70 MB)
 
+**⚠️ Note:** Le téléchargement automatique de CoNSeP peut échouer en raison de restrictions d'accès. Si c'est le cas, téléchargez manuellement :
+
+**Option 1: Téléchargement automatique (peut échouer)**
 ```bash
 python scripts/evaluation/download_evaluation_datasets.py --dataset consep
+```
+
+**Option 2: Téléchargement manuel (recommandé)**
+```bash
+# 1. Télécharger depuis:
+#    https://warwick.ac.uk/fac/cross_fac/tia/data/hovernet/
+#    Fichier: consep_dataset.zip (70 MB)
+
+# 2. Placer le fichier dans:
+mkdir -p data/evaluation/consep
+# Copier consep_dataset.zip dans data/evaluation/consep/
+
+# 3. Extraire:
+unzip data/evaluation/consep/consep_dataset.zip -d data/evaluation/consep/
+
+# Ou utiliser le script helper:
+bash scripts/evaluation/download_consep_manual.sh
 ```
 
 ### Télécharger PanNuke (lent, ~1.5 GB)
@@ -172,6 +192,15 @@ python scripts/evaluation/evaluate_ground_truth.py \
 - **Panoptic Quality**: Kirillov et al. (2019) - [Paper](https://arxiv.org/abs/1801.00868)
 
 ## 🐛 Dépannage
+
+### Erreur: "BadZipFile: File is not a zip file"
+
+Le téléchargement automatique de CoNSeP a échoué. L'URL redirige vers une page HTML au lieu du fichier ZIP.
+
+**Solution:**
+1. Téléchargez manuellement depuis: https://warwick.ac.uk/fac/cross_fac/tia/data/hovernet/
+2. Placez `consep_dataset.zip` dans `data/evaluation/consep/`
+3. Utilisez le script helper: `bash scripts/evaluation/download_consep_manual.sh`
 
 ### Erreur: "No .npz files found"
 

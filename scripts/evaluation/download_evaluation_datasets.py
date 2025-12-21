@@ -44,14 +44,28 @@ DATASETS = {
         }
     },
     "consep": {
-        "url": "https://warwick.ac.uk/fac/cross_fac/tia/data/hovernet/consep_dataset.zip",
+        "url": "https://warwick.ac.uk/fac/cross_fac/tia/data/hovernet/",
         "format": "mat",
         "classes": 7,  # Needs mapping to 5
         "description": "CoNSeP - 41 images, colorectal adenocarcinoma",
         "size": "~70 MB",
         "files": {
-            "dataset": "https://warwick.ac.uk/fac/cross_fac/tia/data/hovernet/consep_dataset.zip"
-        }
+            # Direct download URLs (may require manual download)
+            "dataset": [
+                "https://warwick.ac.uk/fac/cross_fac/tia/data/hovernet/consep_dataset.zip",
+                # Backup: Google Drive link (from HoVer-Net paper)
+                # Manual download required
+            ]
+        },
+        "manual_instructions": """
+CoNSeP dataset download may require manual steps:
+
+1. Visit: https://warwick.ac.uk/fac/cross_fac/tia/data/hovernet/
+2. Download "consep_dataset.zip" (70 MB)
+3. Place in: data/evaluation/consep/consep_dataset.zip
+4. Re-run this script or extract manually:
+   unzip data/evaluation/consep/consep_dataset.zip -d data/evaluation/consep/
+        """
     },
     "monusac": {
         "url": "https://huggingface.co/datasets/RationAI/MoNuSAC",
@@ -148,23 +162,66 @@ def download_consep(output_dir: Path) -> None:
     consep_dir.mkdir(parents=True, exist_ok=True)
 
     config = DATASETS["consep"]
-    url = config["files"]["dataset"]
+    urls = config["files"]["dataset"]
+    if not isinstance(urls, list):
+        urls = [urls]
+
     zip_path = consep_dir / "consep_dataset.zip"
 
-    # Download
-    if zip_path.exists():
-        print(f"✅ CoNSeP already downloaded: {zip_path}")
-    else:
-        print("\nDownloading CoNSeP...")
-        download_file(url, zip_path, desc="CoNSeP")
-
-    # Extract
+    # Check if already extracted
     if (consep_dir / "Test").exists() or (consep_dir / "Train").exists():
         print(f"✅ CoNSeP already extracted")
-    else:
-        extract_zip(zip_path, consep_dir)
+        print(f"✅ CoNSeP available at: {consep_dir}")
+        return
 
-    print(f"\n✅ CoNSeP downloaded to: {consep_dir}")
+    # Check if zip exists
+    if zip_path.exists() and zip_path.stat().st_size > 1_000_000:  # > 1 MB
+        print(f"✅ CoNSeP already downloaded: {zip_path}")
+        try:
+            extract_zip(zip_path, consep_dir)
+            print(f"\n✅ CoNSeP extracted to: {consep_dir}")
+            return
+        except Exception as e:
+            print(f"⚠️ Error extracting: {e}")
+            print("Trying to re-download...")
+            zip_path.unlink()
+
+    # Try each URL
+    download_success = False
+    for i, url in enumerate(urls):
+        try:
+            print(f"\nTrying URL {i+1}/{len(urls)}...")
+            print(f"Downloading CoNSeP from: {url}")
+            download_file(url, zip_path, desc="CoNSeP")
+
+            # Verify it's a valid zip
+            if zip_path.stat().st_size < 1_000_000:  # < 1 MB is suspicious
+                print(f"⚠️ Downloaded file is too small ({zip_path.stat().st_size} bytes)")
+                print("This may be an HTML redirect page, not the actual dataset.")
+                zip_path.unlink()
+                continue
+
+            # Try to extract
+            extract_zip(zip_path, consep_dir)
+            download_success = True
+            print(f"\n✅ CoNSeP downloaded and extracted to: {consep_dir}")
+            break
+
+        except Exception as e:
+            print(f"⚠️ Failed with URL {i+1}: {e}")
+            if zip_path.exists():
+                zip_path.unlink()
+            continue
+
+    if not download_success:
+        print("\n" + "="*70)
+        print("❌ AUTOMATIC DOWNLOAD FAILED - MANUAL DOWNLOAD REQUIRED")
+        print("="*70)
+        print(config.get("manual_instructions", ""))
+        print("\nAfter manual download, the directory should contain:")
+        print("  data/evaluation/consep/Train/")
+        print("  data/evaluation/consep/Test/")
+        print("="*70)
 
 
 def download_monusac(output_dir: Path) -> None:
