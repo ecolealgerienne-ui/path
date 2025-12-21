@@ -159,11 +159,24 @@ def main():
     # Debug: afficher les clés disponibles
     print(f"\n🔍 Clés dans result: {list(result.keys())}")
 
-    # Extraire les données (avec gestion des clés possibles)
-    pred_inst = result.get('instance_map', result.get('inst_map', np.zeros_like(gt_inst)))
-    pred_type = result.get('type_map', result.get('nt_map', np.zeros_like(gt_type)))
-    pred_np = result.get('np_prob', result.get('np_mask', np.zeros_like(pred_inst, dtype=np.float32)))
-    pred_hv = result.get('hv_map', result.get('hv', np.zeros((2, *gt_inst.shape), dtype=np.float32)))
+    # Extraire les données depuis multifamily_result si disponible
+    if 'multifamily_result' in result:
+        mf_result = result['multifamily_result']
+        print(f"   ✓ multifamily_result trouvé (OptimusGateResult)")
+
+        # Extraire depuis OptimusGateResult
+        pred_hv = mf_result.hv_map  # (2, H, W) float32 [-1, 1]
+        pred_type = mf_result.type_map  # (H, W) int
+        # NP prob depuis type_probs (channel 0 = background, on veut la somme des autres)
+        pred_np = mf_result.type_probs[1:].sum(axis=0)  # Probabilité noyau
+        pred_inst = result.get('instance_map', result.get('inst_map', np.zeros_like(gt_inst)))
+    else:
+        # Fallback: clés directes (compatibilité ancien format)
+        print(f"   ⚠️  Pas de multifamily_result, extraction directe")
+        pred_inst = result.get('instance_map', result.get('inst_map', np.zeros_like(gt_inst)))
+        pred_type = result.get('type_map', result.get('nt_map', np.zeros_like(gt_type)))
+        pred_np = result.get('np_prob', result.get('np_mask', np.zeros_like(pred_inst, dtype=np.float32)))
+        pred_hv = result.get('hv_map', result.get('hv', np.zeros((2, *gt_inst.shape), dtype=np.float32)))
 
     print(f"\nPrédictions:")
     print(f"  Instances: {pred_inst.max()}")
