@@ -190,22 +190,42 @@ def test_model(checkpoint_path: Path, data_path: Path, n_samples: int = 10,
 
     print(f"   ✓ Modèle chargé sur {device}")
 
-    # 3. Charger données
+    # 3. Charger données (targets)
     print(f"\n📂 Chargement des données...")
     data = np.load(data_path)
 
     print(f"   ✓ Data: {data_path.name}")
     print(f"   Images: {data['images'].shape}")
-    print(f"   Features: {data.get('patch_tokens', data.get('features', 'N/A'))}")
+    print(f"   Clés: {list(data.keys())}")
 
-    # 4. Vérifier que patch_tokens existe
-    if 'patch_tokens' not in data and 'features' not in data:
-        print("   ❌ Pas de 'patch_tokens' ou 'features' dans les données!")
-        print(f"   Clés disponibles: {list(data.keys())}")
-        return False
+    # 4. Charger features (depuis fichier séparé si nécessaire)
+    if 'patch_tokens' in data:
+        features = data['patch_tokens']
+        print(f"   ✓ Features (patch_tokens): {features.shape}")
+    elif 'features' in data:
+        features = data['features']
+        print(f"   ✓ Features: {features.shape}")
+    else:
+        # Chercher features dans data/cache/family_data/
+        features_path = data_path.parent.parent / "cache" / "family_data" / "glandular_features.npz"
+        if not features_path.exists():
+            print(f"   ❌ Features introuvables!")
+            print(f"   Essayé: {features_path}")
+            return False
 
-    features_key = 'patch_tokens' if 'patch_tokens' in data else 'features'
-    features = data[features_key]
+        print(f"   ⚠️  Features non incluses, chargement depuis: {features_path.name}")
+        features_data = np.load(features_path)
+
+        if 'patch_tokens' in features_data:
+            features = features_data['patch_tokens']
+        elif 'features' in features_data:
+            features = features_data['features']
+        else:
+            print(f"   ❌ Clés features: {list(features_data.keys())}")
+            return False
+
+        print(f"   ✓ Features chargées: {features.shape}")
+
     images = data['images']
     np_targets = data['np_targets']
     hv_targets = data['hv_targets']
