@@ -2578,3 +2578,159 @@ collector.export_for_retraining("data/retraining/batch_001.json")
 - Formulaire de soumission avec sévérité
 - Statistiques en temps réel
 - Sauvegarde JSON automatique
+
+### 2025-12-21 — Pipeline d'Évaluation Ground Truth ✅ NOUVEAU
+
+**Implémentation complète du système d'évaluation contre annotations expertes.**
+
+#### Scripts Créés
+
+| Script | Rôle | Statut |
+|--------|------|--------|
+| `scripts/evaluation/download_evaluation_datasets.py` | Télécharge PanNuke, CoNSeP, MoNuSAC, Lizard | ✅ |
+| `scripts/evaluation/convert_annotations.py` | Convertit .mat/.npy → .npz unifié | ✅ |
+| `scripts/evaluation/evaluate_ground_truth.py` | Évalue modèle vs GT | ✅ |
+| `scripts/evaluation/README.md` | Documentation complète | ✅ |
+
+#### Métriques Implémentées
+
+Utilise le module `src/metrics/ground_truth_metrics.py` (créé précédemment) :
+
+| Métrique | Description | Cible |
+|----------|-------------|-------|
+| **Dice** | Chevauchement binaire (2×\|P∩GT\| / (\|P\|+\|GT\|)) | > 0.95 |
+| **AJI** | Aggregated Jaccard Index (qualité instances) | > 0.80 |
+| **PQ** | Panoptic Quality = DQ × SQ | > 0.70 |
+| **F1d** | F1 par classe (détection clinique) | > 0.90 |
+| **Confusion Matrix** | Matrice de confusion 6×6 | - |
+
+#### Workflow Complet
+
+```bash
+# 1. Télécharger CoNSeP (rapide, 70 MB)
+python scripts/evaluation/download_evaluation_datasets.py --dataset consep
+
+# 2. Convertir au format unifié
+python scripts/evaluation/convert_annotations.py \
+    --dataset consep \
+    --input_dir data/evaluation/consep/Test \
+    --output_dir data/evaluation/consep_converted
+
+# 3. Évaluer le modèle (prédictions aveugles)
+python scripts/evaluation/evaluate_ground_truth.py \
+    --dataset_dir data/evaluation/consep_converted \
+    --output_dir results/consep \
+    --dataset consep
+
+# 4. Consulter le rapport
+cat results/consep/clinical_report_consep_*.txt
+```
+
+#### Format de Rapport Généré
+
+```
+╔══════════════════════════════════════════════════════════════╗
+║               RAPPORT DE FIDÉLITÉ CLINIQUE                   ║
+╠══════════════════════════════════════════════════════════════╣
+║ Dice Global: 0.9601  |  AJI: 0.8234  |  PQ: 0.7891           ║
+╠══════════════════════════════════════════════════════════════╣
+║ DÉTECTION                                                    ║
+║   TP:  180  |  FP:   12  |  FN:    8                        ║
+║   Précision: 93.75%  |  Rappel: 95.74%                      ║
+╠══════════════════════════════════════════════════════════════╣
+║ FIDÉLITÉ PAR TYPE CELLULAIRE                                 ║
+║   🔴 Neoplastic  : Expert= 20 → Modèle= 19 → 95.0%           ║
+║   🟢 Inflammatory: Expert= 15 → Modèle= 14 → 93.3%           ║
+║   🔵 Connective  : Expert=  8 → Modèle=  8 → 100.0%          ║
+╠══════════════════════════════════════════════════════════════╣
+║ CLASSIFICATION ACCURACY: 91.25%                              ║
+╚══════════════════════════════════════════════════════════════╝
+```
+
+#### Datasets Supportés
+
+| Priorité | Dataset | Images | Classes | Taille | Statut |
+|----------|---------|--------|---------|--------|--------|
+| 🥇 | PanNuke | 7,901 | 5 + BG | ~1.5 GB | ✅ Script prêt |
+| 🥈 | CoNSeP | 41 | 7→5 (mapping) | ~70 MB | ✅ Script prêt |
+| 🥉 | MoNuSAC | 209 | 4→5 (mapping) | ~500 MB | ⚠️ Placeholder |
+| 4 | Lizard | 291 | 5 + BG | ~2 GB | ⚠️ Placeholder |
+
+#### Mapping des Classes
+
+Le script `convert_annotations.py` gère automatiquement le mapping :
+
+**CoNSeP → PanNuke :**
+```python
+{
+    1: 3,  # Other → Connective
+    2: 2,  # Inflammatory → Inflammatory
+    3: 5,  # Epithelial → Epithelial
+    4: 3,  # Spindle-shaped → Connective
+}
+```
+
+**MoNuSAC → PanNuke :**
+```python
+{
+    1: 5,  # Epithelial → Epithelial
+    2: 2,  # Lymphocyte → Inflammatory
+    3: 2,  # Neutrophil → Inflammatory
+    4: 2,  # Macrophage → Inflammatory
+}
+```
+
+#### Points de Vigilance
+
+**⚠️ Indexation Off-by-One :**
+- `inst_map` commence à 1, pas 0 (0 = background)
+- Toujours utiliser `inst_ids = inst_ids[inst_ids > 0]`
+
+**⚠️ Seuil IoU = 0.5 :**
+- Norme de la communauté (CoNIC Challenge, MICCAI)
+- Ne PAS changer sans raison documentée
+
+**⚠️ Resize Predictions :**
+- Les prédictions sont à 224×224 (H-optimus-0)
+- Le GT peut être à 256×256 (PanNuke) ou variable (CoNSeP)
+- Le script gère automatiquement le resize avec `INTER_NEAREST`
+
+#### Fichiers de Sortie
+
+| Fichier | Format | Contenu |
+|---------|--------|---------|
+| `clinical_report_*.txt` | Text | Rapport formaté pour pathologistes |
+| `metrics_*.json` | JSON | Métriques détaillées + per-class |
+| `confusion_matrix_*.npy` | NumPy | Matrice 6×6 (GT × Pred) |
+
+#### Commandes Utiles
+
+```bash
+# Afficher info sur datasets disponibles
+python scripts/evaluation/download_evaluation_datasets.py --info
+
+# Vérifier une conversion
+python scripts/evaluation/convert_annotations.py \
+    --verify data/evaluation/consep_converted/test_001.npz
+
+# Évaluer une seule image (debug)
+python scripts/evaluation/evaluate_ground_truth.py \
+    --image data/evaluation/consep_converted/test_001.npz \
+    --output_dir results/single \
+    --verbose
+
+# Évaluer 100 images de PanNuke Fold 2
+python scripts/evaluation/evaluate_ground_truth.py \
+    --dataset_dir data/evaluation/pannuke_fold2_converted \
+    --num_samples 100 \
+    --output_dir results/pannuke_sample
+```
+
+#### Prochaines Étapes
+
+- [ ] Tester sur CoNSeP (41 images, validation rapide)
+- [ ] Tester sur PanNuke Fold 2 (non utilisé pour entraînement)
+- [ ] Générer rapport de référence pour publication
+- [ ] Intégrer dans l'IHM (onglet "Évaluation GT")
+
+**Référence :** Voir `docs/PLAN_EVALUATION_GROUND_TRUTH.md` pour spécifications complètes.
