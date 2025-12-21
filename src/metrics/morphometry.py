@@ -341,7 +341,10 @@ class MorphometryAnalyzer:
                     is_mitotic = True
 
             # Type cellulaire (mode dans le masque)
+            # NOTE: nt_mask peut contenir des -1 pour les pixels non assignés
+            # On filtre ces valeurs avant de calculer le mode
             types_in_mask = type_map[mask]
+            types_in_mask = types_in_mask[types_in_mask >= 0]  # Filtrer les -1
             if len(types_in_mask) > 0:
                 type_idx = int(np.bincount(types_in_mask.astype(int)).argmax())
             else:
