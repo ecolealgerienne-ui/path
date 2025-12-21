@@ -218,6 +218,241 @@ cellvit-optimus/
 
 ---
 
+## ⚠️ GUIDE CRITIQUE: Préparation des Données pour l'Entraînement
+
+> **ATTENTION: Cette section est OBLIGATOIRE à lire avant tout entraînement.**
+>
+> Deux bugs critiques ont causé des semaines de travail perdu. Ne pas répéter ces erreurs.
+
+### Vue d'ensemble du Pipeline
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                    PIPELINE DE PRÉPARATION DES DONNÉES                  │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                         │
+│  1. IMAGE BRUTE (uint8 [0-255])                                        │
+│         │                                                               │
+│         ▼                                                               │
+│  2. CONVERSION OBLIGATOIRE → uint8                                     │
+│     ⚠️ ToPILImage multiplie les floats par 255!                        │
+│         │                                                               │
+│         ▼                                                               │
+│  3. TRANSFORM TORCHVISION (identique train/inference)                  │
+│     • ToPILImage()                                                      │
+│     • Resize((224, 224))                                                │
+│     • ToTensor()                                                        │
+│     • Normalize(mean=HOPTIMUS_MEAN, std=HOPTIMUS_STD)                  │
+│         │                                                               │
+│         ▼                                                               │
+│  4. H-OPTIMUS-0: forward_features()                                    │
+│     ⚠️ JAMAIS blocks[X] directement! (pas de LayerNorm)               │
+│         │                                                               │
+│         ▼                                                               │
+│  5. FEATURES NORMALISÉES (CLS std ~0.77)                               │
+│                                                                         │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+### Constantes de Normalisation H-optimus-0
+
+```python
+# OBLIGATOIRE: Ces valeurs sont FIXES et ne doivent JAMAIS changer
+HOPTIMUS_MEAN = (0.707223, 0.578729, 0.703617)
+HOPTIMUS_STD = (0.211883, 0.230117, 0.177517)
+```
+
+### BUG #1: ToPILImage avec float64 (CORRIGÉ)
+
+**Problème:** `ToPILImage()` multiplie les floats par 255.
+
+```python
+# ❌ BUG: ToPILImage avec float64 [0,255]
+img_float64 = np.array([100, 150, 200], dtype=np.float64)
+# ToPILImage pense que c'est [0,1] → multiplie par 255
+# → [25500, 38250, 51000] → overflow uint8 → COULEURS FAUSSES!
+
+# ✅ SOLUTION: Toujours convertir en uint8 AVANT ToPILImage
+if image.dtype != np.uint8:
+    image = image.clip(0, 255).astype(np.uint8)
+```
+
+**Impact:** Features corrompues → modèles inutilisables → ré-entraînement complet.
+
+### BUG #2: LayerNorm Mismatch (CORRIGÉ)
+
+**Problème:** Incohérence entre extraction et inférence.
+
+```python
+# ❌ BUG: Hooks sur blocks[23] (SANS LayerNorm final)
+# extract_features.py utilisait:
+output = model.blocks[23](x)  # CLS std ~0.28
+
+# Mais l'inférence utilisait:
+output = model.forward_features(x)  # CLS std ~0.77
+
+# → Ratio 2.7x entre train et inference → prédictions FAUSSES!
+
+# ✅ SOLUTION: Utiliser forward_features() PARTOUT
+features = backbone.forward_features(tensor)  # Inclut LayerNorm
+```
+
+**Vérification:** CLS token std doit être entre **0.70 et 0.90**.
+
+### Transform Canonique (À COPIER)
+
+```python
+from torchvision import transforms
+
+HOPTIMUS_MEAN = (0.707223, 0.578729, 0.703617)
+HOPTIMUS_STD = (0.211883, 0.230117, 0.177517)
+
+def create_hoptimus_transform():
+    """
+    Transform CANONIQUE pour H-optimus-0.
+
+    DOIT être IDENTIQUE dans:
+    - scripts/preprocessing/extract_features.py
+    - src/inference/hoptimus_hovernet.py
+    - src/inference/optimus_gate_inference.py
+    - src/inference/optimus_gate_inference_multifamily.py
+    - scripts/validation/test_organ_prediction_batch.py
+    """
+    return transforms.Compose([
+        transforms.ToPILImage(),
+        transforms.Resize((224, 224)),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=HOPTIMUS_MEAN, std=HOPTIMUS_STD),
+    ])
+
+def preprocess_image(image: np.ndarray) -> torch.Tensor:
+    """
+    Prétraitement CANONIQUE d'une image.
+
+    Args:
+        image: Image RGB (H, W, 3) - uint8 ou float
+
+    Returns:
+        Tensor (1, 3, 224, 224) normalisé
+    """
+    # ÉTAPE CRITIQUE: Convertir en uint8 AVANT ToPILImage
+    if image.dtype != np.uint8:
+        if image.max() <= 1.0:
+            image = (image * 255).clip(0, 255).astype(np.uint8)
+        else:
+            image = image.clip(0, 255).astype(np.uint8)
+
+    transform = create_hoptimus_transform()
+    tensor = transform(image).unsqueeze(0)
+
+    return tensor
+```
+
+### Extraction des Features (À COPIER)
+
+```python
+def extract_features(backbone, tensor: torch.Tensor) -> torch.Tensor:
+    """
+    Extraction CANONIQUE des features H-optimus-0.
+
+    IMPORTANT: Utilise forward_features() qui inclut le LayerNorm final.
+
+    Args:
+        backbone: Modèle H-optimus-0
+        tensor: Image prétraitée (B, 3, 224, 224)
+
+    Returns:
+        Features (B, 261, 1536) - CLS token + 256 patch tokens
+    """
+    with torch.no_grad():
+        # ✅ forward_features() inclut le LayerNorm final
+        features = backbone.forward_features(tensor)
+
+    return features.float()
+
+# Récupération des tokens
+cls_token = features[:, 0, :]      # (B, 1536) - Pour OrganHead
+patch_tokens = features[:, 1:257, :]  # (B, 256, 1536) - Pour HoVer-Net
+```
+
+### Script de Vérification
+
+```bash
+# Vérifier que les features sont correctes AVANT entraînement
+python scripts/validation/verify_features.py --features_dir data/cache/pannuke_features
+
+# Sortie attendue:
+# ✅ Fold 0: CLS std = 0.768 (attendu: 0.70-0.90)
+# ✅ Fold 1: CLS std = 0.771 (attendu: 0.70-0.90)
+# ✅ Fold 2: CLS std = 0.769 (attendu: 0.70-0.90)
+```
+
+### Checklist Avant Entraînement
+
+| # | Vérification | Commande |
+|---|--------------|----------|
+| 1 | Images en uint8 | `print(image.dtype)` → `uint8` |
+| 2 | Transform identique | Comparer avec `create_hoptimus_transform()` |
+| 3 | forward_features() utilisé | Pas de hooks sur `blocks[X]` |
+| 4 | CLS std ~0.77 | `verify_features.py` |
+| 5 | Clé 'features' dans .npz | `data.keys()` → `['features', ...]` |
+
+### Format des Features Sauvegardées
+
+```python
+# Structure attendue dans les fichiers .npz
+{
+    'features': np.array,  # (N, 261, 1536) - CLS + 256 patches
+    # ou pour compatibilité ancienne:
+    'layer_24': np.array,  # Même format
+}
+
+# Les scripts d'entraînement supportent les deux clés:
+if 'features' in data:
+    features = data['features']
+elif 'layer_24' in data:
+    features = data['layer_24']
+```
+
+### Scripts de Référence
+
+| Script | Rôle | Vérifie |
+|--------|------|---------|
+| `scripts/preprocessing/extract_features.py` | Extraction features | uint8 + forward_features() |
+| `scripts/validation/verify_features.py` | Vérification CLS std | Range 0.70-0.90 |
+| `scripts/validation/test_organ_prediction_batch.py` | Test inférence | Cohérence train/inference |
+
+### Commandes de Ré-extraction Complète
+
+```bash
+# Si les features sont corrompues, ré-extraire les 3 folds:
+
+# 1. Supprimer les anciennes features
+rm -rf data/cache/pannuke_features/*.npz
+
+# 2. Ré-extraire chaque fold (avec chunking pour économiser la RAM)
+for fold in 0 1 2; do
+    python scripts/preprocessing/extract_features.py \
+        --data_dir /home/amar/data/PanNuke \
+        --fold $fold \
+        --batch_size 8 \
+        --chunk_size 500
+done
+
+# 3. Vérifier
+python scripts/validation/verify_features.py --features_dir data/cache/pannuke_features
+
+# 4. Ré-entraîner OrganHead
+python scripts/training/train_organ_head.py --folds 0 1 2 --epochs 50
+
+# 5. Ré-entraîner HoVer-Net par famille
+for family in glandular digestive urologic respiratory epidermal; do
+    python scripts/training/train_hovernet_family.py --family $family --epochs 50 --augment
+done
+```
+
+---
+
 ## Cartes HV (Horizontal/Vertical) — Séparation d'Instances
 
 ### Problème
@@ -1307,6 +1542,84 @@ La famille Respiratoire (Lung + Liver) obtient un excellent HV MSE (0.05) malgr�
 - 5/5 familles: Dice ≥ 0.93
 - Pipeline complet fonctionnel
 
+### 2025-12-21 — FIX CRITIQUE: LayerNorm Mismatch ⚠️ SOLUTION CIBLE
+
+**Problème découvert:** Erreur de prédiction organe — Breast prédit comme Prostate (87% confiance).
+
+**Cause racine:** Incohérence entre extraction de features et inférence:
+- `extract_features.py` utilisait des hooks sur `blocks[23]` (SANS LayerNorm final)
+- Les fichiers d'inférence utilisaient `forward_features()` (AVEC LayerNorm final)
+- Résultat: CLS std ~0.28 (entraînement) vs ~0.77 (inférence) = ratio 2.7x!
+
+```
+AVANT (BUG):
+  extract_features.py → hooks blocks[23] → std ~0.28 (sans LayerNorm)
+  inference/*.py → forward_features() → std ~0.77 (avec LayerNorm)
+  → MISMATCH → Prédictions incorrectes
+
+APRÈS (SOLUTION CIBLE):
+  extract_features.py → forward_features() → std ~0.77 (avec LayerNorm)
+  inference/*.py → forward_features() → std ~0.77 (avec LayerNorm)
+  → COHÉRENT → Prédictions correctes
+```
+
+**Solution cible implémentée:**
+
+1. **Modification `extract_features.py`:**
+   - Utilise `forward_features()` au lieu de hooks
+   - Ajoute vérification CLS std (attendu: 0.70-0.90)
+   - Sauvegarde avec clé `features` (shape N, 261, 1536)
+
+2. **Script de vérification créé:** `scripts/validation/verify_features.py`
+   - Vérifie CLS std dans la plage attendue
+   - Détecte features corrompues (std < 0.40 = sans LayerNorm)
+   - Option `--verify_fresh` pour comparaison avec extraction fraîche
+
+3. **Simplification des fichiers d'inférence:**
+   - `src/inference/optimus_gate_inference.py`
+   - `src/inference/optimus_gate_inference_multifamily.py`
+   - `src/inference/hoptimus_hovernet.py`
+   - `scripts/validation/diagnose_organ_prediction.py`
+   - Tous utilisent maintenant `forward_features()` directement
+
+**Critères de validation:**
+| Métrique | Valeur attendue | Signification |
+|----------|----------------|---------------|
+| CLS std | 0.70 - 0.90 | Features avec LayerNorm ✅ |
+| CLS std | < 0.40 | Features CORROMPUES ❌ |
+
+**Étapes de ré-entraînement requises:**
+```bash
+# 1. Vérifier features existantes (avant ré-extraction)
+python scripts/validation/verify_features.py --features_dir data/cache/pannuke_features
+
+# 2. Ré-extraire les features pour les 3 folds (avec chunking pour économiser la RAM)
+for fold in 0 1 2; do
+    python scripts/preprocessing/extract_features.py \
+        --data_dir /home/amar/data/PanNuke \
+        --fold $fold \
+        --batch_size 8 \
+        --chunk_size 500
+done
+
+# 3. Vérifier après extraction
+python scripts/validation/verify_features.py --features_dir data/cache/pannuke_features
+
+# 4. Ré-entraîner OrganHead
+python scripts/training/train_organ_head.py --folds 0 1 2 --epochs 50
+
+# 5. Vérifier sur image de test
+python scripts/validation/diagnose_organ_prediction.py --image path/to/breast_01.png --expected Breast
+```
+
+**Fichiers modifiés:**
+- `scripts/preprocessing/extract_features.py` — forward_features() + vérification
+- `scripts/validation/verify_features.py` — 🆕 Script de vérification
+- `scripts/validation/diagnose_organ_prediction.py` — forward_features()
+- `src/inference/optimus_gate_inference.py` — Suppression hooks
+- `src/inference/optimus_gate_inference_multifamily.py` — Suppression hooks
+- `src/inference/hoptimus_hovernet.py` — Suppression hooks
+
 ---
 
 ## Fichiers Créés (Inventaire)
@@ -1362,7 +1675,9 @@ scripts/
 │   └── inspect_checkpoint.py
 ├── validation/
 │   ├── test_cellvit256_inference.py  # Test étape 1.5 POC
-│   └── test_optimus_gate.py          # Test Optimus-Gate complet
+│   ├── test_optimus_gate.py          # Test Optimus-Gate complet
+│   ├── verify_features.py            # 🆕 Vérification features H-optimus-0
+│   └── diagnose_organ_prediction.py  # Diagnostic prédiction organe
 └── demo/
     ├── gradio_demo.py             # Interface principale
     ├── synthetic_cells.py         # Générateur tissus
@@ -1653,6 +1968,278 @@ class ReferenceNucleiGallery:
 - 🔜 Statistiques de concordance par session
 - 🔜 Alertes sur patterns d'erreur récurrents
 - 🔜 Pipeline de retraining automatisé
+
+### 6. Temperature Scaling & Calibration UX (À IMPLÉMENTER)
+
+**Date:** 2025-12-21
+**Statut:** 🔜 À implémenter dans l'IHM
+
+#### Contexte
+
+Le modèle OrganHead atteint 100% d'accuracy mais les confiances brutes (T=1.0) sont sous-calibrées:
+- Breast: 44-49% de confiance (alors que 100% correct)
+- Colon: 58-63%
+- Prostate: 81-94%
+
+**Temperature Scaling** permet d'ajuster les confiances sans changer les prédictions.
+
+#### Résultats Expérimentaux (test sur 15 images)
+
+| Température | Accuracy | Conf. Moy. | Conf. Min | Conf. Max |
+|-------------|----------|------------|-----------|-----------|
+| T = 1.0 (brut) | 100% | 65.9% | 44.7% | 94.6% |
+| **T = 0.5** | 100% | **96.4%** | 91.0% | 100.0% |
+| T = 0.25 | 100% | 100.0% | 99.9% | 100.0% |
+| T = 0.1 | 100% | 100.0% | 100.0% | 100.0% |
+
+**Recommandation:** Utiliser **T = 0.5** pour un bon équilibre.
+
+#### Fonctionnalités UX à Implémenter
+
+**1. Affichage de la confiance calibrée dans l'IHM:**
+```
+┌─────────────────────────────────────────────┐
+│ 🔬 ORGANE DÉTECTÉ                           │
+│                                             │
+│    Breast (Sein)                            │
+│    ████████████████████░░░░ 91.2%           │
+│                          ↑                  │
+│                   Confiance calibrée (T=0.5)│
+└─────────────────────────────────────────────┘
+```
+
+**2. Jauge de confiance avec zones colorées:**
+```python
+def get_confidence_color(conf: float) -> str:
+    if conf >= 0.95:
+        return "🟢 Très fiable"
+    elif conf >= 0.85:
+        return "🟡 Fiable"
+    elif conf >= 0.70:
+        return "🟠 À vérifier"
+    else:
+        return "🔴 Incertain"
+```
+
+**3. Slider température (mode expert):**
+- Permettre à l'utilisateur avancé d'ajuster T
+- Afficher en temps réel l'impact sur les confiances
+- Valeur par défaut: T = 0.5
+
+**4. Comparaison multi-organes (top-3):**
+```
+┌─────────────────────────────────────────────┐
+│ 🔬 PRÉDICTIONS                              │
+│                                             │
+│ 1. Breast     ████████████████████ 91.2%    │
+│ 2. Thyroid    ████░░░░░░░░░░░░░░░░  5.3%    │
+│ 3. Pancreatic ██░░░░░░░░░░░░░░░░░░  2.1%    │
+└─────────────────────────────────────────────┘
+```
+
+**5. Alerte pour confiance basse:**
+- Si confiance < 70% → Afficher warning
+- Suggérer vérification manuelle
+- Logger pour analyse rétrospective
+
+#### Scripts Existants
+
+| Script | Description |
+|--------|-------------|
+| `scripts/calibration/calibrate_organ_head.py` | Calibration Temperature Scaling |
+| `scripts/calibration/temperature_scaling.py` | Classes TemperatureScaler, ECE, MCE |
+| `scripts/validation/test_organ_prediction_batch.py` | Test avec `--compare_temps` |
+
+#### Code d'Intégration (à ajouter dans inférence)
+
+```python
+# Dans OrganHead ou OptimusGate
+class CalibratedOrganHead:
+    def __init__(self, temperature: float = 0.5):
+        self.temperature = temperature
+
+    def predict_calibrated(self, cls_token: torch.Tensor) -> dict:
+        logits = self.organ_head(cls_token)
+        scaled_logits = logits / self.temperature
+        probs = torch.softmax(scaled_logits, dim=1)
+
+        top3_probs, top3_idx = probs.topk(3, dim=1)
+
+        return {
+            'organ': PANNUKE_ORGANS[top3_idx[0, 0]],
+            'confidence': top3_probs[0, 0].item(),
+            'confidence_level': self.get_confidence_color(top3_probs[0, 0].item()),
+            'top3': [(PANNUKE_ORGANS[idx], prob.item())
+                     for idx, prob in zip(top3_idx[0], top3_probs[0])],
+        }
+```
+
+#### Priorité
+
+| Fonctionnalité | Priorité | Effort |
+|----------------|----------|--------|
+| Affichage confiance calibrée | Haute | 1h |
+| Jauge colorée | Haute | 30min |
+| Top-3 prédictions | Moyenne | 1h |
+| Slider température (expert) | Basse | 2h |
+| Alerte confiance basse | Haute | 30min |
+
+### 7. Normalisation des Données dans l'IHM (CRITIQUE - À IMPLÉMENTER)
+
+**Date:** 2025-12-21
+**Statut:** 🔜 À implémenter dans l'IHM
+**Priorité:** ⚠️ CRITIQUE - Sans cela, le diagnostic ne fonctionne pas
+
+#### Contexte
+
+> **ATTENTION:** L'IHM DOIT utiliser EXACTEMENT le même pipeline de normalisation
+> que l'entraînement. Sinon, les prédictions seront FAUSSES.
+
+Deux bugs critiques ont été découverts et corrigés:
+1. **ToPILImage + float64** → Overflow couleurs → Features corrompues
+2. **LayerNorm mismatch** → CLS std 0.28 vs 0.77 → Prédictions fausses
+
+#### Pipeline Obligatoire pour l'IHM
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                 PIPELINE IHM (IDENTIQUE À L'ENTRAÎNEMENT)       │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│  UPLOAD IMAGE (Gradio/API)                                      │
+│         │                                                       │
+│         ▼                                                       │
+│  ⚠️ ÉTAPE 1: Conversion uint8                                   │
+│     if image.dtype != np.uint8:                                │
+│         image = image.clip(0, 255).astype(np.uint8)            │
+│         │                                                       │
+│         ▼                                                       │
+│  ÉTAPE 2: Transform torchvision (CANONIQUE)                    │
+│     • ToPILImage()                                              │
+│     • Resize((224, 224))                                        │
+│     • ToTensor()                                                │
+│     • Normalize(HOPTIMUS_MEAN, HOPTIMUS_STD)                   │
+│         │                                                       │
+│         ▼                                                       │
+│  ⚠️ ÉTAPE 3: forward_features() (PAS blocks[X])                │
+│     features = backbone.forward_features(tensor)               │
+│         │                                                       │
+│         ▼                                                       │
+│  ÉTAPE 4: Prédiction OrganHead / HoVer-Net                     │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+#### Code à Intégrer dans l'IHM (Gradio)
+
+```python
+# ⚠️ CE CODE DOIT ÊTRE IDENTIQUE PARTOUT
+from torchvision import transforms
+import numpy as np
+
+HOPTIMUS_MEAN = (0.707223, 0.578729, 0.703617)
+HOPTIMUS_STD = (0.211883, 0.230117, 0.177517)
+
+def create_hoptimus_transform():
+    """Transform CANONIQUE - NE PAS MODIFIER."""
+    return transforms.Compose([
+        transforms.ToPILImage(),
+        transforms.Resize((224, 224)),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=HOPTIMUS_MEAN, std=HOPTIMUS_STD),
+    ])
+
+def preprocess_for_inference(image: np.ndarray) -> torch.Tensor:
+    """
+    Prétraitement pour inférence dans l'IHM.
+
+    ⚠️ CRITIQUE: Ce code DOIT être identique à extract_features.py
+    """
+    # ÉTAPE 1: Conversion uint8 OBLIGATOIRE
+    if image.dtype != np.uint8:
+        if image.max() <= 1.0:
+            image = (image * 255).clip(0, 255).astype(np.uint8)
+        else:
+            image = image.clip(0, 255).astype(np.uint8)
+
+    # ÉTAPE 2: Transform canonique
+    transform = create_hoptimus_transform()
+    tensor = transform(image).unsqueeze(0)
+
+    return tensor.to(device)
+
+def extract_features_for_inference(backbone, tensor: torch.Tensor) -> torch.Tensor:
+    """
+    Extraction features pour inférence.
+
+    ⚠️ CRITIQUE: Utiliser forward_features(), JAMAIS blocks[X]
+    """
+    with torch.no_grad():
+        # forward_features() inclut le LayerNorm final
+        features = backbone.forward_features(tensor)
+    return features.float()
+```
+
+#### Validation dans l'IHM
+
+```python
+def validate_preprocessing(image: np.ndarray, backbone) -> bool:
+    """
+    Vérifie que le preprocessing est correct.
+    À appeler au démarrage de l'IHM pour valider le pipeline.
+    """
+    tensor = preprocess_for_inference(image)
+    features = extract_features_for_inference(backbone, tensor)
+    cls_token = features[:, 0, :]
+
+    # CLS std DOIT être entre 0.70 et 0.90
+    cls_std = cls_token.std().item()
+
+    if not (0.70 <= cls_std <= 0.90):
+        raise ValueError(
+            f"⚠️ ERREUR PREPROCESSING: CLS std = {cls_std:.3f} "
+            f"(attendu: 0.70-0.90). Vérifier le pipeline!"
+        )
+
+    return True
+```
+
+#### Checklist Intégration IHM
+
+| # | Vérification | Fichier | Statut |
+|---|--------------|---------|--------|
+| 1 | Import `create_hoptimus_transform()` | `gradio_demo.py` | 🔜 |
+| 2 | Conversion uint8 avant ToPILImage | `gradio_demo.py` | 🔜 |
+| 3 | `forward_features()` utilisé | `gradio_demo.py` | 🔜 |
+| 4 | Validation CLS std au démarrage | `gradio_demo.py` | 🔜 |
+| 5 | Test avec images de référence | CI/CD | 🔜 |
+
+#### Fichiers IHM à Vérifier/Modifier
+
+| Fichier | Rôle | Action |
+|---------|------|--------|
+| `scripts/demo/gradio_demo.py` | Interface principale | Vérifier preprocessing |
+| `src/inference/hoptimus_hovernet.py` | Inférence HoVer-Net | ✅ Déjà corrigé |
+| `src/inference/optimus_gate_inference.py` | Inférence OptimusGate | ✅ Déjà corrigé |
+| `src/inference/optimus_gate_inference_multifamily.py` | Multi-famille | ✅ Déjà corrigé |
+
+#### Test de Non-Régression
+
+```bash
+# Tester que l'IHM produit les mêmes résultats que le script batch
+python scripts/validation/test_organ_prediction_batch.py --samples_dir data/samples
+
+# Résultat attendu: 15/15 correct avec confiances cohérentes
+```
+
+#### Erreurs Courantes à Éviter
+
+| Erreur | Symptôme | Solution |
+|--------|----------|----------|
+| Image float64 sans conversion | Couleurs fausses, Breast→Prostate | `image.astype(np.uint8)` |
+| `blocks[23]` au lieu de `forward_features()` | CLS std ~0.28, prédictions aléatoires | Utiliser `forward_features()` |
+| Normalisation différente | Confiances incohérentes | Utiliser `HOPTIMUS_MEAN/STD` |
+| Resize différent | Features incompatibles | Utiliser `Resize((224, 224))` |
 
 ---
 

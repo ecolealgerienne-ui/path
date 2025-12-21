@@ -131,6 +131,23 @@ class HOptimusHoVerNetInference:
         # Créer le transform (DOIT être identique à extract_features.py)
         self.transform = create_hoptimus_transform()
 
+    def extract_features(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Extrait les features de H-optimus-0 via forward_features().
+
+        IMPORTANT: Utilise forward_features() qui inclut le LayerNorm final.
+        Ceci est cohérent avec scripts/preprocessing/extract_features.py.
+
+        Args:
+            x: Tensor d'entrée (B, 3, 224, 224)
+
+        Returns:
+            Features (B, 261, 1536) - CLS token + 256 patch tokens
+        """
+        # forward_features() inclut le LayerNorm final
+        features = self.backbone.forward_features(x)
+        return features.float()
+
     def preprocess(self, image: np.ndarray) -> torch.Tensor:
         """
         Prétraitement de l'image pour H-optimus-0.
@@ -228,8 +245,8 @@ class HOptimusHoVerNetInference:
         # Prétraitement
         x = self.preprocess(image)
 
-        # Forward backbone - obtenir les tokens
-        features = self.backbone.forward_features(x)  # (1, 261, 1536)
+        # Forward backbone - obtenir les tokens (avec LayerNorm final)
+        features = self.extract_features(x)  # (1, 261, 1536)
 
         # Forward décodeur HoVer-Net
         np_logits, hv_maps, nt_logits = self.decoder(features)

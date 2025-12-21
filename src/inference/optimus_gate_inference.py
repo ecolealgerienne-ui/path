@@ -109,6 +109,7 @@ class OptimusGateInference:
         # Freeze backbone
         for param in self.backbone.parameters():
             param.requires_grad = False
+
         print("  ✓ H-optimus-0 chargé")
 
         # 2. Charger OptimusGate (OrganHead + HoVer-Net)
@@ -122,6 +123,23 @@ class OptimusGateInference:
         self.transform = create_hoptimus_transform()
 
         print("  ✅ Optimus-Gate prêt!")
+
+    def extract_features(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Extrait les features de H-optimus-0 via forward_features().
+
+        IMPORTANT: Utilise forward_features() qui inclut le LayerNorm final.
+        Ceci est cohérent avec scripts/preprocessing/extract_features.py.
+
+        Args:
+            x: Tensor d'entrée (B, 3, 224, 224)
+
+        Returns:
+            Features (B, 261, 1536) - CLS token + 256 patch tokens
+        """
+        # forward_features() inclut le LayerNorm final
+        features = self.backbone.forward_features(x)
+        return features.float()
 
     def preprocess(self, image: np.ndarray) -> torch.Tensor:
         """
@@ -215,8 +233,8 @@ class OptimusGateInference:
         # Prétraitement
         x = self.preprocess(image)
 
-        # Forward backbone - obtenir les features
-        features = self.backbone.forward_features(x)  # (1, 261, 1536)
+        # Forward backbone - obtenir les features (avec LayerNorm final)
+        features = self.extract_features(x)  # (1, 261, 1536)
 
         # Forward OptimusGate
         result = self.model.predict(features)
