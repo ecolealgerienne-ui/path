@@ -222,7 +222,7 @@ cellvit-optimus/
 
 > **ATTENTION: Cette section est OBLIGATOIRE à lire avant tout entraînement.**
 >
-> Deux bugs critiques ont causé des semaines de travail perdu. Ne pas répéter ces erreurs.
+> Trois bugs critiques ont causé des semaines de travail perdu. Ne pas répéter ces erreurs.
 
 ### Vue d'ensemble du Pipeline
 
@@ -298,6 +298,82 @@ features = backbone.forward_features(tensor)  # Inclut LayerNorm
 ```
 
 **Vérification:** CLS token std doit être entre **0.70 et 0.90**.
+
+### BUG #3: Training/Eval Instance Mismatch (DÉCOUVERT 2025-12-21)
+
+**Problème:** Le modèle crée UNE INSTANCE GÉANTE au lieu de plusieurs petites instances séparées.
+
+**Cause racine:** Incohérence entre la génération des targets d'entraînement et l'évaluation Ground Truth:
+
+```python
+# ❌ TRAINING PIPELINE (prepare_family_data.py):
+# Utilise connectedComponents qui FUSIONNE les cellules qui se touchent
+np_mask = mask[:, :, 1:].sum(axis=-1) > 0  # Union binaire
+_, labels = cv2.connectedComponents(binary_uint8)
+hv_targets = compute_hv_maps(labels)  # HV maps pour instances FUSIONNÉES
+
+# ❌ ÉVALUATION GROUND TRUTH (convert_annotations.py):
+# Utilise également connectedComponents pour matcher le training
+# MAIS le modèle prédit des gradients HV FAIBLES car il a appris des instances fusionnées!
+
+# Résultat: Watershed post-processing ne peut PAS séparer les cellules
+# car les gradients HV ne sont pas assez forts aux frontières
+```
+
+**Impact visuel (image_00002_diagnosis.png):**
+- GT: 9 instances séparées (connectedComponents sur union)
+- Prédiction: 1 INSTANCE VIOLETTE GÉANTE couvrant toute l'image
+- Recall: 7.69% (TP: 9, FP: 53, FN: 108)
+
+**Problème fondamental:**
+
+PanNuke contient les VRAIES instances séparées dans les canaux 1-4:
+- Canal 1: IDs d'instances Neoplastic [88, 96, 107, ...]
+- Canal 2: IDs d'instances Inflammatory
+- etc.
+
+Mais le training **IGNORE** ces IDs et recalcule avec `connectedComponents`, fusionnant les cellules qui se touchent!
+
+**Solutions possibles:**
+
+1. **Court terme**: Ajuster les paramètres watershed (edge_threshold, dist_threshold)
+   - Peu de chances de succès si les gradients HV sont vraiment faibles
+   - Voir `scripts/evaluation/test_watershed_params.py`
+
+2. **Long terme**: Ré-entraîner avec les VRAIES instances PanNuke
+   ```python
+   # ✅ SOLUTION CIBLE:
+   # Extraire les IDs d'instances de PanNuke au lieu de connectedComponents
+   inst_map = np.zeros((256, 256), dtype=np.int32)
+   instance_counter = 1
+
+   # Canaux 1-4: instances déjà annotées
+   for c in range(1, 5):
+       class_instances = mask[:, :, c]
+       inst_ids = np.unique(class_instances)
+       inst_ids = inst_ids[inst_ids > 0]
+       for inst_id in inst_ids:
+           inst_mask = class_instances == inst_id
+           inst_map[inst_mask] = instance_counter
+           instance_counter += 1
+
+   # Canal 5 (Epithelial) est binaire, garder connectedComponents
+   _, epithelial_labels = cv2.connectedComponents(mask[:, :, 5])
+   # Fusionner avec inst_map
+
+   # Maintenant compute_hv_maps() aura des frontières RÉELLES entre cellules
+   hv_targets = compute_hv_maps(inst_map)
+   ```
+
+   **Coût**: Ré-entraînement complet des 5 familles HoVer-Net (~10 heures)
+
+**Diagnostics créés:**
+- `results/DIAGNOSTIC_REPORT_LOW_RECALL.md`: Rapport complet avec analyse visuelle
+- `image_00002_diagnosis.png`: Visualisation GT vs Prédictions (1 instance géante)
+- `scripts/evaluation/visualize_raw_predictions.py`: Inspection NP/HV/gradients
+- `scripts/evaluation/test_watershed_params.py`: Sweep paramètres watershed
+
+**Statut:** ⚠️ BLOQUANT pour évaluation Ground Truth - Décision requise sur stratégie
 
 ### Transform Canonique (À COPIER)
 
@@ -486,6 +562,33 @@ Précision: 127 niveaux suffisent pour le Sobel/Watershed
 ```
 
 **Pré-calcul obligatoire** car `cv2.connectedComponents` est lent (~5-10ms/image).
+
+### ⚠️ MISE À JOUR CRITIQUE: Normalisation HV (2025-12-21)
+
+**Bug découvert et corrigé** : Les anciennes données utilisaient int8 [-127, 127] au lieu de float32 [-1, 1].
+
+| Version | Dtype | Range | Conforme HoVer-Net ? | Impact |
+|---------|-------|-------|----------------------|--------|
+| **OLD** (≤ 2025-12-20) | int8 | [-127, 127] | ❌ NON | HV MSE 0.0150, NT Acc 0.8800 |
+| **NEW** (≥ 2025-12-21) | float32 | [-1, 1] | ✅ OUI | HV MSE 0.0105 (-30%), NT Acc 0.9107 (+3.5%) |
+
+**Résultats validation Glandular (10 échantillons test)** :
+- NP Dice: 0.9655 ± 0.0184 (identique train: 0.9641)
+- HV MSE: 0.0266 ± 0.0104 (acceptable variance)
+- NT Acc: 0.9517 ± 0.0229 (meilleur que train: 0.9107, **+7.2% vs OLD**)
+- HV Range: ✅ 10/10 samples dans [-1, 1]
+
+**Activation HV** : Le décodeur n'a PAS de `tanh()` explicite, mais produit naturellement des valeurs dans [-1, 1] grâce à :
+1. SmoothL1Loss qui pénalise les valeurs éloignées
+2. Targets normalisés à [-1, 1]
+3. Tests empiriques concluants (voir `docs/ARCHITECTURE_HV_ACTIVATION.md`)
+
+**Rétro-compatibilité** : ❌ Modèles OLD incompatibles avec NEW data → Ré-entraînement OBLIGATOIRE.
+
+**Fichiers FIXED** :
+- Données : `data/family_FIXED/*_data_FIXED.npz`
+- Checkpoints : `models/checkpoints_FIXED/hovernet_*_best.pth`
+- Scripts : `scripts/preprocessing/prepare_family_data_FIXED.py`
 
 ---
 
@@ -2578,3 +2681,159 @@ collector.export_for_retraining("data/retraining/batch_001.json")
 - Formulaire de soumission avec sévérité
 - Statistiques en temps réel
 - Sauvegarde JSON automatique
+
+### 2025-12-21 — Pipeline d'Évaluation Ground Truth ✅ NOUVEAU
+
+**Implémentation complète du système d'évaluation contre annotations expertes.**
+
+#### Scripts Créés
+
+| Script | Rôle | Statut |
+|--------|------|--------|
+| `scripts/evaluation/download_evaluation_datasets.py` | Télécharge PanNuke, CoNSeP, MoNuSAC, Lizard | ✅ |
+| `scripts/evaluation/convert_annotations.py` | Convertit .mat/.npy → .npz unifié | ✅ |
+| `scripts/evaluation/evaluate_ground_truth.py` | Évalue modèle vs GT | ✅ |
+| `scripts/evaluation/README.md` | Documentation complète | ✅ |
+
+#### Métriques Implémentées
+
+Utilise le module `src/metrics/ground_truth_metrics.py` (créé précédemment) :
+
+| Métrique | Description | Cible |
+|----------|-------------|-------|
+| **Dice** | Chevauchement binaire (2×\|P∩GT\| / (\|P\|+\|GT\|)) | > 0.95 |
+| **AJI** | Aggregated Jaccard Index (qualité instances) | > 0.80 |
+| **PQ** | Panoptic Quality = DQ × SQ | > 0.70 |
+| **F1d** | F1 par classe (détection clinique) | > 0.90 |
+| **Confusion Matrix** | Matrice de confusion 6×6 | - |
+
+#### Workflow Complet
+
+```bash
+# 1. Télécharger CoNSeP (rapide, 70 MB)
+python scripts/evaluation/download_evaluation_datasets.py --dataset consep
+
+# 2. Convertir au format unifié
+python scripts/evaluation/convert_annotations.py \
+    --dataset consep \
+    --input_dir data/evaluation/consep/Test \
+    --output_dir data/evaluation/consep_converted
+
+# 3. Évaluer le modèle (prédictions aveugles)
+python scripts/evaluation/evaluate_ground_truth.py \
+    --dataset_dir data/evaluation/consep_converted \
+    --output_dir results/consep \
+    --dataset consep
+
+# 4. Consulter le rapport
+cat results/consep/clinical_report_consep_*.txt
+```
+
+#### Format de Rapport Généré
+
+```
+╔══════════════════════════════════════════════════════════════╗
+║               RAPPORT DE FIDÉLITÉ CLINIQUE                   ║
+╠══════════════════════════════════════════════════════════════╣
+║ Dice Global: 0.9601  |  AJI: 0.8234  |  PQ: 0.7891           ║
+╠══════════════════════════════════════════════════════════════╣
+║ DÉTECTION                                                    ║
+║   TP:  180  |  FP:   12  |  FN:    8                        ║
+║   Précision: 93.75%  |  Rappel: 95.74%                      ║
+╠══════════════════════════════════════════════════════════════╣
+║ FIDÉLITÉ PAR TYPE CELLULAIRE                                 ║
+║   🔴 Neoplastic  : Expert= 20 → Modèle= 19 → 95.0%           ║
+║   🟢 Inflammatory: Expert= 15 → Modèle= 14 → 93.3%           ║
+║   🔵 Connective  : Expert=  8 → Modèle=  8 → 100.0%          ║
+╠══════════════════════════════════════════════════════════════╣
+║ CLASSIFICATION ACCURACY: 91.25%                              ║
+╚══════════════════════════════════════════════════════════════╝
+```
+
+#### Datasets Supportés
+
+| Priorité | Dataset | Images | Classes | Taille | Statut |
+|----------|---------|--------|---------|--------|--------|
+| 🥇 | PanNuke | 7,901 | 5 + BG | ~1.5 GB | ✅ Script prêt |
+| 🥈 | CoNSeP | 41 | 7→5 (mapping) | ~70 MB | ✅ Script prêt |
+| 🥉 | MoNuSAC | 209 | 4→5 (mapping) | ~500 MB | ⚠️ Placeholder |
+| 4 | Lizard | 291 | 5 + BG | ~2 GB | ⚠️ Placeholder |
+
+#### Mapping des Classes
+
+Le script `convert_annotations.py` gère automatiquement le mapping :
+
+**CoNSeP → PanNuke :**
+```python
+{
+    1: 3,  # Other → Connective
+    2: 2,  # Inflammatory → Inflammatory
+    3: 5,  # Epithelial → Epithelial
+    4: 3,  # Spindle-shaped → Connective
+}
+```
+
+**MoNuSAC → PanNuke :**
+```python
+{
+    1: 5,  # Epithelial → Epithelial
+    2: 2,  # Lymphocyte → Inflammatory
+    3: 2,  # Neutrophil → Inflammatory
+    4: 2,  # Macrophage → Inflammatory
+}
+```
+
+#### Points de Vigilance
+
+**⚠️ Indexation Off-by-One :**
+- `inst_map` commence à 1, pas 0 (0 = background)
+- Toujours utiliser `inst_ids = inst_ids[inst_ids > 0]`
+
+**⚠️ Seuil IoU = 0.5 :**
+- Norme de la communauté (CoNIC Challenge, MICCAI)
+- Ne PAS changer sans raison documentée
+
+**⚠️ Resize Predictions :**
+- Les prédictions sont à 224×224 (H-optimus-0)
+- Le GT peut être à 256×256 (PanNuke) ou variable (CoNSeP)
+- Le script gère automatiquement le resize avec `INTER_NEAREST`
+
+#### Fichiers de Sortie
+
+| Fichier | Format | Contenu |
+|---------|--------|---------|
+| `clinical_report_*.txt` | Text | Rapport formaté pour pathologistes |
+| `metrics_*.json` | JSON | Métriques détaillées + per-class |
+| `confusion_matrix_*.npy` | NumPy | Matrice 6×6 (GT × Pred) |
+
+#### Commandes Utiles
+
+```bash
+# Afficher info sur datasets disponibles
+python scripts/evaluation/download_evaluation_datasets.py --info
+
+# Vérifier une conversion
+python scripts/evaluation/convert_annotations.py \
+    --verify data/evaluation/consep_converted/test_001.npz
+
+# Évaluer une seule image (debug)
+python scripts/evaluation/evaluate_ground_truth.py \
+    --image data/evaluation/consep_converted/test_001.npz \
+    --output_dir results/single \
+    --verbose
+
+# Évaluer 100 images de PanNuke Fold 2
+python scripts/evaluation/evaluate_ground_truth.py \
+    --dataset_dir data/evaluation/pannuke_fold2_converted \
+    --num_samples 100 \
+    --output_dir results/pannuke_sample
+```
+
+#### Prochaines Étapes
+
+- [ ] Tester sur CoNSeP (41 images, validation rapide)
+- [ ] Tester sur PanNuke Fold 2 (non utilisé pour entraînement)
+- [ ] Générer rapport de référence pour publication
+- [ ] Intégrer dans l'IHM (onglet "Évaluation GT")
+
+**Référence :** Voir `docs/PLAN_EVALUATION_GROUND_TRUTH.md` pour spécifications complètes.
