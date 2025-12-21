@@ -241,10 +241,26 @@ def main():
 
     # Save full results table
     import json
+
+    def convert_numpy_types(obj):
+        """Convert numpy types to native Python types for JSON serialization."""
+        if isinstance(obj, np.integer):
+            return int(obj)
+        elif isinstance(obj, np.floating):
+            return float(obj)
+        elif isinstance(obj, np.ndarray):
+            return obj.tolist()
+        elif isinstance(obj, dict):
+            return {k: convert_numpy_types(v) for k, v in obj.items()}
+        elif isinstance(obj, list):
+            return [convert_numpy_types(item) for item in obj]
+        else:
+            return obj
+
     with open(args.output_dir / "all_results.json", "w") as f:
-        # Remove instance_map (not JSON serializable)
+        # Remove instance_map and convert numpy types
         results_clean = [
-            {k: v for k, v in r.items() if k != 'instance_map'}
+            {k: convert_numpy_types(v) for k, v in r.items() if k != 'instance_map'}
             for r in results
         ]
         json.dump(results_clean, f, indent=2)
