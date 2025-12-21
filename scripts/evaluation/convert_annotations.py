@@ -136,13 +136,43 @@ def load_pannuke_annotation(
     if image.dtype != np.uint8:
         image = image.clip(0, 255).astype(np.uint8)
 
-    # Extract instance map using connectedComponents (matching training pipeline)
-    # Channel 5 in PanNuke is NOT directly usable - instances must be computed
-    # Following the exact logic from prepare_family_data.py:
-    # 1. Create binary mask (union of all cell types, channels 1-5)
-    np_mask = mask[:, :, 1:].sum(axis=-1) > 0
-    # 2. Compute instances with connectedComponents
-    _, inst_map = cv2.connectedComponents(np_mask.astype(np.uint8))
+    # Extract instance map from PanNuke structure
+    # CRITICAL: PanNuke channels 1-4 contain INSTANCE IDs (not binary masks!)
+    # Channel 5 (Epithelial) is BINARY and needs connectedComponents
+    #
+    # PanNuke structure:
+    #   Channel 0: Background instances (ignored)
+    #   Channel 1: Neoplastic instances (with unique IDs)
+    #   Channel 2: Inflammatory instances (with unique IDs)
+    #   Channel 3: Connective instances (with unique IDs)
+    #   Channel 4: Dead instances (with unique IDs)
+    #   Channel 5: Epithelial BINARY mask (needs connectedComponents)
+
+    inst_map = np.zeros((256, 256), dtype=np.int32)
+    instance_counter = 1
+
+    # Process channels 1-4 (instance IDs already present)
+    for c in range(1, 5):  # Channels 1-4 (Neoplastic, Inflammatory, Connective, Dead)
+        class_instances = mask[:, :, c]
+        inst_ids = np.unique(class_instances)
+        inst_ids = inst_ids[inst_ids > 0]  # Skip background (0)
+
+        for inst_id in inst_ids:
+            inst_mask = class_instances == inst_id
+            inst_map[inst_mask] = instance_counter
+            instance_counter += 1
+
+    # Process channel 5 (Epithelial - binary mask)
+    epithelial_mask = mask[:, :, 5] > 0
+    if epithelial_mask.any():
+        _, epi_instances = cv2.connectedComponents(epithelial_mask.astype(np.uint8))
+        epi_inst_ids = np.unique(epi_instances)
+        epi_inst_ids = epi_inst_ids[epi_inst_ids > 0]
+
+        for epi_inst_id in epi_inst_ids:
+            inst_mask_local = epi_instances == epi_inst_id
+            inst_map[inst_mask_local] = instance_counter
+            instance_counter += 1
 
     # Create type map from class channels (1-5)
     # Following the same logic as prepare_family_data.py (training pipeline)
