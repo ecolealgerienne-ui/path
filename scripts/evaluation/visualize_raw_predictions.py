@@ -71,12 +71,10 @@ def visualize_raw_predictions(
     # Get HoVer-Net decoder for this family
     hovernet = model.model.hovernet_decoders[family]
 
-    # Reshape patch tokens for decoder
-    patch_tokens_2d = patch_tokens.reshape(1, 16, 16, 1536).permute(0, 3, 1, 2)
-
     # Get raw predictions (before post-processing)
+    # Note: HoVerNet expects (B, N, D) = (1, 256, 1536) and does reshape internally
     with torch.no_grad():
-        np_pred, hv_pred, nt_pred = hovernet(patch_tokens_2d)
+        np_pred, hv_pred, nt_pred = hovernet(patch_tokens)
 
     # Convert to numpy
     np_pred = torch.sigmoid(np_pred).cpu().numpy()[0, 0]  # (256, 256)
