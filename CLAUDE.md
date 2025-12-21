@@ -1741,6 +1741,90 @@ class OrganPrediction:
 
 **Commit:** a6556d7 — "Add calibrated confidence display (T=0.5) and top-3 predictions"
 
+### 2025-12-21 — IHM Clinical-Flow (Refonte Majeure) ✅ NOUVEAU
+
+**Implémentation complète du layout Clinical-Flow** optimisé pour les pathologistes en environnement laboratoire.
+
+#### Architecture 3 Colonnes
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                    CLINICAL-FLOW LAYOUT                             │
+├──────────────┬────────────────────────────┬─────────────────────────┤
+│ CONTRÔLE     │    VISUALISEUR HAUTE       │   RAPPORT CLINIQUE      │
+│ (15%)        │    RÉSOLUTION (55%)        │   (30%)                 │
+├──────────────┼────────────────────────────┼─────────────────────────┤
+│ 📤 Upload    │ ┌─────────┐ ┌─────────┐    │ ┌─────────────────────┐ │
+│ 🎯 Organe    │ │  H&E    │ │   IA    │    │ │   SMART CARDS       │ │
+│ 🔬 Analyser  │ │  Brut   │ │ Marquage│    │ │ • Identification    │ │
+│              │ └─────────┘ └─────────┘    │ │ • Anisocaryose      │ │
+│ ─────────    │                            │ │ • Ratio Néoplasique │ │
+│ 🔌 STATUS    │ ┌──────────────────────┐   │ │ • TILs Hot/Cold     │ │
+│ • Glandular  │ │   CARTE INCERTITUDE  │   │ └─────────────────────┘ │
+│ • Digestive  │ │  🟢 Fiable → 🔴 OOD  │   │                         │
+│ • Urologic   │ └──────────────────────┘   │ ┌─────────────────────┐ │
+│ • Epidermal  │                            │ │    DONUT CHART      │ │
+│ • Respirat.  │ 🔍 XAI: [Dropdown]  [✨]   │ │  [Population SVG]   │ │
+│              │                            │ └─────────────────────┘ │
+│ ─────────    │                            │                         │
+│ 🛡️ INTÉGRITÉ │                            │ ▼ Journal Anomalies     │
+│ [OOD Badge]  │                            │   (collapsible)         │
+│              │                            │                         │
+│ ─────────    │                            │                         │
+│ 🎨 CALQUES   │                            │                         │
+│ ○ H&E       │                            │                         │
+│ ● SEG       │                            │                         │
+│ ○ HEAT      │                            │                         │
+│ ○ BOTH      │                            │                         │
+│              │                            │                         │
+│ ─────────    │                            │                         │
+│ 🔧 SAV       │                            │                         │
+│ [📸 Snapshot]│                            │                         │
+└──────────────┴────────────────────────────┴─────────────────────────┘
+```
+
+#### Fonctions Helper Ajoutées
+
+| Fonction | Description |
+|----------|-------------|
+| `generate_family_status_html()` | Indicateurs visuels pour les 5 familles HoVer-Net |
+| `generate_ood_badge(score)` | Badge OOD coloré (vert/orange/rouge) |
+| `generate_donut_chart_html(counts)` | Graphique donut SVG avec légende |
+| `generate_smart_cards(...)` | Cartes d'alerte cliniques avec niveaux de risque |
+| `export_debug_snapshot(...)` | Export SAV (image + métadonnées + masques) |
+| `DARK_LAB_CSS` | Thème anthracite pour environnement laboratoire |
+
+#### Smart Cards — Alertes Cliniques
+
+```
+┌──────────────────────────────────────┐
+│ 🔬 IDENTIFICATION                    │
+│ Breast — 92.0% 🟡 Fiable             │
+├──────────────────────────────────────┤
+│ 🔴 ANISOCARYOSE MARQUÉE              │
+│ CV = 0.47 (seuil: 0.35)              │
+├──────────────────────────────────────┤
+│ 🟡 RATIO NÉOPLASIQUE                 │
+│ 68.2% (5+ cellules tumeur)           │
+├──────────────────────────────────────┤
+│ 🔥 TILs CHAUDS                       │
+│ Infiltration intra-tumorale active   │
+└──────────────────────────────────────┘
+```
+
+#### SAV Debug Snapshot
+
+Export pour diagnostic technique:
+```python
+export_debug_snapshot(image, result_data, output_dir="data/snapshots")
+# Génère:
+# - snapshot_YYYYMMDD_HHMMSS.json  (métadonnées complètes)
+# - snapshot_YYYYMMDD_HHMMSS.png   (image originale)
+# - snapshot_YYYYMMDD_HHMMSS_masks.npz (masques NP/NT/instance)
+```
+
+**Commit:** d74adad — "Implement Clinical-Flow IHM layout for laboratory pathologists"
+
 ---
 
 ## Fichiers Créés (Inventaire)
