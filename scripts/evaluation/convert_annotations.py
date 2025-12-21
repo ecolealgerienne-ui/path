@@ -136,43 +136,22 @@ def load_pannuke_annotation(
     if image.dtype != np.uint8:
         image = image.clip(0, 255).astype(np.uint8)
 
-    # Extract instance map from PanNuke structure
-    # CRITICAL: PanNuke channels 1-4 contain INSTANCE IDs (not binary masks!)
-    # Channel 5 (Epithelial) is BINARY and needs connectedComponents
+    # Extract instance map MATCHING TRAINING PIPELINE
+    # CRITICAL: Training uses connectedComponents on the binary mask (union of all types)
+    # This is in prepare_family_data.py line 79-80 and compute_hv_maps() line 38
     #
-    # PanNuke structure:
-    #   Channel 0: Background instances (ignored)
-    #   Channel 1: Neoplastic instances (with unique IDs)
-    #   Channel 2: Inflammatory instances (with unique IDs)
-    #   Channel 3: Connective instances (with unique IDs)
-    #   Channel 4: Dead instances (with unique IDs)
-    #   Channel 5: Epithelial BINARY mask (needs connectedComponents)
+    # We MUST use the same approach for evaluation to match what the model learned!
+    #
+    # PanNuke channels 1-5 contain per-class annotations, but training ignores these
+    # and recomputes instances from the binary union using connectedComponents.
 
-    inst_map = np.zeros((256, 256), dtype=np.int32)
-    instance_counter = 1
+    # Create binary mask (union of all cell types, channels 1-5)
+    # This matches prepare_family_data.py line 79: np_mask = mask[:, :, 1:].sum(axis=-1) > 0
+    np_mask = mask[:, :, 1:6].sum(axis=-1) > 0
 
-    # Process channels 1-4 (instance IDs already present)
-    for c in range(1, 5):  # Channels 1-4 (Neoplastic, Inflammatory, Connective, Dead)
-        class_instances = mask[:, :, c]
-        inst_ids = np.unique(class_instances)
-        inst_ids = inst_ids[inst_ids > 0]  # Skip background (0)
-
-        for inst_id in inst_ids:
-            inst_mask = class_instances == inst_id
-            inst_map[inst_mask] = instance_counter
-            instance_counter += 1
-
-    # Process channel 5 (Epithelial - binary mask)
-    epithelial_mask = mask[:, :, 5] > 0
-    if epithelial_mask.any():
-        _, epi_instances = cv2.connectedComponents(epithelial_mask.astype(np.uint8))
-        epi_inst_ids = np.unique(epi_instances)
-        epi_inst_ids = epi_inst_ids[epi_inst_ids > 0]
-
-        for epi_inst_id in epi_inst_ids:
-            inst_mask_local = epi_instances == epi_inst_id
-            inst_map[inst_mask_local] = instance_counter
-            instance_counter += 1
+    # Compute instances with connectedComponents (matching training)
+    # This matches compute_hv_maps() line 38: cv2.connectedComponents(binary_uint8)
+    _, inst_map = cv2.connectedComponents(np_mask.astype(np.uint8))
 
     # Create type map from class channels (1-5)
     # Following the same logic as prepare_family_data.py (training pipeline)
