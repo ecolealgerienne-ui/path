@@ -220,6 +220,10 @@ def test_model(checkpoint_path: Path, data_path: Path, n_samples: int = 10,
             features = features_data['patch_tokens']
         elif 'features' in features_data:
             features = features_data['features']
+        elif 'layer_24' in features_data:
+            # Format ancien (layer_24 = patch tokens de la couche 24)
+            features = features_data['layer_24']
+            print(f"   ℹ️  Format ancien détecté (clé 'layer_24')")
         else:
             print(f"   ❌ Clés features: {list(features_data.keys())}")
             return False
