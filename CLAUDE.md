@@ -1734,6 +1734,121 @@ class ReferenceNucleiGallery:
 - 🔜 Alertes sur patterns d'erreur récurrents
 - 🔜 Pipeline de retraining automatisé
 
+### 6. Temperature Scaling & Calibration UX (À IMPLÉMENTER)
+
+**Date:** 2025-12-21
+**Statut:** 🔜 À implémenter dans l'IHM
+
+#### Contexte
+
+Le modèle OrganHead atteint 100% d'accuracy mais les confiances brutes (T=1.0) sont sous-calibrées:
+- Breast: 44-49% de confiance (alors que 100% correct)
+- Colon: 58-63%
+- Prostate: 81-94%
+
+**Temperature Scaling** permet d'ajuster les confiances sans changer les prédictions.
+
+#### Résultats Expérimentaux (test sur 15 images)
+
+| Température | Accuracy | Conf. Moy. | Conf. Min | Conf. Max |
+|-------------|----------|------------|-----------|-----------|
+| T = 1.0 (brut) | 100% | 65.9% | 44.7% | 94.6% |
+| **T = 0.5** | 100% | **96.4%** | 91.0% | 100.0% |
+| T = 0.25 | 100% | 100.0% | 99.9% | 100.0% |
+| T = 0.1 | 100% | 100.0% | 100.0% | 100.0% |
+
+**Recommandation:** Utiliser **T = 0.5** pour un bon équilibre.
+
+#### Fonctionnalités UX à Implémenter
+
+**1. Affichage de la confiance calibrée dans l'IHM:**
+```
+┌─────────────────────────────────────────────┐
+│ 🔬 ORGANE DÉTECTÉ                           │
+│                                             │
+│    Breast (Sein)                            │
+│    ████████████████████░░░░ 91.2%           │
+│                          ↑                  │
+│                   Confiance calibrée (T=0.5)│
+└─────────────────────────────────────────────┘
+```
+
+**2. Jauge de confiance avec zones colorées:**
+```python
+def get_confidence_color(conf: float) -> str:
+    if conf >= 0.95:
+        return "🟢 Très fiable"
+    elif conf >= 0.85:
+        return "🟡 Fiable"
+    elif conf >= 0.70:
+        return "🟠 À vérifier"
+    else:
+        return "🔴 Incertain"
+```
+
+**3. Slider température (mode expert):**
+- Permettre à l'utilisateur avancé d'ajuster T
+- Afficher en temps réel l'impact sur les confiances
+- Valeur par défaut: T = 0.5
+
+**4. Comparaison multi-organes (top-3):**
+```
+┌─────────────────────────────────────────────┐
+│ 🔬 PRÉDICTIONS                              │
+│                                             │
+│ 1. Breast     ████████████████████ 91.2%    │
+│ 2. Thyroid    ████░░░░░░░░░░░░░░░░  5.3%    │
+│ 3. Pancreatic ██░░░░░░░░░░░░░░░░░░  2.1%    │
+└─────────────────────────────────────────────┘
+```
+
+**5. Alerte pour confiance basse:**
+- Si confiance < 70% → Afficher warning
+- Suggérer vérification manuelle
+- Logger pour analyse rétrospective
+
+#### Scripts Existants
+
+| Script | Description |
+|--------|-------------|
+| `scripts/calibration/calibrate_organ_head.py` | Calibration Temperature Scaling |
+| `scripts/calibration/temperature_scaling.py` | Classes TemperatureScaler, ECE, MCE |
+| `scripts/validation/test_organ_prediction_batch.py` | Test avec `--compare_temps` |
+
+#### Code d'Intégration (à ajouter dans inférence)
+
+```python
+# Dans OrganHead ou OptimusGate
+class CalibratedOrganHead:
+    def __init__(self, temperature: float = 0.5):
+        self.temperature = temperature
+
+    def predict_calibrated(self, cls_token: torch.Tensor) -> dict:
+        logits = self.organ_head(cls_token)
+        scaled_logits = logits / self.temperature
+        probs = torch.softmax(scaled_logits, dim=1)
+
+        top3_probs, top3_idx = probs.topk(3, dim=1)
+
+        return {
+            'organ': PANNUKE_ORGANS[top3_idx[0, 0]],
+            'confidence': top3_probs[0, 0].item(),
+            'confidence_level': self.get_confidence_color(top3_probs[0, 0].item()),
+            'top3': [(PANNUKE_ORGANS[idx], prob.item())
+                     for idx, prob in zip(top3_idx[0], top3_probs[0])],
+        }
+```
+
+#### Priorité
+
+| Fonctionnalité | Priorité | Effort |
+|----------------|----------|--------|
+| Affichage confiance calibrée | Haute | 1h |
+| Jauge colorée | Haute | 30min |
+| Top-3 prédictions | Moyenne | 1h |
+| Slider température (expert) | Basse | 2h |
+| Alerte confiance basse | Haute | 30min |
+
 ---
 
 ## Fonctionnalités Implémentées (IHM Clinique)
