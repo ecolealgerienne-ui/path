@@ -2084,6 +2084,163 @@ class CalibratedOrganHead:
 | Slider température (expert) | Basse | 2h |
 | Alerte confiance basse | Haute | 30min |
 
+### 7. Normalisation des Données dans l'IHM (CRITIQUE - À IMPLÉMENTER)
+
+**Date:** 2025-12-21
+**Statut:** 🔜 À implémenter dans l'IHM
+**Priorité:** ⚠️ CRITIQUE - Sans cela, le diagnostic ne fonctionne pas
+
+#### Contexte
+
+> **ATTENTION:** L'IHM DOIT utiliser EXACTEMENT le même pipeline de normalisation
+> que l'entraînement. Sinon, les prédictions seront FAUSSES.
+
+Deux bugs critiques ont été découverts et corrigés:
+1. **ToPILImage + float64** → Overflow couleurs → Features corrompues
+2. **LayerNorm mismatch** → CLS std 0.28 vs 0.77 → Prédictions fausses
+
+#### Pipeline Obligatoire pour l'IHM
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                 PIPELINE IHM (IDENTIQUE À L'ENTRAÎNEMENT)       │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│  UPLOAD IMAGE (Gradio/API)                                      │
+│         │                                                       │
+│         ▼                                                       │
+│  ⚠️ ÉTAPE 1: Conversion uint8                                   │
+│     if image.dtype != np.uint8:                                │
+│         image = image.clip(0, 255).astype(np.uint8)            │
+│         │                                                       │
+│         ▼                                                       │
+│  ÉTAPE 2: Transform torchvision (CANONIQUE)                    │
+│     • ToPILImage()                                              │
+│     • Resize((224, 224))                                        │
+│     • ToTensor()                                                │
+│     • Normalize(HOPTIMUS_MEAN, HOPTIMUS_STD)                   │
+│         │                                                       │
+│         ▼                                                       │
+│  ⚠️ ÉTAPE 3: forward_features() (PAS blocks[X])                │
+│     features = backbone.forward_features(tensor)               │
+│         │                                                       │
+│         ▼                                                       │
+│  ÉTAPE 4: Prédiction OrganHead / HoVer-Net                     │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+#### Code à Intégrer dans l'IHM (Gradio)
+
+```python
+# ⚠️ CE CODE DOIT ÊTRE IDENTIQUE PARTOUT
+from torchvision import transforms
+import numpy as np
+
+HOPTIMUS_MEAN = (0.707223, 0.578729, 0.703617)
+HOPTIMUS_STD = (0.211883, 0.230117, 0.177517)
+
+def create_hoptimus_transform():
+    """Transform CANONIQUE - NE PAS MODIFIER."""
+    return transforms.Compose([
+        transforms.ToPILImage(),
+        transforms.Resize((224, 224)),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=HOPTIMUS_MEAN, std=HOPTIMUS_STD),
+    ])
+
+def preprocess_for_inference(image: np.ndarray) -> torch.Tensor:
+    """
+    Prétraitement pour inférence dans l'IHM.
+
+    ⚠️ CRITIQUE: Ce code DOIT être identique à extract_features.py
+    """
+    # ÉTAPE 1: Conversion uint8 OBLIGATOIRE
+    if image.dtype != np.uint8:
+        if image.max() <= 1.0:
+            image = (image * 255).clip(0, 255).astype(np.uint8)
+        else:
+            image = image.clip(0, 255).astype(np.uint8)
+
+    # ÉTAPE 2: Transform canonique
+    transform = create_hoptimus_transform()
+    tensor = transform(image).unsqueeze(0)
+
+    return tensor.to(device)
+
+def extract_features_for_inference(backbone, tensor: torch.Tensor) -> torch.Tensor:
+    """
+    Extraction features pour inférence.
+
+    ⚠️ CRITIQUE: Utiliser forward_features(), JAMAIS blocks[X]
+    """
+    with torch.no_grad():
+        # forward_features() inclut le LayerNorm final
+        features = backbone.forward_features(tensor)
+    return features.float()
+```
+
+#### Validation dans l'IHM
+
+```python
+def validate_preprocessing(image: np.ndarray, backbone) -> bool:
+    """
+    Vérifie que le preprocessing est correct.
+    À appeler au démarrage de l'IHM pour valider le pipeline.
+    """
+    tensor = preprocess_for_inference(image)
+    features = extract_features_for_inference(backbone, tensor)
+    cls_token = features[:, 0, :]
+
+    # CLS std DOIT être entre 0.70 et 0.90
+    cls_std = cls_token.std().item()
+
+    if not (0.70 <= cls_std <= 0.90):
+        raise ValueError(
+            f"⚠️ ERREUR PREPROCESSING: CLS std = {cls_std:.3f} "
+            f"(attendu: 0.70-0.90). Vérifier le pipeline!"
+        )
+
+    return True
+```
+
+#### Checklist Intégration IHM
+
+| # | Vérification | Fichier | Statut |
+|---|--------------|---------|--------|
+| 1 | Import `create_hoptimus_transform()` | `gradio_demo.py` | 🔜 |
+| 2 | Conversion uint8 avant ToPILImage | `gradio_demo.py` | 🔜 |
+| 3 | `forward_features()` utilisé | `gradio_demo.py` | 🔜 |
+| 4 | Validation CLS std au démarrage | `gradio_demo.py` | 🔜 |
+| 5 | Test avec images de référence | CI/CD | 🔜 |
+
+#### Fichiers IHM à Vérifier/Modifier
+
+| Fichier | Rôle | Action |
+|---------|------|--------|
+| `scripts/demo/gradio_demo.py` | Interface principale | Vérifier preprocessing |
+| `src/inference/hoptimus_hovernet.py` | Inférence HoVer-Net | ✅ Déjà corrigé |
+| `src/inference/optimus_gate_inference.py` | Inférence OptimusGate | ✅ Déjà corrigé |
+| `src/inference/optimus_gate_inference_multifamily.py` | Multi-famille | ✅ Déjà corrigé |
+
+#### Test de Non-Régression
+
+```bash
+# Tester que l'IHM produit les mêmes résultats que le script batch
+python scripts/validation/test_organ_prediction_batch.py --samples_dir data/samples
+
+# Résultat attendu: 15/15 correct avec confiances cohérentes
+```
+
+#### Erreurs Courantes à Éviter
+
+| Erreur | Symptôme | Solution |
+|--------|----------|----------|
+| Image float64 sans conversion | Couleurs fausses, Breast→Prostate | `image.astype(np.uint8)` |
+| `blocks[23]` au lieu de `forward_features()` | CLS std ~0.28, prédictions aléatoires | Utiliser `forward_features()` |
+| Normalisation différente | Confiances incohérentes | Utiliser `HOPTIMUS_MEAN/STD` |
+| Resize différent | Features incompatibles | Utiliser `Resize((224, 224))` |
+
 ---
 
 ## Fonctionnalités Implémentées (IHM Clinique)
