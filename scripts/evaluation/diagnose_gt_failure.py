@@ -214,17 +214,16 @@ def main():
     print(f"  Pred: {pred_inst.max()}")
     print(f"  Ratio: {pred_inst.max() / max(gt_inst.max(), 1):.2f}x")
 
+    # PanNuke type names (1-indexed)
+    CELL_TYPES = ['Neoplastic', 'Inflammatory', 'Connective', 'Dead', 'Epithelial']
+
     print(f"\nDistribution types (GT):")
-    for i, name in enumerate(['', 'Neoplastic', 'Inflammatory', 'Connective', 'Dead', 'Epithelial'], 1):
-        if i == 0:
-            continue
+    for i, name in enumerate(CELL_TYPES, 1):
         count = (gt_type == i).sum()
         print(f"  {name:15s}: {count:4d} pixels")
 
     print(f"\nDistribution types (Pred):")
-    for i, name in enumerate(['', 'Neoplastic', 'Inflammatory', 'Connective', 'Dead', 'Epithelial'], 1):
-        if i == 0:
-            continue
+    for i, name in enumerate(CELL_TYPES, 1):
         count = (pred_type == i).sum()
         print(f"  {name:15s}: {count:4d} pixels")
 
