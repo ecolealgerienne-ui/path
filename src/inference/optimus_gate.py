@@ -304,8 +304,8 @@ class OptimusGate(nn.Module):
         # Masques et cartes
         np_mask = (np_probs[0, 1] > threshold_np).cpu().numpy()
         hv_map = hv_out[0].cpu().numpy()
-        # Type map: le décodeur devrait déjà produire [1-5] grâce à la loss
-        type_map = nt_probs[0].argmax(dim=0).cpu().numpy()
+        # CORRECTIF: Model trains/outputs [0-4], PanNuke labels are [1-5] → +1 REQUIRED
+        type_map = nt_probs[0].argmax(dim=0).cpu().numpy() + 1
         type_probs = nt_probs[0].cpu().numpy()
 
         # OOD Triple Sécurité
