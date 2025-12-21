@@ -46,12 +46,12 @@ def diagnose_np_mask(npz_file: Path, checkpoint_dir: Path, output_dir: Path):
 
     # Get raw NP prediction
     print(f"\n📊 Model predictions:")
-    print(f"   Organ: {predictions['organ_name']}")
+    print(f"   Organ: {predictions['organ'].organ_name}")
     print(f"   Family: {predictions.get('family', 'N/A')}")
 
     # Extract raw NP probabilities
     # We need to run inference manually to get raw NP output
-    tensor = model.preprocess_image(image)
+    tensor = model.preprocess(image)
     features = model.extract_features(tensor)
     cls_token = features[:, 0, :]
     patch_tokens = features[:, 1:257, :]
