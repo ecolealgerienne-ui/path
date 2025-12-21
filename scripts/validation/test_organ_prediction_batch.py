@@ -91,7 +91,8 @@ def main():
 
     organ_head = OrganHead(embed_dim=1536, n_organs=len(PANNUKE_ORGANS))
     checkpoint = torch.load(args.checkpoint, map_location=device)
-    organ_head.load_state_dict(checkpoint['model_state_dict'])
+    # strict=False pour ignorer les clés OOD (cls_mean, cls_cov_inv)
+    organ_head.load_state_dict(checkpoint['model_state_dict'], strict=False)
     organ_head.eval().to(device)
 
     ood_threshold = checkpoint.get('ood_threshold', 50.0)
