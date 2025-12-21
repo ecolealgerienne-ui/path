@@ -101,7 +101,13 @@ class OptimusGateInferenceMultiFamily:
 
         for param in self.backbone.parameters():
             param.requires_grad = False
-        print("  ✓ H-optimus-0 chargé")
+
+        # IMPORTANT: Enregistrer un hook sur le dernier bloc pour extraire
+        # les features SANS le LayerNorm final (cohérence avec extract_features.py)
+        self._features_cache = {}
+        self._register_hooks()
+
+        print("  ✓ H-optimus-0 chargé (hooks configurés)")
 
         # 2. Charger Optimus-Gate Multi-Famille
         self.model = OptimusGateMultiFamily.from_pretrained(
@@ -113,6 +119,44 @@ class OptimusGateInferenceMultiFamily:
         self.transform = create_hoptimus_transform()
 
         print("  ✅ Optimus-Gate Multi-Famille prêt!")
+
+    def _register_hooks(self):
+        """
+        Enregistre des hooks pour capturer les features du dernier bloc
+        SANS le LayerNorm final.
+
+        IMPORTANT: Cette méthode garantit la cohérence avec extract_features.py
+        qui utilise la même approche pour l'extraction des features d'entraînement.
+        """
+        def get_hook(name):
+            def hook(module, input, output):
+                # Convertir en float32 pour cohérence avec les features cachées
+                self._features_cache[name] = output.float()
+            return hook
+
+        # Hook sur le dernier bloc (index 23 = layer 24)
+        self.backbone.blocks[23].register_forward_hook(get_hook('layer_24'))
+
+    def extract_features(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Extrait les features de H-optimus-0 de manière cohérente avec l'entraînement.
+
+        IMPORTANT: Utilise des hooks pour capturer la sortie du dernier bloc
+        AVANT le LayerNorm final, exactement comme extract_features.py.
+
+        Args:
+            x: Tensor d'entrée (B, 3, 224, 224)
+
+        Returns:
+            Features (B, 261, 1536) - CLS token + 256 patch tokens
+        """
+        self._features_cache = {}
+
+        # Forward pass - les hooks capturent les features automatiquement
+        _ = self.backbone.forward_features(x)
+
+        # Récupérer les features du cache (avant LayerNorm final)
+        return self._features_cache['layer_24']
 
     def preprocess(self, image: np.ndarray) -> torch.Tensor:
         """
@@ -194,7 +238,8 @@ class OptimusGateInferenceMultiFamily:
         original_size = image.shape[:2]
 
         x = self.preprocess(image)
-        features = self.backbone.forward_features(x)
+        # Extraire features via hooks (sans LayerNorm final, cohérent avec training)
+        features = self.extract_features(x)
 
         result = self.model.predict(features, force_family=force_family)
 
