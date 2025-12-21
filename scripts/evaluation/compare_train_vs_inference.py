@@ -171,7 +171,7 @@ def compare_pipelines(
     print(f"   Loading: {checkpoint_path}")
 
     # Create decoder with same architecture
-    hovernet_train = HoVerNetDecoder(embed_dim=1536, img_size=224, num_types=5)
+    hovernet_train = HoVerNetDecoder(embed_dim=1536, img_size=224, n_classes=5)
     hovernet_train.load_state_dict(torch.load(checkpoint_path, map_location='cuda'))
     hovernet_train.eval().cuda()
 
