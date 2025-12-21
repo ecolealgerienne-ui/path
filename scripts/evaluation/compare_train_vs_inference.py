@@ -172,8 +172,13 @@ def compare_pipelines(
 
     # Create decoder with same architecture
     hovernet_train = HoVerNetDecoder(embed_dim=1536, img_size=224, n_classes=5)
-    hovernet_train.load_state_dict(torch.load(checkpoint_path, map_location='cuda'))
+
+    # Load checkpoint (contains metadata + model_state_dict)
+    checkpoint = torch.load(checkpoint_path, map_location='cuda')
+    hovernet_train.load_state_dict(checkpoint['model_state_dict'])
     hovernet_train.eval().cuda()
+
+    print(f"   Checkpoint info: Epoch {checkpoint.get('epoch', 'N/A')}, Dice {checkpoint.get('best_dice', 'N/A'):.4f}")
 
     # Forward pass training
     print("\n3️⃣ HoVerNet forward pass (training simulation):")
