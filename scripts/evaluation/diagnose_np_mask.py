@@ -68,8 +68,8 @@ def diagnose_np_mask(npz_file: Path, checkpoint_dir: Path, output_dir: Path):
     with torch.no_grad():
         np_logits, hv_pred, nt_logits = hovernet(patch_tokens)
 
-    # Apply sigmoid to get probabilities
-    np_pred = torch.sigmoid(np_logits).cpu().numpy()[0, 0]  # (224, 224)
+    # Apply sigmoid to get probabilities (canal 1 = nuclei, canal 0 = background)
+    np_pred = torch.sigmoid(np_logits[:, 1, :, :]).cpu().numpy()[0]  # (224, 224)
 
     print(f"\n📊 NP Prediction (raw):")
     print(f"   Shape: {np_pred.shape}")

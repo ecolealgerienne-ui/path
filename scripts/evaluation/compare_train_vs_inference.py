@@ -128,8 +128,8 @@ def compare_pipelines(
     print(f"   NP logits range: [{np_logits_inf.min().item():.3f}, {np_logits_inf.max().item():.3f}]")
     print(f"   NP logits mean: {np_logits_inf.mean().item():.3f}")
 
-    # Apply sigmoid
-    np_pred_inf = torch.sigmoid(np_logits_inf).cpu().numpy()[0, 0]
+    # Apply sigmoid (canal 1 = nuclei, canal 0 = background)
+    np_pred_inf = torch.sigmoid(np_logits_inf[:, 1, :, :]).cpu().numpy()[0]
     print(f"   NP pred (after sigmoid) range: [{np_pred_inf.min():.3f}, {np_pred_inf.max():.3f}]")
     print(f"   NP pred mean: {np_pred_inf.mean():.3f}")
     print(f"   NP pred median: {np.median(np_pred_inf):.3f}")
@@ -189,8 +189,8 @@ def compare_pipelines(
     print(f"   NP logits range: [{np_logits_train.min().item():.3f}, {np_logits_train.max().item():.3f}]")
     print(f"   NP logits mean: {np_logits_train.mean().item():.3f}")
 
-    # Apply sigmoid (same as inference)
-    np_pred_train = torch.sigmoid(np_logits_train).cpu().numpy()[0, 0]
+    # Apply sigmoid (same as inference, canal 1 = nuclei)
+    np_pred_train = torch.sigmoid(np_logits_train[:, 1, :, :]).cpu().numpy()[0]
     print(f"   NP pred (after sigmoid) range: [{np_pred_train.min():.3f}, {np_pred_train.max():.3f}]")
     print(f"   NP pred mean: {np_pred_train.mean():.3f}")
     print(f"   NP pred median: {np.median(np_pred_train):.3f}")
