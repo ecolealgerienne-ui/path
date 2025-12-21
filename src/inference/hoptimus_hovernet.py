@@ -109,11 +109,6 @@ class HOptimusHoVerNetInference:
         for param in self.backbone.parameters():
             param.requires_grad = False
 
-        # IMPORTANT: Enregistrer un hook sur le dernier bloc pour extraire
-        # les features SANS le LayerNorm final (cohérence avec extract_features.py)
-        self._features_cache = {}
-        self._register_hooks()
-
         # Charger le décodeur HoVer-Net
         import sys
         sys.path.insert(0, str(Path(__file__).parent.parent.parent))
@@ -136,29 +131,12 @@ class HOptimusHoVerNetInference:
         # Créer le transform (DOIT être identique à extract_features.py)
         self.transform = create_hoptimus_transform()
 
-    def _register_hooks(self):
-        """
-        Enregistre des hooks pour capturer les features du dernier bloc
-        SANS le LayerNorm final.
-
-        IMPORTANT: Cette méthode garantit la cohérence avec extract_features.py
-        qui utilise la même approche pour l'extraction des features d'entraînement.
-        """
-        def get_hook(name):
-            def hook(module, input, output):
-                # Convertir en float32 pour cohérence avec les features cachées
-                self._features_cache[name] = output.float()
-            return hook
-
-        # Hook sur le dernier bloc (index 23 = layer 24)
-        self.backbone.blocks[23].register_forward_hook(get_hook('layer_24'))
-
     def extract_features(self, x: torch.Tensor) -> torch.Tensor:
         """
-        Extrait les features de H-optimus-0 de manière cohérente avec l'entraînement.
+        Extrait les features de H-optimus-0 via forward_features().
 
-        IMPORTANT: Utilise des hooks pour capturer la sortie du dernier bloc
-        AVANT le LayerNorm final, exactement comme extract_features.py.
+        IMPORTANT: Utilise forward_features() qui inclut le LayerNorm final.
+        Ceci est cohérent avec scripts/preprocessing/extract_features.py.
 
         Args:
             x: Tensor d'entrée (B, 3, 224, 224)
@@ -166,13 +144,9 @@ class HOptimusHoVerNetInference:
         Returns:
             Features (B, 261, 1536) - CLS token + 256 patch tokens
         """
-        self._features_cache = {}
-
-        # Forward pass - les hooks capturent les features automatiquement
-        _ = self.backbone.forward_features(x)
-
-        # Récupérer les features du cache (avant LayerNorm final)
-        return self._features_cache['layer_24']
+        # forward_features() inclut le LayerNorm final
+        features = self.backbone.forward_features(x)
+        return features.float()
 
     def preprocess(self, image: np.ndarray) -> torch.Tensor:
         """
@@ -271,7 +245,7 @@ class HOptimusHoVerNetInference:
         # Prétraitement
         x = self.preprocess(image)
 
-        # Forward backbone - obtenir les tokens (via hooks, sans LayerNorm final)
+        # Forward backbone - obtenir les tokens (avec LayerNorm final)
         features = self.extract_features(x)  # (1, 261, 1536)
 
         # Forward décodeur HoVer-Net

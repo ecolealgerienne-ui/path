@@ -152,28 +152,14 @@ def diagnose_preprocessing(image_path: str, expected_organ: str = "Breast"):
         backbone.to(device)
         print("  ✓ H-optimus-0 chargé")
 
-        # IMPORTANT: Utiliser un hook pour extraire les features SANS le LayerNorm final
+        # Forward via forward_features() qui inclut le LayerNorm final
         # Ceci est cohérent avec extract_features.py utilisé pour l'entraînement
-        features_cache = {}
-
-        def get_hook(name):
-            def hook(module, input, output):
-                features_cache[name] = output.float()
-            return hook
-
-        backbone.blocks[23].register_forward_hook(get_hook('layer_24'))
-        print("  ✓ Hook enregistré sur blocks[23] (avant LayerNorm final)")
-
-        # Forward
         with torch.no_grad():
             input_tensor = tensor_norm.unsqueeze(0).to(device)
             print(f"  Input shape: {input_tensor.shape}")
 
-            # Le forward_features déclenche le hook
-            _ = backbone.forward_features(input_tensor)
-
-            # Récupérer les features du hook (avant LayerNorm)
-            features = features_cache['layer_24']
+            # forward_features() inclut le LayerNorm final
+            features = backbone.forward_features(input_tensor).float()
             print(f"  Features shape: {features.shape}")
 
             cls_token = features[:, 0, :]

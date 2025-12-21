@@ -1307,6 +1307,84 @@ La famille Respiratoire (Lung + Liver) obtient un excellent HV MSE (0.05) malgr�
 - 5/5 familles: Dice ≥ 0.93
 - Pipeline complet fonctionnel
 
+### 2025-12-21 — FIX CRITIQUE: LayerNorm Mismatch ⚠️ SOLUTION CIBLE
+
+**Problème découvert:** Erreur de prédiction organe — Breast prédit comme Prostate (87% confiance).
+
+**Cause racine:** Incohérence entre extraction de features et inférence:
+- `extract_features.py` utilisait des hooks sur `blocks[23]` (SANS LayerNorm final)
+- Les fichiers d'inférence utilisaient `forward_features()` (AVEC LayerNorm final)
+- Résultat: CLS std ~0.28 (entraînement) vs ~0.77 (inférence) = ratio 2.7x!
+
+```
+AVANT (BUG):
+  extract_features.py → hooks blocks[23] → std ~0.28 (sans LayerNorm)
+  inference/*.py → forward_features() → std ~0.77 (avec LayerNorm)
+  → MISMATCH → Prédictions incorrectes
+
+APRÈS (SOLUTION CIBLE):
+  extract_features.py → forward_features() → std ~0.77 (avec LayerNorm)
+  inference/*.py → forward_features() → std ~0.77 (avec LayerNorm)
+  → COHÉRENT → Prédictions correctes
+```
+
+**Solution cible implémentée:**
+
+1. **Modification `extract_features.py`:**
+   - Utilise `forward_features()` au lieu de hooks
+   - Ajoute vérification CLS std (attendu: 0.70-0.90)
+   - Sauvegarde avec clé `features` (shape N, 261, 1536)
+
+2. **Script de vérification créé:** `scripts/validation/verify_features.py`
+   - Vérifie CLS std dans la plage attendue
+   - Détecte features corrompues (std < 0.40 = sans LayerNorm)
+   - Option `--verify_fresh` pour comparaison avec extraction fraîche
+
+3. **Simplification des fichiers d'inférence:**
+   - `src/inference/optimus_gate_inference.py`
+   - `src/inference/optimus_gate_inference_multifamily.py`
+   - `src/inference/hoptimus_hovernet.py`
+   - `scripts/validation/diagnose_organ_prediction.py`
+   - Tous utilisent maintenant `forward_features()` directement
+
+**Critères de validation:**
+| Métrique | Valeur attendue | Signification |
+|----------|----------------|---------------|
+| CLS std | 0.70 - 0.90 | Features avec LayerNorm ✅ |
+| CLS std | < 0.40 | Features CORROMPUES ❌ |
+
+**Étapes de ré-entraînement requises:**
+```bash
+# 1. Vérifier features existantes (avant ré-extraction)
+python scripts/validation/verify_features.py --features_dir data/cache/pannuke_features
+
+# 2. Ré-extraire les features pour les 3 folds (avec chunking pour économiser la RAM)
+for fold in 0 1 2; do
+    python scripts/preprocessing/extract_features.py \
+        --data_dir /home/amar/data/PanNuke \
+        --fold $fold \
+        --batch_size 8 \
+        --chunk_size 500
+done
+
+# 3. Vérifier après extraction
+python scripts/validation/verify_features.py --features_dir data/cache/pannuke_features
+
+# 4. Ré-entraîner OrganHead
+python scripts/training/train_organ_head.py --folds 0 1 2 --epochs 50
+
+# 5. Vérifier sur image de test
+python scripts/validation/diagnose_organ_prediction.py --image path/to/breast_01.png --expected Breast
+```
+
+**Fichiers modifiés:**
+- `scripts/preprocessing/extract_features.py` — forward_features() + vérification
+- `scripts/validation/verify_features.py` — 🆕 Script de vérification
+- `scripts/validation/diagnose_organ_prediction.py` — forward_features()
+- `src/inference/optimus_gate_inference.py` — Suppression hooks
+- `src/inference/optimus_gate_inference_multifamily.py` — Suppression hooks
+- `src/inference/hoptimus_hovernet.py` — Suppression hooks
+
 ---
 
 ## Fichiers Créés (Inventaire)
@@ -1362,7 +1440,9 @@ scripts/
 │   └── inspect_checkpoint.py
 ├── validation/
 │   ├── test_cellvit256_inference.py  # Test étape 1.5 POC
-│   └── test_optimus_gate.py          # Test Optimus-Gate complet
+│   ├── test_optimus_gate.py          # Test Optimus-Gate complet
+│   ├── verify_features.py            # 🆕 Vérification features H-optimus-0
+│   └── diagnose_organ_prediction.py  # Diagnostic prédiction organe
 └── demo/
     ├── gradio_demo.py             # Interface principale
     ├── synthetic_cells.py         # Générateur tissus
