@@ -39,10 +39,7 @@ ENV/
 *.ipynb_checkpoints
 
 # Data (trop lourd pour git)
-data/raw/
-data/processed/
-data/cache/
-data/demo/
+data/
 *.h5
 *.hdf5
 *.npy
