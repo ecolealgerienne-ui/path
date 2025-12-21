@@ -57,9 +57,9 @@ def preprocess_FIXED(image: np.ndarray) -> torch.Tensor:
 
 
 def verify_training_features(
-    family_data_dir: Path,
+    features_dir: Path,
     pannuke_dir: Path,
-    family: str = "glandular",
+    fold: int = 0,
     sample_idx: int = 0,
     device: str = "cuda"
 ):
@@ -70,30 +70,20 @@ def verify_training_features(
     print("=" * 70)
 
     # 1. Charger les features training
-    features_path = family_data_dir / f"{family}_features.npz"
-    if not features_path.exists():
-        print(f"❌ Features training non trouvées: {features_path}")
+    fold_dir = features_dir / f"fold{fold}"
+    cls_tokens_path = fold_dir / "cls_tokens.npy"
+
+    if not cls_tokens_path.exists():
+        print(f"❌ CLS tokens non trouvés: {cls_tokens_path}")
         return
 
-    print(f"\n📂 Loading training features: {features_path}")
-    data = np.load(features_path, mmap_mode='r')
+    print(f"\n📂 Loading training features: {cls_tokens_path}")
+    cls_tokens_train = np.load(cls_tokens_path, mmap_mode='r')
 
-    # Check available keys
-    print(f"   Available keys: {list(data.keys())}")
-
-    if 'features' in data:
-        features_train = data['features']
-    elif 'layer_24' in data:
-        features_train = data['layer_24']
-    else:
-        print(f"❌ No features found in .npz file")
-        return
-
-    print(f"   Shape: {features_train.shape}")
+    print(f"   Shape: {cls_tokens_train.shape}")
 
     # Get one sample
-    feature_train = features_train[sample_idx]  # (261, 1536)
-    cls_train = feature_train[0]  # (1536,)
+    cls_train = cls_tokens_train[sample_idx]  # (1536,)
 
     print(f"\n🎯 TRAINING FEATURES (sample {sample_idx}):")
     print(f"   CLS token std: {cls_train.std():.4f}")
@@ -108,13 +98,10 @@ def verify_training_features(
         corrupted_layernorm = False
 
     # 2. Charger l'image correspondante depuis PanNuke
-    # On doit trouver quel fold/index correspond à ce sample dans la famille
-    # Pour simplifier, on va juste extraire des features sur fold2/image2 (qu'on utilise pour test)
-
-    print(f"\n📥 Loading PanNuke fold 2, image 2...")
-    images_path = pannuke_dir / "fold2" / "images.npy"
-    images = np.load(images_path)
-    image = images[2]  # Image #2
+    print(f"\n📥 Loading PanNuke fold {fold}, image {sample_idx}...")
+    images_path = pannuke_dir / f"fold{fold}" / "images.npy"
+    images = np.load(images_path, mmap_mode='r')
+    image = images[sample_idx]
 
     print(f"   Image: {image.shape}, dtype={image.dtype}, range=[{image.min()}, {image.max()}]")
 
@@ -198,18 +185,18 @@ def verify_training_features(
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--family_data_dir", type=Path, default=Path("data/family"))
+    parser.add_argument("--features_dir", type=Path, default=Path("data/features"))
     parser.add_argument("--pannuke_dir", type=Path, default=Path("/home/amar/data/PanNuke"))
-    parser.add_argument("--family", type=str, default="glandular")
+    parser.add_argument("--fold", type=int, default=0)
     parser.add_argument("--sample_idx", type=int, default=0)
     parser.add_argument("--device", type=str, default="cuda")
 
     args = parser.parse_args()
 
     verify_training_features(
-        args.family_data_dir,
+        args.features_dir,
         args.pannuke_dir,
-        args.family,
+        args.fold,
         args.sample_idx,
         args.device
     )
