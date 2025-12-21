@@ -44,8 +44,11 @@ def compute_metrics(pred_np, pred_hv, pred_nt, target_np, target_hv, target_nt):
         pred_hv = F.interpolate(pred_hv.unsqueeze(0), size=target_size, mode='bilinear', align_corners=False).squeeze(0)
         pred_nt = F.interpolate(pred_nt.unsqueeze(0), size=target_size, mode='bilinear', align_corners=False).squeeze(0)
 
-    # NP Dice
-    pred_np_binary = (torch.sigmoid(pred_np) > 0.5).float()
+    # NP Dice (extract nuclei channel if 3D)
+    pred_np_probs = torch.sigmoid(pred_np)
+    if pred_np_probs.ndim == 3:  # (2, H, W) → extract channel 1
+        pred_np_probs = pred_np_probs[1]  # Shape: (H, W)
+    pred_np_binary = (pred_np_probs > 0.5).float()
     intersection = (pred_np_binary * target_np).sum()
     dice = (2 * intersection) / (pred_np_binary.sum() + target_np.sum() + 1e-8)
 
@@ -99,6 +102,9 @@ def visualize_prediction(image, target_np, target_hv, pred_np, pred_hv, pred_nt,
         target_hv = target_hv.cpu().numpy()
     if isinstance(pred_np, torch.Tensor):
         pred_np = torch.sigmoid(pred_np).cpu().numpy()
+        # Extract nuclei channel if 3D (channel 1 = nuclei, channel 0 = background)
+        if pred_np.ndim == 3:
+            pred_np = pred_np[1]  # Shape: (H, W)
     if isinstance(pred_hv, torch.Tensor):
         pred_hv = pred_hv.cpu().numpy()
     if isinstance(pred_nt, torch.Tensor):
