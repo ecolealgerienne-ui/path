@@ -438,7 +438,8 @@ def main():
     # Entraînement
     print(f"\n🚀 Entraînement ({args.epochs} epochs)...")
 
-    best_dice = -1  # Initialisé à -1 pour sauvegarder le premier checkpoint
+    best_score = -float('inf')  # Score combiné: Dice - 0.5 * HV_MSE
+    best_dice = 0
     best_loss = float('inf')
     best_metrics = {'dice': 0, 'hv_mse': float('inf'), 'nt_acc': 0}
     output_dir = Path(args.output_dir)
@@ -459,8 +460,13 @@ def main():
 
         scheduler.step()
 
+        # Score combiné: Dice - 0.5 * HV_MSE (favorise bon Dice ET bon HV MSE)
         val_dice = val_metrics['dice']
-        if val_dice > best_dice:
+        val_hv_mse = val_metrics['hv_mse']
+        combined_score = val_dice - 0.5 * val_hv_mse
+
+        if combined_score > best_score:
+            best_score = combined_score
             best_dice = val_dice
             best_loss = val_loss
             best_metrics = val_metrics
@@ -474,11 +480,12 @@ def main():
                 'best_loss': best_loss,
                 'best_hv_mse': val_metrics['hv_mse'],
                 'best_nt_acc': val_metrics['nt_acc'],
+                'combined_score': combined_score,
                 'family': args.family,
                 'organs': get_organs(args.family),
             }
             torch.save(checkpoint, checkpoint_path)
-            print(f"  💾 Nouveau meilleur modèle sauvé (Dice: {best_dice:.4f})")
+            print(f"  💾 Nouveau meilleur (Score: {combined_score:.4f} = Dice {val_dice:.4f} - 0.5×HV {val_hv_mse:.4f})")
 
     print(f"\n{'='*60}")
     print(f"ENTRAÎNEMENT TERMINÉ - FAMILLE {args.family.upper()}")
