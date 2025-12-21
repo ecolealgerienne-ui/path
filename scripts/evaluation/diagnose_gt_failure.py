@@ -156,10 +156,14 @@ def main():
     # Predict (model expects numpy array, not PIL Image)
     result = model.predict(image)
 
-    pred_inst = result['instance_map']
-    pred_type = result['type_map']
-    pred_np = result.get('np_prob', np.zeros_like(pred_inst))
-    pred_hv = result.get('hv_map', np.zeros((2, *pred_inst.shape)))
+    # Debug: afficher les clés disponibles
+    print(f"\n🔍 Clés dans result: {list(result.keys())}")
+
+    # Extraire les données (avec gestion des clés possibles)
+    pred_inst = result.get('instance_map', result.get('inst_map', np.zeros_like(gt_inst)))
+    pred_type = result.get('type_map', result.get('nt_map', np.zeros_like(gt_type)))
+    pred_np = result.get('np_prob', result.get('np_mask', np.zeros_like(pred_inst, dtype=np.float32)))
+    pred_hv = result.get('hv_map', result.get('hv', np.zeros((2, *gt_inst.shape), dtype=np.float32)))
 
     print(f"\nPrédictions:")
     print(f"  Instances: {pred_inst.max()}")
