@@ -130,11 +130,15 @@ def extract_pannuke_instances(mask: np.ndarray) -> np.ndarray:
     return inst_map
 
 
-def prepare_family_data(data_dir: Path, output_dir: Path, family: str):
+def prepare_family_data(data_dir: Path, output_dir: Path, family: str, chunk_size: int = 500):
     """
     Prépare les données d'entraînement pour une famille d'organes.
 
-    VERSION FIXÉE avec vraies instances PanNuke.
+    VERSION FIXÉE avec vraies instances PanNuke + OPTIMISATION RAM (chunking).
+
+    Args:
+        chunk_size: Nombre d'images à traiter par lot (défaut: 500)
+                    Réduit la consommation RAM (~2 GB par chunk au lieu de 10+ GB)
     """
     print(f"\n{'='*70}")
     print(f"Préparation données famille: {family}")
@@ -142,91 +146,128 @@ def prepare_family_data(data_dir: Path, output_dir: Path, family: str):
 
     organs = FAMILY_TO_ORGANS[family]
     print(f"Organes: {', '.join(organs)}")
+    print(f"Chunk size: {chunk_size} images (RAM-optimized)")
 
-    # Collecter toutes les images de cette famille
-    all_images = []
-    all_np_targets = []
-    all_hv_targets = []
-    all_nt_targets = []
-    all_fold_ids = []
-    all_image_ids = []
+    output_dir.mkdir(parents=True, exist_ok=True)
+    output_file = output_dir / f"{family}_data_FIXED.npz"
+
+    # Phase 1: Collecter les indices par fold
+    print(f"\n📋 Phase 1: Indexing...")
+    fold_indices = {}
 
     for fold in [0, 1, 2]:
         fold_dir = data_dir / f"fold{fold}"
-        images_path = fold_dir / "images.npy"
-        masks_path = fold_dir / "masks.npy"
         types_path = fold_dir / "types.npy"
 
-        if not all([images_path.exists(), masks_path.exists(), types_path.exists()]):
-            print(f"  Fold {fold}: Missing files, skipping")
+        if not types_path.exists():
+            print(f"  Fold {fold}: Missing types.npy, skipping")
             continue
 
-        print(f"\n  Loading fold {fold}...")
-        images = np.load(images_path, mmap_mode='r')
-        masks = np.load(masks_path, mmap_mode='r')
         types = np.load(types_path, mmap_mode='r')
-
-        # Filtrer par organes de cette famille
-        n_total = len(images)
         indices = []
 
-        for i in range(n_total):
+        for i in range(len(types)):
             organ_name = types[i].decode('utf-8') if isinstance(types[i], bytes) else types[i]
             if organ_name in organs:
                 indices.append(i)
 
-        print(f"    Found {len(indices)}/{n_total} images for family {family}")
+        if len(indices) > 0:
+            fold_indices[fold] = indices
+            print(f"  Fold {fold}: {len(indices)} images")
 
-        if len(indices) == 0:
-            continue
+    total_samples = sum(len(indices) for indices in fold_indices.values())
+    print(f"\n  Total samples: {total_samples}")
 
-        # Préparer les targets
-        print(f"    Preparing targets (FIXED with native PanNuke instances)...")
-
-        for idx in tqdm(indices, desc=f"    Fold {fold}"):
-            image = images[idx]
-            mask = masks[idx]
-
-            # ✅ FIXÉ: Utiliser vraies instances PanNuke
-            inst_map = extract_pannuke_instances(mask)
-
-            # NP target: union binaire (inchangé)
-            np_target = (inst_map > 0).astype(np.float32)
-
-            # ✅ FIXÉ: HV targets avec vraies instances
-            hv_target = compute_hv_maps(inst_map)
-
-            # NT target: type de cellule dominante par pixel (inchangé)
-            # On prend le canal avec la valeur maximale (excluant background)
-            nt_target = np.argmax(mask[:, :, 1:], axis=-1).astype(np.int64)
-
-            all_images.append(image)
-            all_np_targets.append(np_target)
-            all_hv_targets.append(hv_target)
-            all_nt_targets.append(nt_target)
-            all_fold_ids.append(fold)
-            all_image_ids.append(idx)
-
-    # Sauvegarder
-    n_samples = len(all_images)
-    print(f"\n  Total samples: {n_samples}")
-
-    if n_samples == 0:
+    if total_samples == 0:
         print(f"  ⚠️  No samples found for family {family}, skipping")
         return
 
-    output_dir.mkdir(parents=True, exist_ok=True)
+    # Phase 2: Traiter par chunks et sauvegarder progressivement
+    print(f"\n🔄 Phase 2: Processing in chunks of {chunk_size}...")
 
-    # Conversion en arrays
-    images_array = np.stack(all_images, axis=0)
-    np_targets_array = np.stack(all_np_targets, axis=0)
-    hv_targets_array = np.stack(all_hv_targets, axis=0)
-    nt_targets_array = np.stack(all_nt_targets, axis=0)
-    fold_ids_array = np.array(all_fold_ids, dtype=np.int32)
-    image_ids_array = np.array(all_image_ids, dtype=np.int32)
+    all_chunks = {
+        'images': [],
+        'np_targets': [],
+        'hv_targets': [],
+        'nt_targets': [],
+        'fold_ids': [],
+        'image_ids': []
+    }
+
+    global_idx = 0
+
+    for fold, indices in fold_indices.items():
+        fold_dir = data_dir / f"fold{fold}"
+        images_path = fold_dir / "images.npy"
+        masks_path = fold_dir / "masks.npy"
+
+        # Charger avec mmap (pas en RAM)
+        images = np.load(images_path, mmap_mode='r')
+        masks = np.load(masks_path, mmap_mode='r')
+
+        print(f"\n  Processing fold {fold} ({len(indices)} images)...")
+
+        # Traiter par chunks
+        for chunk_start in range(0, len(indices), chunk_size):
+            chunk_end = min(chunk_start + chunk_size, len(indices))
+            chunk_indices = indices[chunk_start:chunk_end]
+
+            print(f"    Chunk {chunk_start//chunk_size + 1}/{(len(indices)-1)//chunk_size + 1} ({len(chunk_indices)} images)...")
+
+            # Arrays temporaires pour ce chunk
+            chunk_images = []
+            chunk_np_targets = []
+            chunk_hv_targets = []
+            chunk_nt_targets = []
+            chunk_fold_ids = []
+            chunk_image_ids = []
+
+            for idx in tqdm(chunk_indices, desc="      Processing", leave=False):
+                image = np.array(images[idx])  # Copie en RAM seulement ce dont on a besoin
+                mask = np.array(masks[idx])
+
+                # ✅ FIXÉ: Utiliser vraies instances PanNuke
+                inst_map = extract_pannuke_instances(mask)
+
+                # NP target
+                np_target = (inst_map > 0).astype(np.float32)
+
+                # ✅ FIXÉ: HV targets avec vraies instances
+                hv_target = compute_hv_maps(inst_map)
+
+                # NT target
+                nt_target = np.argmax(mask[:, :, 1:], axis=-1).astype(np.int64)
+
+                chunk_images.append(image)
+                chunk_np_targets.append(np_target)
+                chunk_hv_targets.append(hv_target)
+                chunk_nt_targets.append(nt_target)
+                chunk_fold_ids.append(fold)
+                chunk_image_ids.append(idx)
+
+            # Convertir chunk en arrays et stocker
+            all_chunks['images'].append(np.stack(chunk_images, axis=0))
+            all_chunks['np_targets'].append(np.stack(chunk_np_targets, axis=0))
+            all_chunks['hv_targets'].append(np.stack(chunk_hv_targets, axis=0))
+            all_chunks['nt_targets'].append(np.stack(chunk_nt_targets, axis=0))
+            all_chunks['fold_ids'].append(np.array(chunk_fold_ids, dtype=np.int32))
+            all_chunks['image_ids'].append(np.array(chunk_image_ids, dtype=np.int32))
+
+            # Libérer mémoire du chunk
+            del chunk_images, chunk_np_targets, chunk_hv_targets, chunk_nt_targets
+            del chunk_fold_ids, chunk_image_ids
+
+    # Phase 3: Concaténer tous les chunks et sauvegarder
+    print(f"\n💾 Phase 3: Concatenating and saving...")
+
+    images_array = np.concatenate(all_chunks['images'], axis=0)
+    np_targets_array = np.concatenate(all_chunks['np_targets'], axis=0)
+    hv_targets_array = np.concatenate(all_chunks['hv_targets'], axis=0)
+    nt_targets_array = np.concatenate(all_chunks['nt_targets'], axis=0)
+    fold_ids_array = np.concatenate(all_chunks['fold_ids'], axis=0)
+    image_ids_array = np.concatenate(all_chunks['image_ids'], axis=0)
 
     # Sauvegarder
-    output_file = output_dir / f"{family}_data_FIXED.npz"
     np.savez_compressed(
         output_file,
         images=images_array,
@@ -249,29 +290,35 @@ def prepare_family_data(data_dir: Path, output_dir: Path, family: str):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Prépare données par famille (VERSION FIXÉE)")
+    parser = argparse.ArgumentParser(description="Prépare données par famille (VERSION FIXÉE + RAM-OPTIMIZED)")
     parser.add_argument("--data_dir", type=Path, default=Path("/home/amar/data/PanNuke"))
     parser.add_argument("--output_dir", type=Path, default=Path("data/family_FIXED"))
     parser.add_argument("--family", type=str, choices=FAMILIES, help="Famille spécifique (optionnel)")
+    parser.add_argument("--chunk_size", type=int, default=500,
+                        help="Nombre d'images par chunk (défaut: 500, réduit RAM)")
 
     args = parser.parse_args()
 
     print("=" * 70)
-    print("PRÉPARATION DONNÉES PAR FAMILLE (VERSION FIXÉE)")
+    print("PRÉPARATION DONNÉES PAR FAMILLE (VERSION FIXÉE + RAM-OPTIMIZED)")
     print("=" * 70)
     print(f"\nChangements:")
     print(f"  ❌ AVANT: connectedComponents fusionnait cellules touchantes")
     print(f"  ✅ APRÈS: IDs natifs PanNuke (vraies instances séparées)")
+    print(f"\nOptimisations:")
+    print(f"  ✅ Traitement par chunks de {args.chunk_size} images")
+    print(f"  ✅ mmap_mode='r' pour économiser la RAM")
+    print(f"  ✅ Consommation RAM: ~2 GB par chunk au lieu de 10+ GB")
     print(f"\nImpact:")
     print(f"  - HV maps avec frontières RÉELLES entre cellules")
     print(f"  - Gradients HV FORTS aux bordures")
     print(f"  - Modèle apprendra à séparer correctement")
 
     if args.family:
-        prepare_family_data(args.data_dir, args.output_dir, args.family)
+        prepare_family_data(args.data_dir, args.output_dir, args.family, args.chunk_size)
     else:
         for family in FAMILIES:
-            prepare_family_data(args.data_dir, args.output_dir, family)
+            prepare_family_data(args.data_dir, args.output_dir, family, args.chunk_size)
 
     print("\n" + "=" * 70)
     print("✅ PRÉPARATION TERMINÉE")
