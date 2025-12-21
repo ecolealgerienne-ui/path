@@ -32,6 +32,18 @@ from src.models.hovernet_decoder import HoVerNetDecoder
 def compute_metrics(pred_np, pred_hv, pred_nt, target_np, target_hv, target_nt):
     """Calcule métriques sur une prédiction."""
 
+    import torch.nn.functional as F
+
+    # Resize predictions to match target size if needed
+    target_size = target_np.shape[-2:]  # (H, W)
+    pred_size = pred_np.shape[-2:]
+
+    if pred_size != target_size:
+        # Resize predictions to match targets (224 → 256)
+        pred_np = F.interpolate(pred_np.unsqueeze(0), size=target_size, mode='bilinear', align_corners=False).squeeze(0)
+        pred_hv = F.interpolate(pred_hv.unsqueeze(0), size=target_size, mode='bilinear', align_corners=False).squeeze(0)
+        pred_nt = F.interpolate(pred_nt.unsqueeze(0), size=target_size, mode='bilinear', align_corners=False).squeeze(0)
+
     # NP Dice
     pred_np_binary = (torch.sigmoid(pred_np) > 0.5).float()
     intersection = (pred_np_binary * target_np).sum()
@@ -62,7 +74,19 @@ def visualize_prediction(image, target_np, target_hv, pred_np, pred_hv, pred_nt,
                         metrics, output_path):
     """Visualise prédiction vs ground truth."""
 
+    import torch.nn.functional as F
+
     fig, axes = plt.subplots(3, 4, figsize=(16, 12))
+
+    # Resize predictions to match target size if needed (before converting to numpy)
+    if isinstance(target_np, torch.Tensor) and isinstance(pred_np, torch.Tensor):
+        target_size = target_np.shape[-2:]
+        pred_size = pred_np.shape[-2:]
+
+        if pred_size != target_size:
+            pred_np = F.interpolate(pred_np.unsqueeze(0), size=target_size, mode='bilinear', align_corners=False).squeeze(0)
+            pred_hv = F.interpolate(pred_hv.unsqueeze(0), size=target_size, mode='bilinear', align_corners=False).squeeze(0)
+            pred_nt = F.interpolate(pred_nt.unsqueeze(0), size=target_size, mode='bilinear', align_corners=False).squeeze(0)
 
     # Convertir tensors en numpy
     if isinstance(image, torch.Tensor):
