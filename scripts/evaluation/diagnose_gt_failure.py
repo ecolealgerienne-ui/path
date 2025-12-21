@@ -153,9 +153,8 @@ def main():
         device='cuda',
     )
 
-    # Predict
-    pil_image = Image.fromarray(image)
-    result = model.predict(pil_image)
+    # Predict (model expects numpy array, not PIL Image)
+    result = model.predict(image)
 
     pred_inst = result['instance_map']
     pred_type = result['type_map']
