@@ -39,7 +39,7 @@ def diagnose_np_mask(npz_file: Path, checkpoint_dir: Path, output_dir: Path):
 
     # Load model and predict
     print(f"\n🤖 Loading model...")
-    model = OptimusGateInferenceMultiFamily.from_pretrained(checkpoint_dir, device='cuda')
+    model = OptimusGateInferenceMultiFamily(checkpoint_dir=str(checkpoint_dir), device='cuda')
 
     print(f"🔮 Running prediction...")
     predictions, probabilities = model.predict(image)
