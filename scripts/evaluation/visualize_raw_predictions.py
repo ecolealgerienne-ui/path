@@ -60,10 +60,12 @@ def visualize_raw_predictions(
     cls_token = features[:, 0, :]
     patch_tokens = features[:, 1:257, :]
 
-    organ_result = model.model.organ_head.predict(cls_token)
-    family = get_family(organ_result.organ_name)
+    predictions, probs = model.model.organ_head.predict(cls_token)
+    organ_idx = predictions[0].item()
+    organ_name = model.model.organ_head.organ_names[organ_idx]
+    family = get_family(organ_name)
 
-    print(f"   Organ: {organ_result.organ_name}")
+    print(f"   Organ: {organ_name}")
     print(f"   Family: {family}")
 
     # Get HoVer-Net decoder for this family
