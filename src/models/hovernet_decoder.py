@@ -189,22 +189,44 @@ class HoVerNetLoss(nn.Module):
     - NP: BCE + Dice loss
     - HV: SmoothL1 + Gradient SmoothL1 (moins sensible aux outliers)
     - NT: CE loss
+
+    Supporte deux modes:
+    1. Poids fixes (lambda_np, lambda_hv, lambda_nt)
+    2. Uncertainty Weighting (adaptive=True) - le modèle apprend les poids optimaux
+
+    Référence Uncertainty Weighting:
+    "Multi-Task Learning Using Uncertainty to Weigh Losses" - Kendall et al. 2018
     """
 
-    def __init__(self, lambda_np: float = 1.0, lambda_hv: float = 2.0, lambda_nt: float = 1.0):
+    def __init__(
+        self,
+        lambda_np: float = 1.0,
+        lambda_hv: float = 2.0,
+        lambda_nt: float = 1.0,
+        adaptive: bool = False,
+    ):
         """
         Args:
             lambda_np: Poids branche NP (segmentation binaire)
             lambda_hv: Poids branche HV (séparation instances) - 2.0 pour focus gradients
             lambda_nt: Poids branche NT (typage cellulaire)
+            adaptive: Si True, utilise Uncertainty Weighting (poids appris)
         """
         super().__init__()
         self.lambda_np = lambda_np
         self.lambda_hv = lambda_hv
         self.lambda_nt = lambda_nt
+        self.adaptive = adaptive
 
         self.bce = nn.CrossEntropyLoss()
         self.smooth_l1 = nn.SmoothL1Loss()  # Remplace MSE - moins sensible aux outliers
+
+        # Uncertainty Weighting: log(σ²) pour chaque tâche (paramètres appris)
+        # Initialisés à 0 → σ² = 1 → poids effectif = 1
+        if adaptive:
+            self.log_var_np = nn.Parameter(torch.zeros(1))  # log(σ²_np)
+            self.log_var_hv = nn.Parameter(torch.zeros(1))  # log(σ²_hv)
+            self.log_var_nt = nn.Parameter(torch.zeros(1))  # log(σ²_nt)
 
     def dice_loss(self, pred: torch.Tensor, target: torch.Tensor, smooth: float = 1e-5) -> torch.Tensor:
         """Dice loss pour segmentation."""
@@ -256,13 +278,56 @@ class HoVerNetLoss(nn.Module):
         # NT loss: CE (sur tous les pixels)
         nt_loss = self.bce(nt_pred, nt_target.long())
 
-        # Total
-        total = self.lambda_np * np_loss + self.lambda_hv * hv_loss + self.lambda_nt * nt_loss
+        # Calcul du total selon le mode
+        if self.adaptive:
+            # Uncertainty Weighting: L = L_i / (2σ²_i) + log(σ_i)
+            # Formule: L_total = Σ (L_i * exp(-log_var_i) + log_var_i)
+            # Cela revient à: L_i / σ² + log(σ)
+            total = (
+                torch.exp(-self.log_var_np) * np_loss + self.log_var_np +
+                torch.exp(-self.log_var_hv) * hv_loss + self.log_var_hv +
+                torch.exp(-self.log_var_nt) * nt_loss + self.log_var_nt
+            )
 
-        return total, {
-            'np': np_loss.item(),
-            'hv': hv_loss.item(),
-            'nt': nt_loss.item(),
+            # Calculer les poids effectifs pour monitoring
+            w_np = torch.exp(-self.log_var_np).item()
+            w_hv = torch.exp(-self.log_var_hv).item()
+            w_nt = torch.exp(-self.log_var_nt).item()
+
+            return total, {
+                'np': np_loss.item(),
+                'hv': hv_loss.item(),
+                'nt': nt_loss.item(),
+                'w_np': w_np,
+                'w_hv': w_hv,
+                'w_nt': w_nt,
+            }
+        else:
+            # Poids fixes
+            total = self.lambda_np * np_loss + self.lambda_hv * hv_loss + self.lambda_nt * nt_loss
+
+            return total, {
+                'np': np_loss.item(),
+                'hv': hv_loss.item(),
+                'nt': nt_loss.item(),
+            }
+
+    def get_learned_weights(self) -> dict:
+        """Retourne les poids appris (mode adaptive uniquement)."""
+        if not self.adaptive:
+            return {
+                'w_np': self.lambda_np,
+                'w_hv': self.lambda_hv,
+                'w_nt': self.lambda_nt,
+            }
+
+        return {
+            'w_np': torch.exp(-self.log_var_np).item(),
+            'w_hv': torch.exp(-self.log_var_hv).item(),
+            'w_nt': torch.exp(-self.log_var_nt).item(),
+            'log_var_np': self.log_var_np.item(),
+            'log_var_hv': self.log_var_hv.item(),
+            'log_var_nt': self.log_var_nt.item(),
         }
 
 

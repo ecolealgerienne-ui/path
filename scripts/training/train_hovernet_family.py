@@ -347,6 +347,16 @@ def main():
                        help='Activer data augmentation')
     parser.add_argument('--dropout', type=float, default=0.1)
 
+    # Options de loss weighting
+    parser.add_argument('--lambda_np', type=float, default=1.0,
+                       help='Poids loss NP (segmentation)')
+    parser.add_argument('--lambda_hv', type=float, default=2.0,
+                       help='Poids loss HV (séparation instances)')
+    parser.add_argument('--lambda_nt', type=float, default=1.0,
+                       help='Poids loss NT (classification)')
+    parser.add_argument('--adaptive_loss', action='store_true',
+                       help='Utiliser Uncertainty Weighting (poids appris)')
+
     args = parser.parse_args()
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -400,13 +410,35 @@ def main():
     print(f"  Paramètres: {n_params:,} ({n_params/1e6:.1f}M)")
 
     # Loss et optimizer
-    criterion = HoVerNetLoss()
-    optimizer = AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)
+    criterion = HoVerNetLoss(
+        lambda_np=args.lambda_np,
+        lambda_hv=args.lambda_hv,
+        lambda_nt=args.lambda_nt,
+        adaptive=args.adaptive_loss,
+    )
+
+    # Afficher configuration loss
+    if args.adaptive_loss:
+        print(f"  Loss: Uncertainty Weighting (poids appris)")
+        criterion.to(device)  # Les paramètres log_var sont sur le device
+    else:
+        print(f"  Loss: Poids fixes (NP={args.lambda_np}, HV={args.lambda_hv}, NT={args.lambda_nt})")
+
+    # Optimizer inclut les paramètres de loss si adaptive
+    if args.adaptive_loss:
+        optimizer = AdamW(
+            list(model.parameters()) + list(criterion.parameters()),
+            lr=args.lr, weight_decay=1e-4
+        )
+    else:
+        optimizer = AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)
+
     scheduler = CosineAnnealingLR(optimizer, T_max=args.epochs)
 
     # Entraînement
     print(f"\n🚀 Entraînement ({args.epochs} epochs)...")
 
+    best_score = -float('inf')  # Score combiné: Dice - 0.5 * HV_MSE
     best_dice = 0
     best_loss = float('inf')
     best_metrics = {'dice': 0, 'hv_mse': float('inf'), 'nt_acc': 0}
@@ -428,8 +460,13 @@ def main():
 
         scheduler.step()
 
+        # Score combiné: Dice - 0.5 * HV_MSE (favorise bon Dice ET bon HV MSE)
         val_dice = val_metrics['dice']
-        if val_dice > best_dice:
+        val_hv_mse = val_metrics['hv_mse']
+        combined_score = val_dice - 0.5 * val_hv_mse
+
+        if combined_score > best_score:
+            best_score = combined_score
             best_dice = val_dice
             best_loss = val_loss
             best_metrics = val_metrics
@@ -443,11 +480,12 @@ def main():
                 'best_loss': best_loss,
                 'best_hv_mse': val_metrics['hv_mse'],
                 'best_nt_acc': val_metrics['nt_acc'],
+                'combined_score': combined_score,
                 'family': args.family,
                 'organs': get_organs(args.family),
             }
             torch.save(checkpoint, checkpoint_path)
-            print(f"  💾 Nouveau meilleur modèle sauvé (Dice: {best_dice:.4f})")
+            print(f"  💾 Nouveau meilleur (Score: {combined_score:.4f} = Dice {val_dice:.4f} - 0.5×HV {val_hv_mse:.4f})")
 
     print(f"\n{'='*60}")
     print(f"ENTRAÎNEMENT TERMINÉ - FAMILLE {args.family.upper()}")
@@ -457,7 +495,16 @@ def main():
     print(f"  NP Dice:  {best_dice:.4f}")
     print(f"  HV MSE:   {best_metrics['hv_mse']:.4f}")
     print(f"  NT Acc:   {best_metrics['nt_acc']:.4f}")
-    print(f"Checkpoint: {output_dir / f'hovernet_{args.family}_best.pth'}")
+
+    # Afficher les poids appris si mode adaptive
+    if args.adaptive_loss:
+        weights = criterion.get_learned_weights()
+        print(f"\nPoids appris (Uncertainty Weighting):")
+        print(f"  w_np: {weights['w_np']:.4f}")
+        print(f"  w_hv: {weights['w_hv']:.4f}")
+        print(f"  w_nt: {weights['w_nt']:.4f}")
+
+    print(f"\nCheckpoint: {output_dir / f'hovernet_{args.family}_best.pth'}")
 
     if best_dice >= 0.7:
         print(f"\n✅ Dice {best_dice:.4f} >= 0.7 - Objectif POC atteint!")

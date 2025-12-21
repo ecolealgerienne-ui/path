@@ -249,15 +249,19 @@ class OptimusGateInferenceMultiFamily:
                 interpolation=cv2.INTER_NEAREST
             ).astype(np.int32)
 
-        # Compter
+        # Compter (mode sur les valeurs valides, cohérent avec morphometry.py)
         counts = {name: 0 for name in CELL_TYPES}
         for inst_id in range(1, instance_map.max() + 1):
             inst_mask = instance_map == inst_id
             if inst_mask.sum() == 0:
                 continue
-            inst_type = nt_mask[inst_mask][0]
-            if 0 <= inst_type < 5:
-                counts[CELL_TYPES[inst_type]] += 1
+            # Utiliser le mode des valeurs valides (>= 0) pour robustesse
+            types_in_inst = nt_mask[inst_mask]
+            types_valid = types_in_inst[types_in_inst >= 0]
+            if len(types_valid) > 0:
+                inst_type = int(np.bincount(types_valid).argmax())
+                if 0 <= inst_type < 5:
+                    counts[CELL_TYPES[inst_type]] += 1
 
         return {
             'organ': result.organ,

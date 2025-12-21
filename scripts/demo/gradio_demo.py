@@ -18,11 +18,20 @@ import numpy as np
 from pathlib import Path
 import cv2
 import sys
+import torch
 from typing import Dict, List, Optional, Tuple
 
 # Ajouter le chemin du projet
 PROJECT_ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
+
+# ============================================================================
+# CONSTANTES NORMALISATION H-OPTIMUS-0 (CRITIQUE - NE PAS MODIFIER)
+# ============================================================================
+HOPTIMUS_MEAN = (0.707223, 0.578729, 0.703617)
+HOPTIMUS_STD = (0.211883, 0.230117, 0.177517)
+CLS_STD_MIN = 0.70  # CLS std attendu après LayerNorm
+CLS_STD_MAX = 0.90
 
 from scripts.demo.visualize_cells import (
     overlay_mask,
@@ -157,6 +166,180 @@ if not MODEL_AVAILABLE:
 
 if not MODEL_AVAILABLE:
     print("⚠️ Aucun modèle disponible - Mode simulation activé")
+
+
+# ============================================================================
+# VALIDATION CLS STD AU DÉMARRAGE
+# ============================================================================
+def validate_cls_std(inference_model, verbose: bool = True) -> bool:
+    """
+    Valide que le preprocessing produit des CLS tokens avec std correcte.
+
+    Le CLS token std DOIT être entre 0.70 et 0.90 pour garantir
+    la cohérence entre entraînement et inférence.
+
+    Returns:
+        True si validation OK, False sinon
+    """
+    if not MODEL_AVAILABLE or inference_model is None:
+        return True  # Skip si pas de modèle
+
+    try:
+        # Créer une image de test (bruit rose simulant H&E)
+        test_image = np.random.randint(100, 200, (224, 224, 3), dtype=np.uint8)
+
+        # Prétraiter
+        tensor = inference_model.preprocess(test_image)
+
+        # Extraire features
+        features = inference_model.extract_features(tensor)
+
+        # CLS token std
+        cls_token = features[:, 0, :]
+        cls_std = float(cls_token.std().item())
+
+        if verbose:
+            print(f"  📊 Validation CLS std: {cls_std:.3f}")
+
+        if not (CLS_STD_MIN <= cls_std <= CLS_STD_MAX):
+            print(f"  ⚠️ ATTENTION: CLS std = {cls_std:.3f} hors plage [{CLS_STD_MIN}, {CLS_STD_MAX}]")
+            print(f"  ⚠️ Le preprocessing pourrait être incorrect!")
+            return False
+
+        if verbose:
+            print(f"  ✅ CLS std OK (plage attendue: {CLS_STD_MIN}-{CLS_STD_MAX})")
+        return True
+
+    except Exception as e:
+        print(f"  ⚠️ Erreur validation CLS: {e}")
+        return True  # Ne pas bloquer en cas d'erreur
+
+
+# Valider au démarrage
+if MODEL_AVAILABLE:
+    print("\n🔍 Validation du pipeline de normalisation...")
+    validate_cls_std(inference_model)
+
+
+# ============================================================================
+# FONCTIONS CONFIANCE CALIBRÉE
+# ============================================================================
+def get_confidence_color(confidence: float) -> str:
+    """
+    Retourne la couleur/emoji pour un niveau de confiance.
+
+    Seuils basés sur analyse empirique (voir CLAUDE.md section 6).
+
+    Args:
+        confidence: Confiance calibrée (0-1)
+
+    Returns:
+        Emoji et texte coloré
+    """
+    if confidence >= 0.95:
+        return "🟢 Très fiable"
+    elif confidence >= 0.85:
+        return "🟡 Fiable"
+    elif confidence >= 0.70:
+        return "🟠 À vérifier"
+    else:
+        return "🔴 Incertain"
+
+
+def format_confidence_gauge(confidence: float, width: int = 20) -> str:
+    """
+    Crée une jauge visuelle de confiance.
+
+    Args:
+        confidence: Confiance (0-1)
+        width: Largeur de la jauge en caractères
+
+    Returns:
+        Jauge ASCII colorée
+    """
+    filled = int(confidence * width)
+    empty = width - filled
+
+    # Choisir le caractère selon le niveau
+    if confidence >= 0.95:
+        char = "█"
+    elif confidence >= 0.85:
+        char = "▓"
+    elif confidence >= 0.70:
+        char = "▒"
+    else:
+        char = "░"
+
+    gauge = char * filled + "░" * empty
+    return f"[{gauge}] {confidence:.1%}"
+
+
+def format_top3_predictions(top3: List[Tuple[str, float]]) -> str:
+    """
+    Formate les top-3 prédictions avec jauges.
+
+    Args:
+        top3: Liste de (nom_organe, confiance)
+
+    Returns:
+        Texte formaté avec barres
+    """
+    lines = []
+    for i, (organ, conf) in enumerate(top3, 1):
+        color = get_confidence_color(conf)
+        gauge = format_confidence_gauge(conf)
+        lines.append(f"  {i}. {organ:15} {gauge}")
+
+    return "\n".join(lines)
+
+
+def format_organ_header(
+    organ_name: str,
+    confidence_raw: float,
+    confidence_calibrated: float,
+    top3: List[Tuple[str, float]],
+) -> str:
+    """
+    Formate l'en-tête de l'organe détecté avec confiance calibrée.
+
+    Args:
+        organ_name: Nom de l'organe
+        confidence_raw: Confiance brute (T=1.0)
+        confidence_calibrated: Confiance calibrée (T=0.5)
+        top3: Top 3 prédictions
+
+    Returns:
+        Texte formaté pour l'IHM
+    """
+    color = get_confidence_color(confidence_calibrated)
+    gauge = format_confidence_gauge(confidence_calibrated)
+
+    lines = [
+        "┌─────────────────────────────────────────────────────────┐",
+        "│ 🔬 ORGANE DÉTECTÉ                                       │",
+        "├─────────────────────────────────────────────────────────┤",
+        f"│    {organ_name:20}                               │",
+        f"│    {gauge:48} │",
+        f"│    {color:48} │",
+        "├─────────────────────────────────────────────────────────┤",
+        "│ 📊 TOP-3 PRÉDICTIONS                                    │",
+    ]
+
+    for i, (org, conf) in enumerate(top3, 1):
+        bar_len = int(conf * 20)
+        bar = "█" * bar_len + "░" * (20 - bar_len)
+        lines.append(f"│    {i}. {org:12} [{bar}] {conf:>5.1%}   │")
+
+    lines.append("└─────────────────────────────────────────────────────────┘")
+
+    # Alerte si confiance basse
+    if confidence_calibrated < 0.70:
+        lines.extend([
+            "",
+            "⚠️ ATTENTION: Confiance faible - Vérification manuelle recommandée",
+        ])
+
+    return "\n".join(lines)
 
 
 # =============================================================================
@@ -421,6 +604,446 @@ def generate_morphometry_panel(
     return "\n".join(lines)
 
 
+# ============================================================================
+# CLINICAL-FLOW UI COMPONENTS
+# ============================================================================
+
+def generate_family_status_html() -> str:
+    """
+    Génère le panneau de statut des 5 familles HoVer-Net.
+    Affiche un indicateur vert/orange pour chaque famille.
+    """
+    families_info = {
+        "glandular": {"name": "Glandulaire", "reliable_hv": True},
+        "digestive": {"name": "Digestive", "reliable_hv": True},
+        "urologic": {"name": "Urologique", "reliable_hv": False},
+        "respiratory": {"name": "Respiratoire", "reliable_hv": True},
+        "epidermal": {"name": "Épidermoïde", "reliable_hv": False},
+    }
+
+    html = ['<div style="font-size: 12px;">']
+    for family_id, info in families_info.items():
+        ckpt_path = FAMILY_CHECKPOINTS.get(family_id)
+        loaded = ckpt_path and ckpt_path.exists()
+
+        if loaded:
+            color = "#22c55e" if info["reliable_hv"] else "#f59e0b"  # Vert ou Orange
+            icon = "✅" if info["reliable_hv"] else "⚠️"
+            status = "HV OK" if info["reliable_hv"] else "HV ⚠️"
+        else:
+            color = "#ef4444"  # Rouge
+            icon = "❌"
+            status = "Non chargé"
+
+        html.append(f'''
+        <div style="display: flex; align-items: center; margin: 4px 0; padding: 4px;
+                    background: rgba(255,255,255,0.05); border-radius: 4px;">
+            <span style="color: {color}; margin-right: 8px;">{icon}</span>
+            <span style="flex: 1; color: #e5e7eb;">{info["name"]}</span>
+            <span style="font-size: 10px; color: {color};">{status}</span>
+        </div>
+        ''')
+
+    html.append('</div>')
+    return "".join(html)
+
+
+def generate_ood_badge(ood_score: float, threshold: float = 0.8) -> str:
+    """
+    Génère un badge OOD avec code couleur.
+
+    Args:
+        ood_score: Score OOD (0-1, plus haut = plus hors domaine)
+        threshold: Seuil de détection OOD
+
+    Returns:
+        HTML du badge OOD
+    """
+    if ood_score > threshold:
+        color = "#ef4444"  # Rouge
+        label = "HORS DOMAINE"
+        bg = "rgba(239, 68, 68, 0.2)"
+    elif ood_score > 0.5:
+        color = "#f59e0b"  # Orange
+        label = "À VÉRIFIER"
+        bg = "rgba(245, 158, 11, 0.2)"
+    else:
+        color = "#22c55e"  # Vert
+        label = "CONFORME"
+        bg = "rgba(34, 197, 94, 0.2)"
+
+    return f'''
+    <div style="display: inline-flex; align-items: center; padding: 8px 12px;
+                background: {bg}; border: 1px solid {color}; border-radius: 8px;">
+        <span style="font-size: 18px; margin-right: 8px; color: {color};">🛡️</span>
+        <div>
+            <div style="font-size: 10px; color: #9ca3af;">INTÉGRITÉ OOD</div>
+            <div style="font-size: 14px; font-weight: bold; color: {color};">
+                {ood_score:.3f} — {label}
+            </div>
+        </div>
+    </div>
+    '''
+
+
+def generate_donut_chart_html(counts: Dict[str, int], size: int = 150) -> str:
+    """
+    Génère un graphique donut en SVG pour la population cellulaire.
+
+    Args:
+        counts: Dictionnaire {type: count}
+        size: Taille du SVG en pixels
+
+    Returns:
+        HTML/SVG du graphique donut
+    """
+    total = sum(counts.values())
+    if total == 0:
+        return '<div style="color: #9ca3af; text-align: center;">Aucune cellule détectée</div>'
+
+    colors = {
+        "Neoplastic": "#ef4444",    # Rouge
+        "Inflammatory": "#22c55e",   # Vert
+        "Connective": "#3b82f6",     # Bleu
+        "Dead": "#eab308",           # Jaune
+        "Epithelial": "#06b6d4",     # Cyan
+    }
+
+    # Calculer les angles pour le donut
+    cx, cy = size // 2, size // 2
+    r_outer = size // 2 - 10
+    r_inner = r_outer * 0.6
+
+    svg_paths = []
+    start_angle = -90  # Commencer en haut
+
+    for cell_type, count in counts.items():
+        if count == 0:
+            continue
+
+        pct = count / total
+        end_angle = start_angle + pct * 360
+
+        # Convertir en radians
+        start_rad = np.radians(start_angle)
+        end_rad = np.radians(end_angle)
+
+        # Points du chemin
+        x1_outer = cx + r_outer * np.cos(start_rad)
+        y1_outer = cy + r_outer * np.sin(start_rad)
+        x2_outer = cx + r_outer * np.cos(end_rad)
+        y2_outer = cy + r_outer * np.sin(end_rad)
+
+        x1_inner = cx + r_inner * np.cos(end_rad)
+        y1_inner = cy + r_inner * np.sin(end_rad)
+        x2_inner = cx + r_inner * np.cos(start_rad)
+        y2_inner = cy + r_inner * np.sin(start_rad)
+
+        large_arc = 1 if pct > 0.5 else 0
+
+        path = f'''
+        <path d="M {x1_outer:.1f} {y1_outer:.1f}
+                 A {r_outer} {r_outer} 0 {large_arc} 1 {x2_outer:.1f} {y2_outer:.1f}
+                 L {x1_inner:.1f} {y1_inner:.1f}
+                 A {r_inner} {r_inner} 0 {large_arc} 0 {x2_inner:.1f} {y2_inner:.1f}
+                 Z"
+              fill="{colors.get(cell_type, '#666')}"
+              stroke="#1f2937" stroke-width="1">
+            <title>{cell_type}: {count} ({pct*100:.1f}%)</title>
+        </path>
+        '''
+        svg_paths.append(path)
+        start_angle = end_angle
+
+    # Centre du donut avec total
+    center_text = f'''
+    <text x="{cx}" y="{cy-5}" text-anchor="middle"
+          style="font-size: 18px; font-weight: bold; fill: #e5e7eb;">{total}</text>
+    <text x="{cx}" y="{cy+12}" text-anchor="middle"
+          style="font-size: 10px; fill: #9ca3af;">cellules</text>
+    '''
+
+    # Légende
+    legend_items = []
+    for cell_type, count in counts.items():
+        if count > 0:
+            pct = count / total * 100
+            legend_items.append(f'''
+            <div style="display: flex; align-items: center; margin: 2px 0; font-size: 11px;">
+                <span style="width: 10px; height: 10px; background: {colors.get(cell_type, '#666')};
+                            border-radius: 2px; margin-right: 6px;"></span>
+                <span style="flex: 1; color: #e5e7eb;">{cell_type}</span>
+                <span style="color: #9ca3af;">{count} ({pct:.0f}%)</span>
+            </div>
+            ''')
+
+    return f'''
+    <div style="display: flex; align-items: center; gap: 16px;">
+        <svg width="{size}" height="{size}" viewBox="0 0 {size} {size}">
+            {"".join(svg_paths)}
+            {center_text}
+        </svg>
+        <div style="flex: 1;">
+            {"".join(legend_items)}
+        </div>
+    </div>
+    '''
+
+
+def generate_smart_cards(
+    organ: str,
+    confidence: float,
+    anisocaryosis_cv: float,
+    neoplastic_ratio: float,
+    mitotic_index: float,
+    til_status: str,
+    alerts: List[str],
+) -> str:
+    """
+    Génère les Smart Cards d'alerte pour le rapport clinique.
+
+    Chaque carte est cliquable et affiche une information actionnable.
+    """
+    cards = []
+
+    # Carte 1: Identification
+    conf_color = "#22c55e" if confidence >= 0.95 else "#f59e0b" if confidence >= 0.85 else "#ef4444"
+    cards.append(f'''
+    <div style="background: linear-gradient(135deg, #1e3a5f 0%, #0f172a 100%);
+                border: 1px solid #334155; border-radius: 12px; padding: 16px; margin-bottom: 12px;">
+        <div style="display: flex; align-items: center; margin-bottom: 8px;">
+            <span style="font-size: 20px; margin-right: 8px;">🎯</span>
+            <span style="font-size: 14px; font-weight: bold; color: #e5e7eb;">IDENTIFICATION</span>
+        </div>
+        <div style="font-size: 24px; font-weight: bold; color: white; margin-bottom: 4px;">
+            {organ}
+        </div>
+        <div style="display: flex; align-items: center;">
+            <div style="flex: 1; height: 6px; background: #374151; border-radius: 3px;">
+                <div style="width: {confidence*100:.0f}%; height: 100%; background: {conf_color};
+                            border-radius: 3px;"></div>
+            </div>
+            <span style="margin-left: 8px; color: {conf_color}; font-weight: bold;">
+                {confidence*100:.1f}%
+            </span>
+        </div>
+    </div>
+    ''')
+
+    # Carte 2: Gravité (Anisocaryose)
+    if anisocaryosis_cv > 2.0:
+        severity_color = "#ef4444"
+        severity_label = "ÉLEVÉE"
+        severity_icon = "🔴"
+    elif anisocaryosis_cv > 1.5:
+        severity_color = "#f59e0b"
+        severity_label = "MODÉRÉE"
+        severity_icon = "🟠"
+    else:
+        severity_color = "#22c55e"
+        severity_label = "FAIBLE"
+        severity_icon = "🟢"
+
+    cards.append(f'''
+    <div style="background: rgba(255,255,255,0.03); border: 1px solid #334155;
+                border-radius: 12px; padding: 16px; margin-bottom: 12px;">
+        <div style="display: flex; align-items: center; margin-bottom: 8px;">
+            <span style="font-size: 20px; margin-right: 8px;">📐</span>
+            <span style="font-size: 14px; font-weight: bold; color: #e5e7eb;">ANISOCARYOSE</span>
+        </div>
+        <div style="display: flex; align-items: center; justify-content: space-between;">
+            <div>
+                <div style="font-size: 28px; font-weight: bold; color: {severity_color};">
+                    CV {anisocaryosis_cv:.2f}
+                </div>
+                <div style="font-size: 12px; color: #9ca3af;">Coefficient de variation</div>
+            </div>
+            <div style="text-align: right;">
+                <span style="font-size: 24px;">{severity_icon}</span>
+                <div style="font-size: 12px; color: {severity_color};">{severity_label}</div>
+            </div>
+        </div>
+    </div>
+    ''')
+
+    # Carte 3: Ratio Néoplasique
+    neo_pct = neoplastic_ratio * 100
+    neo_color = "#ef4444" if neo_pct > 30 else "#f59e0b" if neo_pct > 10 else "#22c55e"
+
+    cards.append(f'''
+    <div style="background: rgba(255,255,255,0.03); border: 1px solid #334155;
+                border-radius: 12px; padding: 16px; margin-bottom: 12px;">
+        <div style="display: flex; align-items: center; margin-bottom: 8px;">
+            <span style="font-size: 20px; margin-right: 8px;">🔬</span>
+            <span style="font-size: 14px; font-weight: bold; color: #e5e7eb;">RATIO NÉOPLASIQUE</span>
+        </div>
+        <div style="font-size: 32px; font-weight: bold; color: {neo_color};">
+            {neo_pct:.1f}%
+        </div>
+        <div style="font-size: 12px; color: #9ca3af;">
+            Cellules tumorales / Total
+        </div>
+    </div>
+    ''')
+
+    # Carte 4: Index Mitotique + TILs
+    til_colors = {"chaud": "#ef4444", "froid": "#3b82f6", "exclu": "#9ca3af", "indéterminé": "#f59e0b"}
+    til_icons = {"chaud": "🔥", "froid": "❄️", "exclu": "🚫", "indéterminé": "〰️"}
+
+    cards.append(f'''
+    <div style="display: flex; gap: 12px; margin-bottom: 12px;">
+        <div style="flex: 1; background: rgba(255,255,255,0.03); border: 1px solid #334155;
+                    border-radius: 12px; padding: 12px;">
+            <div style="font-size: 12px; color: #9ca3af; margin-bottom: 4px;">INDEX MITOTIQUE</div>
+            <div style="font-size: 20px; font-weight: bold; color: #e5e7eb;">
+                {mitotic_index:.1f}/10 HPF
+            </div>
+        </div>
+        <div style="flex: 1; background: rgba(255,255,255,0.03); border: 1px solid #334155;
+                    border-radius: 12px; padding: 12px;">
+            <div style="font-size: 12px; color: #9ca3af; margin-bottom: 4px;">STATUT TILs</div>
+            <div style="font-size: 20px; font-weight: bold; color: {til_colors.get(til_status, '#9ca3af')};">
+                {til_icons.get(til_status, '❓')} {til_status.upper()}
+            </div>
+        </div>
+    </div>
+    ''')
+
+    # Carte 5: Alertes
+    if alerts:
+        alert_items = "".join([
+            f'<div style="padding: 8px; margin: 4px 0; background: rgba(239, 68, 68, 0.1); '
+            f'border-left: 3px solid #ef4444; border-radius: 4px; font-size: 12px; color: #fca5a5;">'
+            f'⚠️ {alert}</div>'
+            for alert in alerts[:5]  # Limiter à 5 alertes
+        ])
+        cards.append(f'''
+        <div style="background: rgba(239, 68, 68, 0.05); border: 1px solid #7f1d1d;
+                    border-radius: 12px; padding: 16px;">
+            <div style="display: flex; align-items: center; margin-bottom: 8px;">
+                <span style="font-size: 20px; margin-right: 8px;">⚠️</span>
+                <span style="font-size: 14px; font-weight: bold; color: #fca5a5;">
+                    POINTS D'ATTENTION ({len(alerts)})
+                </span>
+            </div>
+            {alert_items}
+        </div>
+        ''')
+
+    return "".join(cards)
+
+
+def export_debug_snapshot(
+    image: np.ndarray,
+    result_data: Dict,
+    output_dir: str = "debug_snapshots"
+) -> str:
+    """
+    Exporte un snapshot de debug complet pour le SAV.
+
+    Contenu exporté:
+    - Image originale
+    - Features H-optimus-0 (CLS token)
+    - Score OOD et poids adaptatifs
+    - Métadonnées système
+
+    Returns:
+        Chemin du dossier créé
+    """
+    import json
+    from datetime import datetime
+
+    # Créer le dossier de sortie
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    snapshot_dir = Path(output_dir) / f"snapshot_{timestamp}"
+    snapshot_dir.mkdir(parents=True, exist_ok=True)
+
+    # 1. Sauvegarder l'image
+    cv2.imwrite(str(snapshot_dir / "image_original.png"), cv2.cvtColor(image, cv2.COLOR_RGB2BGR))
+
+    # 2. Sauvegarder les métadonnées
+    metadata = {
+        "timestamp": timestamp,
+        "model_name": MODEL_NAME,
+        "is_optimus_gate": IS_OPTIMUS_GATE,
+        "is_multi_family": IS_MULTI_FAMILY,
+    }
+
+    # Extraire les infos du result_data
+    if result_data:
+        metadata["organ"] = result_data.get("organ", {})
+        if hasattr(metadata["organ"], "organ_name"):
+            metadata["organ"] = {
+                "name": metadata["organ"].organ_name,
+                "confidence": float(metadata["organ"].confidence),
+                "is_ood": metadata["organ"].is_ood,
+            }
+
+        metadata["family"] = result_data.get("family", "unknown")
+        metadata["ood_score"] = float(result_data.get("ood_score_global", 0))
+        metadata["n_cells"] = int(result_data.get("n_cells", 0))
+        metadata["counts"] = {k: int(v) for k, v in result_data.get("counts", {}).items()}
+
+    with open(snapshot_dir / "metadata.json", "w") as f:
+        json.dump(metadata, f, indent=2, default=str)
+
+    # 3. Sauvegarder les masques si disponibles
+    if result_data:
+        if "instance_map" in result_data:
+            np.save(snapshot_dir / "instance_map.npy", result_data["instance_map"])
+        if "nt_mask" in result_data:
+            np.save(snapshot_dir / "nt_mask.npy", result_data["nt_mask"])
+
+    return str(snapshot_dir)
+
+
+# CSS pour le mode Dark Lab
+DARK_LAB_CSS = """
+/* Theme Dark Lab - Optimisé pour salle de lecture obscure */
+.dark-lab {
+    --background-fill-primary: #0f0f0f !important;
+    --background-fill-secondary: #1a1a1a !important;
+    --border-color-primary: #2a2a2a !important;
+    --body-text-color: #e5e7eb !important;
+    --block-title-text-color: #9ca3af !important;
+}
+
+.dark-lab .gradio-container {
+    background: linear-gradient(180deg, #0a0a0a 0%, #111111 100%) !important;
+}
+
+.dark-lab .gr-box {
+    background: #1a1a1a !important;
+    border-color: #2a2a2a !important;
+}
+
+.dark-lab .gr-button-primary {
+    background: linear-gradient(135deg, #1e40af 0%, #1d4ed8 100%) !important;
+}
+
+/* Sidebar sombre */
+.clinical-sidebar {
+    background: linear-gradient(180deg, #0f172a 0%, #020617 100%);
+    border-right: 1px solid #1e293b;
+    padding: 16px;
+}
+
+/* Cards avec effet glassmorphism */
+.smart-card {
+    background: rgba(255, 255, 255, 0.03);
+    backdrop-filter: blur(10px);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 12px;
+    transition: all 0.2s ease;
+}
+
+.smart-card:hover {
+    background: rgba(255, 255, 255, 0.05);
+    border-color: rgba(255, 255, 255, 0.2);
+}
+"""
+
+
 def detect_nuclei_simple(image: np.ndarray) -> np.ndarray:
     """
     Détection simple de noyaux par seuillage.
@@ -681,12 +1304,19 @@ class CellVitDemo:
                 organ_name = "Unknown"
                 family = "unknown"
                 organ_conf = 0.0
+                organ_conf_calibrated = 0.0
+                top3 = []
 
                 if IS_OPTIMUS_GATE:
                     organ_info = result_data.get('organ')
                     if organ_info:
                         organ_name = organ_info.organ_name
                         organ_conf = organ_info.confidence
+                        # Confiance calibrée et top-3 (nouvelles fonctionnalités)
+                        organ_conf_calibrated = getattr(
+                            organ_info, 'confidence_calibrated', organ_conf
+                        )
+                        top3 = getattr(organ_info, 'top3', [(organ_name, organ_conf)])
                     family = result_data.get('family', 'unknown')
 
                 self.current_organ = organ_name
@@ -735,18 +1365,30 @@ class CellVitDemo:
                     else:
                         comparison = f"❌ DIFFÉRENT — Prédit: {predicted} ≠ Attendu: {expected}"
 
+                    # Niveau de confiance avec couleur
+                    conf_color = get_confidence_color(organ_conf_calibrated)
+
+                    # Générer le bloc organe avec jauge et top-3
+                    organ_block = format_organ_header(
+                        organ_name=organ_name,
+                        confidence_raw=organ_conf,
+                        confidence_calibrated=organ_conf_calibrated,
+                        top3=top3 if top3 else [(organ_name, organ_conf_calibrated)],
+                    )
+
                     header = f"""
 ✅ OPTIMUS-GATE ACTIF ({MODEL_NAME})
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 🔬 Architecture:
    • Backbone: H-optimus-0 (1.1B params)
-   • Flux Global: OrganHead (classification)
+   • Flux Global: OrganHead (T=0.5 calibré)
    • Flux Local: HoVer-Net[{family}] (segmentation)
    • Sécurité: Triple OOD
 
-🏥 Organe détecté: {organ_name} ({organ_conf:.1%})
+{organ_block}
+
 🎯 {comparison}
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 """
                 else:
@@ -958,104 +1600,170 @@ def create_demo_interface():
                     outputs=[output_image, report_output]
                 )
 
-            # Tab 2: Analyser une image uploadée — IHM CLINIQUE
+            # Tab 2: Analyser une image uploadée — IHM CLINICAL-FLOW
             with gr.TabItem("🏥 Analyse Clinique"):
-                if IS_OPTIMUS_GATE:
-                    gr.Markdown(f"""
-                    ### 🔬 Interface d'Analyse Morphométrique Clinique
+                # ============================================================
+                # CLINICAL-FLOW LAYOUT - 3 COLONNES
+                # ============================================================
+                # Gauche (15%): Contrôle & Intégrité
+                # Centre (55%): Visualiseur Haute Résolution
+                # Droite (30%): Rapport d'Aide à la Décision
+                # ============================================================
 
-                    Uploadez une image H&E pour une analyse pathologique complète.
+                with gr.Row(equal_height=True):
+                    # ========================================================
+                    # COLONNE GAUCHE — CONTRÔLE & INTÉGRITÉ
+                    # ========================================================
+                    with gr.Column(scale=1, min_width=250):
+                        gr.Markdown("### 🎛️ CONTRÔLE")
 
-                    **✅ {MODEL_NAME}** | 📊 Morphométrie | 🔍 XAI (cliquez sur les alertes)
-                    """)
-                elif MODEL_AVAILABLE:
-                    gr.Markdown(f"""
-                    ### 🔬 Analyse Histopathologique
-
-                    **✅ {MODEL_NAME}** actif | 📊 Morphométrie clinique disponible
-                    """)
-                else:
-                    gr.Markdown("""
-                    ### 🔬 Analyse Histopathologique
-
-                    **⚠️ Mode simulation** — Modèle non disponible
-                    """)
-
-                with gr.Row():
-                    # Colonne gauche: Upload et contrôles
-                    with gr.Column(scale=1):
+                        # Upload image
                         upload_image = gr.Image(
-                            label="📤 Uploader une image H&E",
+                            label="📤 Image H&E",
                             type="numpy",
-                            sources=["upload", "clipboard"]
+                            sources=["upload", "clipboard"],
+                            height=180
                         )
                         upload_tissue = gr.Dropdown(
                             choices=PANNUKE_ORGANS,
                             value="Prostate",
-                            label="🎯 Organe attendu (comparaison)"
+                            label="🎯 Organe attendu"
                         )
                         analyze_btn = gr.Button(
-                            "🔬 Analyser",
-                            variant="primary"
+                            "🔬 ANALYSER",
+                            variant="primary",
+                            size="lg"
                         )
 
                         gr.Markdown("---")
-                        gr.Markdown("### 🎨 Gestion des Calques")
 
+                        # Status Optimus-Gate (5 familles)
+                        gr.Markdown("### 🔌 STATUS OPTIMUS-GATE")
+                        family_status_html = gr.HTML(
+                            value=generate_family_status_html(),
+                            label="Familles HoVer-Net"
+                        )
+
+                        gr.Markdown("---")
+
+                        # Badge OOD
+                        gr.Markdown("### 🛡️ INTÉGRITÉ")
+                        ood_badge_html = gr.HTML(
+                            value=generate_ood_badge(0.0),
+                            label="Score OOD"
+                        )
+
+                        gr.Markdown("---")
+
+                        # Sélecteur de calques
+                        gr.Markdown("### 🎨 CALQUES")
                         layer_mode = gr.Radio(
-                            choices=["RAW", "SEG", "HEAT", "BOTH"],
+                            choices=["H&E", "SEG", "HEAT", "BOTH"],
                             value="SEG",
-                            label="Mode d'affichage",
-                            info="RAW=Image brute | SEG=Segmentation | HEAT=Incertitude | BOTH=Combiné"
+                            label="Mode",
+                            info="H&E=Brut | SEG=Marquage | HEAT=Incertitude"
                         )
                         layer_alpha = gr.Slider(
                             minimum=0.1, maximum=0.9, value=0.4,
-                            label="Transparence overlay"
+                            label="Opacité"
                         )
-                        layer_btn = gr.Button("🔄 Appliquer calque")
+                        layer_btn = gr.Button("🔄 Appliquer", size="sm")
 
                         gr.Markdown("---")
-                        gr.Markdown("### 🔍 XAI — Expliquer les alertes")
 
-                        alert_selector = gr.Dropdown(
-                            choices=[],
-                            label="Sélectionner une alerte",
-                            info="Les noyaux concernés seront surbrillés",
-                            interactive=True
+                        # SAV: Debug Snapshot
+                        gr.Markdown("### 🔧 SAV TECHNIQUE")
+                        snapshot_btn = gr.Button("📸 Snapshot Debug", size="sm")
+                        snapshot_status = gr.Textbox(
+                            label="",
+                            lines=1,
+                            max_lines=2,
+                            interactive=False,
+                            visible=True
                         )
-                        highlight_btn = gr.Button("✨ Localiser les noyaux")
 
-                    # Colonne droite: Visualisations
-                    with gr.Column(scale=2):
+                    # ========================================================
+                    # ZONE CENTRALE — VISUALISEUR HAUTE RÉSOLUTION
+                    # ========================================================
+                    with gr.Column(scale=3, min_width=500):
+                        gr.Markdown("### 🔬 VISUALISEUR")
+
+                        # Mode Side-by-Side: H&E brut vs Marquage IA
                         with gr.Row():
                             upload_original = gr.Image(
-                                label="📷 Image originale",
-                                type="numpy"
+                                label="📷 TISSU BRUT (H&E)",
+                                type="numpy",
+                                height=350
                             )
                             upload_result = gr.Image(
-                                label="🔬 Segmentation / XAI",
-                                type="numpy"
-                            )
-                        with gr.Row():
-                            upload_uncertainty = gr.Image(
-                                label="🌡️ Carte d'incertitude (vert=fiable, rouge=incertain)",
-                                type="numpy"
+                                label="🔬 MARQUAGE IA",
+                                type="numpy",
+                                height=350
                             )
 
-                # Panneaux de rapport en bas
-                with gr.Row():
-                    with gr.Column(scale=1):
-                        morpho_panel = gr.Textbox(
-                            label="📊 Panneau Morphométrique Clinique",
-                            lines=25,
-                            max_lines=35,
+                        # Carte d'incertitude
+                        with gr.Row():
+                            upload_uncertainty = gr.Image(
+                                label="🌡️ CARTE D'INCERTITUDE (vert=fiable, rouge=revoir)",
+                                type="numpy",
+                                height=200
+                            )
+
+                        # XAI: Localisation des alertes
+                        with gr.Row():
+                            alert_selector = gr.Dropdown(
+                                choices=[],
+                                label="🔍 XAI — Cliquez sur une alerte pour localiser les noyaux",
+                                interactive=True,
+                                scale=3
+                            )
+                            highlight_btn = gr.Button("✨ Localiser", size="sm", scale=1)
+
+                    # ========================================================
+                    # COLONNE DROITE — RAPPORT D'AIDE À LA DÉCISION
+                    # ========================================================
+                    with gr.Column(scale=2, min_width=300):
+                        gr.Markdown("### 📋 RAPPORT CLINIQUE")
+
+                        # Smart Cards (HTML dynamique)
+                        smart_cards_html = gr.HTML(
+                            value='<div style="color: #9ca3af; text-align: center; padding: 40px;">Analysez une image pour voir le rapport</div>',
+                            label="Smart Cards"
                         )
-                    with gr.Column(scale=1):
-                        ml_report = gr.Textbox(
-                            label="🤖 Rapport Technique (ML)",
-                            lines=25,
-                            max_lines=35,
+
+                        gr.Markdown("---")
+
+                        # Graphique Donut - Population cellulaire
+                        gr.Markdown("### 📊 POPULATION CELLULAIRE")
+                        donut_chart_html = gr.HTML(
+                            value='<div style="color: #9ca3af; text-align: center; padding: 20px;">—</div>',
+                            label="Distribution"
                         )
+
+                        gr.Markdown("---")
+
+                        # Journal des anomalies (escamotable)
+                        with gr.Accordion("📜 Journal Technique (SAV)", open=False):
+                            anomaly_journal = gr.Textbox(
+                                label="",
+                                lines=8,
+                                max_lines=15,
+                                value="Aucune anomalie détectée.",
+                                interactive=False
+                            )
+                            ml_report = gr.Textbox(
+                                label="Rapport ML détaillé",
+                                lines=10,
+                                max_lines=20,
+                                interactive=False
+                            )
+
+                # Panneau morphométrique caché (pour compatibilité)
+                morpho_panel = gr.Textbox(
+                    label="",
+                    lines=1,
+                    visible=False
+                )
 
                 # Fonction pour mettre à jour les alertes disponibles
                 def update_alert_choices(morpho_text):
@@ -1088,11 +1796,101 @@ def create_demo_interface():
                     except:
                         return demo.switch_layer("SEG", 0.4)
 
+                # ============================================================
+                # FONCTIONS CLINICAL-FLOW
+                # ============================================================
+
+                def analyze_clinical_flow(image, tissue_type):
+                    """
+                    Analyse complète avec mise à jour de tous les composants Clinical-Flow.
+                    """
+                    # Appeler l'analyse standard
+                    orig, result, uncertainty, morpho, ml = demo.analyze_uploaded_image(image, tissue_type)
+
+                    # Extraire les données pour les composants Clinical-Flow
+                    result_data = demo.current_result_data
+                    morpho_report = demo.current_morpho_report
+
+                    # Valeurs par défaut
+                    ood_score = 0.0
+                    organ_name = "Inconnu"
+                    organ_conf = 0.0
+                    counts = {}
+                    aniso_cv = 0.0
+                    neo_ratio = 0.0
+                    mitotic_idx = 0.0
+                    til_status = "indéterminé"
+                    alerts = []
+                    anomalies = []
+
+                    # Extraire depuis result_data
+                    if result_data:
+                        ood_score = result_data.get('ood_score_global', 0.0)
+                        counts = result_data.get('counts', {})
+
+                        organ = result_data.get('organ')
+                        if organ:
+                            organ_name = getattr(organ, 'organ_name', 'Inconnu')
+                            organ_conf = getattr(organ, 'confidence_calibrated',
+                                        getattr(organ, 'confidence', 0.0))
+
+                        # Anomalies techniques
+                        if result_data.get('is_ood', False):
+                            anomalies.append("⚠️ Image hors domaine détectée (OOD)")
+                        family = result_data.get('family', 'unknown')
+                        if family in ['urologic', 'epidermal']:
+                            anomalies.append(f"⚠️ Famille {family}: HV MSE dégradé")
+
+                    # Extraire depuis morpho_report
+                    if morpho_report:
+                        aniso_cv = morpho_report.std_area_um2 / max(morpho_report.mean_area_um2, 1)
+                        neo_ratio = morpho_report.neoplastic_ratio
+                        mitotic_idx = morpho_report.mitotic_index_per_10hpf
+                        til_status = morpho_report.til_status
+                        alerts = morpho_report.alerts or []
+
+                    # Générer les composants HTML
+                    ood_badge = generate_ood_badge(ood_score)
+                    donut_chart = generate_donut_chart_html(counts)
+                    smart_cards = generate_smart_cards(
+                        organ=organ_name,
+                        confidence=organ_conf,
+                        anisocaryosis_cv=aniso_cv,
+                        neoplastic_ratio=neo_ratio,
+                        mitotic_index=mitotic_idx,
+                        til_status=til_status,
+                        alerts=alerts
+                    )
+                    anomaly_text = "\n".join(anomalies) if anomalies else "✅ Aucune anomalie détectée."
+
+                    return (orig, result, uncertainty, morpho, ml,
+                            ood_badge, donut_chart, smart_cards, anomaly_text)
+
+                def handle_snapshot():
+                    """Exporte un snapshot de debug pour le SAV."""
+                    if demo.current_image is None:
+                        return "❌ Aucune image analysée"
+                    try:
+                        path = export_debug_snapshot(
+                            demo.current_image,
+                            demo.current_result_data
+                        )
+                        return f"✅ Snapshot: {path}"
+                    except Exception as e:
+                        return f"❌ Erreur: {str(e)}"
+
+                def switch_layer_clinical(mode, alpha):
+                    """Adapter les noms de calques pour le mode clinical."""
+                    mode_map = {"H&E": "RAW", "SEG": "SEG", "HEAT": "HEAT", "BOTH": "BOTH"}
+                    return demo.switch_layer(mode_map.get(mode, "SEG"), alpha)
+
                 # Connexions
                 analyze_btn.click(
-                    fn=demo.analyze_uploaded_image,
+                    fn=analyze_clinical_flow,
                     inputs=[upload_image, upload_tissue],
-                    outputs=[upload_original, upload_result, upload_uncertainty, morpho_panel, ml_report]
+                    outputs=[upload_original, upload_result, upload_uncertainty,
+                             morpho_panel, ml_report,
+                             ood_badge_html, donut_chart_html, smart_cards_html, anomaly_journal]
                 ).then(
                     fn=update_alert_choices,
                     inputs=[morpho_panel],
@@ -1100,7 +1898,7 @@ def create_demo_interface():
                 )
 
                 layer_btn.click(
-                    fn=demo.switch_layer,
+                    fn=switch_layer_clinical,
                     inputs=[layer_mode, layer_alpha],
                     outputs=[upload_result]
                 )
@@ -1109,6 +1907,12 @@ def create_demo_interface():
                     fn=handle_highlight,
                     inputs=[alert_selector],
                     outputs=[upload_result]
+                )
+
+                snapshot_btn.click(
+                    fn=handle_snapshot,
+                    inputs=[],
+                    outputs=[snapshot_status]
                 )
 
             # Tab 3: Générer de nouveaux tissus
