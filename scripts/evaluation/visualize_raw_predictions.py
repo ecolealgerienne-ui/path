@@ -24,6 +24,7 @@ import torch
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from src.inference.optimus_gate_inference_multifamily import OptimusGateInferenceMultiFamily
+from src.models.organ_families import get_family
 
 
 def visualize_raw_predictions(
@@ -60,7 +61,7 @@ def visualize_raw_predictions(
     patch_tokens = features[:, 1:257, :]
 
     organ_result = model.model.organ_head.predict(cls_token)
-    family = model.model.organ_to_family[organ_result.organ_name]
+    family = get_family(organ_result.organ_name)
 
     print(f"   Organ: {organ_result.organ_name}")
     print(f"   Family: {family}")
