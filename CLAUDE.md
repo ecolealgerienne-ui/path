@@ -563,6 +563,33 @@ Précision: 127 niveaux suffisent pour le Sobel/Watershed
 
 **Pré-calcul obligatoire** car `cv2.connectedComponents` est lent (~5-10ms/image).
 
+### ⚠️ MISE À JOUR CRITIQUE: Normalisation HV (2025-12-21)
+
+**Bug découvert et corrigé** : Les anciennes données utilisaient int8 [-127, 127] au lieu de float32 [-1, 1].
+
+| Version | Dtype | Range | Conforme HoVer-Net ? | Impact |
+|---------|-------|-------|----------------------|--------|
+| **OLD** (≤ 2025-12-20) | int8 | [-127, 127] | ❌ NON | HV MSE 0.0150, NT Acc 0.8800 |
+| **NEW** (≥ 2025-12-21) | float32 | [-1, 1] | ✅ OUI | HV MSE 0.0105 (-30%), NT Acc 0.9107 (+3.5%) |
+
+**Résultats validation Glandular (10 échantillons test)** :
+- NP Dice: 0.9655 ± 0.0184 (identique train: 0.9641)
+- HV MSE: 0.0266 ± 0.0104 (acceptable variance)
+- NT Acc: 0.9517 ± 0.0229 (meilleur que train: 0.9107, **+7.2% vs OLD**)
+- HV Range: ✅ 10/10 samples dans [-1, 1]
+
+**Activation HV** : Le décodeur n'a PAS de `tanh()` explicite, mais produit naturellement des valeurs dans [-1, 1] grâce à :
+1. SmoothL1Loss qui pénalise les valeurs éloignées
+2. Targets normalisés à [-1, 1]
+3. Tests empiriques concluants (voir `docs/ARCHITECTURE_HV_ACTIVATION.md`)
+
+**Rétro-compatibilité** : ❌ Modèles OLD incompatibles avec NEW data → Ré-entraînement OBLIGATOIRE.
+
+**Fichiers FIXED** :
+- Données : `data/family_FIXED/*_data_FIXED.npz`
+- Checkpoints : `models/checkpoints_FIXED/hovernet_*_best.pth`
+- Scripts : `scripts/preprocessing/prepare_family_data_FIXED.py`
+
 ---
 
 ## Explication du Modèle HoVer-Net
