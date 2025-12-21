@@ -42,7 +42,7 @@ def diagnose_np_mask(npz_file: Path, checkpoint_dir: Path, output_dir: Path):
     model = OptimusGateInferenceMultiFamily(checkpoint_dir=str(checkpoint_dir), device='cuda')
 
     print(f"🔮 Running prediction...")
-    predictions, probabilities = model.predict(image)
+    predictions = model.predict(image)
 
     # Get raw NP prediction
     print(f"\n📊 Model predictions:")
@@ -60,8 +60,8 @@ def diagnose_np_mask(npz_file: Path, checkpoint_dir: Path, output_dir: Path):
     pred_idx, probs = model.model.organ_head.predict(cls_token)
     organ_idx = pred_idx[0].item()
     organ_name = model.model.organ_head.organ_names[organ_idx]
-    from src.inference.optimus_gate_inference_multifamily import get_family
-    family = get_family(organ_name)
+    from src.inference.optimus_gate_multifamily import ORGAN_TO_FAMILY
+    family = ORGAN_TO_FAMILY.get(organ_name, 'glandular')  # Default to glandular
 
     # Get HoVer-Net raw output
     hovernet = model.model.hovernet_decoders[family]
