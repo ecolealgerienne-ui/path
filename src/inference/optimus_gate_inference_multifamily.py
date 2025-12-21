@@ -234,8 +234,8 @@ class OptimusGateInferenceMultiFamily:
             type_votes = np.zeros(5)
             for t in range(5):
                 type_votes[t] = type_probs[t][inst_mask].mean()
-            # argmax() retourne [0-4], mais PanNuke utilise [1-5] → +1
-            nt_mask[inst_mask] = type_votes.argmax() + 1
+            # Test: retirer le +1 pour voir si le modèle produit déjà [1-5]
+            nt_mask[inst_mask] = type_votes.argmax()
 
         # Resize si nécessaire
         if original_size != (self.img_size, self.img_size):
