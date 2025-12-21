@@ -130,7 +130,13 @@ class FamilyHoVerDataset(Dataset):
         # Charger tout en RAM
         print(f"\nChargement {features_path.name}...")
         features_data = np.load(features_path)
-        self.features = features_data['layer_24']
+        # Supporte les deux formats: 'features' (nouveau) et 'layer_24' (ancien)
+        if 'features' in features_data:
+            self.features = features_data['features']
+        elif 'layer_24' in features_data:
+            self.features = features_data['layer_24']
+        else:
+            raise KeyError(f"Features non trouvées. Clés: {list(features_data.keys())}")
         self.n_samples = len(self.features)
         print(f"  → {self.n_samples} samples, {self.features.nbytes / 1e9:.2f} GB")
 

@@ -98,12 +98,15 @@ class OrganDataset(Dataset):
         data = np.load(features_path)
 
         # Extraire les CLS tokens (premier token)
-        if 'layer_24' in data:
+        # Supporte les deux formats: 'features' (nouveau) et 'layer_24' (ancien)
+        if 'features' in data:
+            features = data['features']  # (N, 261, 1536)
+        elif 'layer_24' in data:
             features = data['layer_24']  # (N, 261, 1536)
         elif 'layer_23' in data:
             features = data['layer_23']
         else:
-            raise KeyError("Features layer_24 non trouvées")
+            raise KeyError(f"Features non trouvées. Clés disponibles: {list(data.keys())}")
 
         cls_tokens = features[:, 0, :]  # (N, 1536)
         print(f"  CLS tokens: {cls_tokens.shape}")
