@@ -407,7 +407,7 @@ def main():
     # Entraînement
     print(f"\n🚀 Entraînement ({args.epochs} epochs)...")
 
-    best_dice = 0
+    best_dice = -1  # Initialisé à -1 pour sauvegarder le premier checkpoint
     best_loss = float('inf')
     best_metrics = {'dice': 0, 'hv_mse': float('inf'), 'nt_acc': 0}
     output_dir = Path(args.output_dir)
