@@ -261,8 +261,9 @@ class OptimusGateInferenceMultiFamily:
             types_valid = types_in_inst[types_in_inst >= 0]
             if len(types_valid) > 0:
                 inst_type = int(np.bincount(types_valid).argmax())
-                if 0 <= inst_type < 5:
-                    counts[CELL_TYPES[inst_type]] += 1
+                # inst_type est dans [1-5] après +1, convertir vers [0-4] pour indexer CELL_TYPES
+                if 1 <= inst_type <= 5:
+                    counts[CELL_TYPES[inst_type - 1]] += 1
 
         return {
             'organ': result.organ,
@@ -302,8 +303,9 @@ class OptimusGateInferenceMultiFamily:
                     continue
 
                 inst_type = nt_mask[inst_mask][0]
-                if 0 <= inst_type < 5:
-                    color = CELL_COLORS[CELL_TYPES[inst_type]]
+                # inst_type est dans [1-5] après +1, convertir vers [0-4] pour indexer CELL_TYPES
+                if 1 <= inst_type <= 5:
+                    color = CELL_COLORS[CELL_TYPES[inst_type - 1]]
                     overlay[inst_mask] = color
 
             mask_any = instance_map > 0
