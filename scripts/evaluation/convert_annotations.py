@@ -131,13 +131,14 @@ def load_pannuke_annotation(
     # Extract instance map (channel 5)
     inst_map = mask[:, :, 5]
 
-    # Create type map from class channels (0-4)
-    # For each pixel, find which class has the instance ID
+    # Create type map from class channels (1-5)
+    # Following the same logic as prepare_family_data.py (training pipeline)
+    # Channels 1-5 correspond to classes 1-5 (Neoplastic, Inflammatory, Connective, Dead, Epithelial)
     type_map = np.zeros_like(inst_map, dtype=np.uint8)
 
-    for class_id in range(1, 6):  # Classes 1-5 (skip background)
-        class_mask = mask[:, :, class_id - 1]  # Channel 0-4
-        type_map[class_mask > 0] = class_id
+    for c in range(5):  # Iterate over 5 classes
+        class_mask = mask[:, :, c + 1] > 0  # Channels 1-5 (indices 1, 2, 3, 4, 5)
+        type_map[class_mask] = c + 1  # Assign class IDs 1-5
 
     # Compute centroids
     inst_ids = np.unique(inst_map)
