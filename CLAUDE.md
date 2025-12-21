@@ -218,6 +218,241 @@ cellvit-optimus/
 
 ---
 
+## ⚠️ GUIDE CRITIQUE: Préparation des Données pour l'Entraînement
+
+> **ATTENTION: Cette section est OBLIGATOIRE à lire avant tout entraînement.**
+>
+> Deux bugs critiques ont causé des semaines de travail perdu. Ne pas répéter ces erreurs.
+
+### Vue d'ensemble du Pipeline
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                    PIPELINE DE PRÉPARATION DES DONNÉES                  │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                         │
+│  1. IMAGE BRUTE (uint8 [0-255])                                        │
+│         │                                                               │
+│         ▼                                                               │
+│  2. CONVERSION OBLIGATOIRE → uint8                                     │
+│     ⚠️ ToPILImage multiplie les floats par 255!                        │
+│         │                                                               │
+│         ▼                                                               │
+│  3. TRANSFORM TORCHVISION (identique train/inference)                  │
+│     • ToPILImage()                                                      │
+│     • Resize((224, 224))                                                │
+│     • ToTensor()                                                        │
+│     • Normalize(mean=HOPTIMUS_MEAN, std=HOPTIMUS_STD)                  │
+│         │                                                               │
+│         ▼                                                               │
+│  4. H-OPTIMUS-0: forward_features()                                    │
+│     ⚠️ JAMAIS blocks[X] directement! (pas de LayerNorm)               │
+│         │                                                               │
+│         ▼                                                               │
+│  5. FEATURES NORMALISÉES (CLS std ~0.77)                               │
+│                                                                         │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+### Constantes de Normalisation H-optimus-0
+
+```python
+# OBLIGATOIRE: Ces valeurs sont FIXES et ne doivent JAMAIS changer
+HOPTIMUS_MEAN = (0.707223, 0.578729, 0.703617)
+HOPTIMUS_STD = (0.211883, 0.230117, 0.177517)
+```
+
+### BUG #1: ToPILImage avec float64 (CORRIGÉ)
+
+**Problème:** `ToPILImage()` multiplie les floats par 255.
+
+```python
+# ❌ BUG: ToPILImage avec float64 [0,255]
+img_float64 = np.array([100, 150, 200], dtype=np.float64)
+# ToPILImage pense que c'est [0,1] → multiplie par 255
+# → [25500, 38250, 51000] → overflow uint8 → COULEURS FAUSSES!
+
+# ✅ SOLUTION: Toujours convertir en uint8 AVANT ToPILImage
+if image.dtype != np.uint8:
+    image = image.clip(0, 255).astype(np.uint8)
+```
+
+**Impact:** Features corrompues → modèles inutilisables → ré-entraînement complet.
+
+### BUG #2: LayerNorm Mismatch (CORRIGÉ)
+
+**Problème:** Incohérence entre extraction et inférence.
+
+```python
+# ❌ BUG: Hooks sur blocks[23] (SANS LayerNorm final)
+# extract_features.py utilisait:
+output = model.blocks[23](x)  # CLS std ~0.28
+
+# Mais l'inférence utilisait:
+output = model.forward_features(x)  # CLS std ~0.77
+
+# → Ratio 2.7x entre train et inference → prédictions FAUSSES!
+
+# ✅ SOLUTION: Utiliser forward_features() PARTOUT
+features = backbone.forward_features(tensor)  # Inclut LayerNorm
+```
+
+**Vérification:** CLS token std doit être entre **0.70 et 0.90**.
+
+### Transform Canonique (À COPIER)
+
+```python
+from torchvision import transforms
+
+HOPTIMUS_MEAN = (0.707223, 0.578729, 0.703617)
+HOPTIMUS_STD = (0.211883, 0.230117, 0.177517)
+
+def create_hoptimus_transform():
+    """
+    Transform CANONIQUE pour H-optimus-0.
+
+    DOIT être IDENTIQUE dans:
+    - scripts/preprocessing/extract_features.py
+    - src/inference/hoptimus_hovernet.py
+    - src/inference/optimus_gate_inference.py
+    - src/inference/optimus_gate_inference_multifamily.py
+    - scripts/validation/test_organ_prediction_batch.py
+    """
+    return transforms.Compose([
+        transforms.ToPILImage(),
+        transforms.Resize((224, 224)),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=HOPTIMUS_MEAN, std=HOPTIMUS_STD),
+    ])
+
+def preprocess_image(image: np.ndarray) -> torch.Tensor:
+    """
+    Prétraitement CANONIQUE d'une image.
+
+    Args:
+        image: Image RGB (H, W, 3) - uint8 ou float
+
+    Returns:
+        Tensor (1, 3, 224, 224) normalisé
+    """
+    # ÉTAPE CRITIQUE: Convertir en uint8 AVANT ToPILImage
+    if image.dtype != np.uint8:
+        if image.max() <= 1.0:
+            image = (image * 255).clip(0, 255).astype(np.uint8)
+        else:
+            image = image.clip(0, 255).astype(np.uint8)
+
+    transform = create_hoptimus_transform()
+    tensor = transform(image).unsqueeze(0)
+
+    return tensor
+```
+
+### Extraction des Features (À COPIER)
+
+```python
+def extract_features(backbone, tensor: torch.Tensor) -> torch.Tensor:
+    """
+    Extraction CANONIQUE des features H-optimus-0.
+
+    IMPORTANT: Utilise forward_features() qui inclut le LayerNorm final.
+
+    Args:
+        backbone: Modèle H-optimus-0
+        tensor: Image prétraitée (B, 3, 224, 224)
+
+    Returns:
+        Features (B, 261, 1536) - CLS token + 256 patch tokens
+    """
+    with torch.no_grad():
+        # ✅ forward_features() inclut le LayerNorm final
+        features = backbone.forward_features(tensor)
+
+    return features.float()
+
+# Récupération des tokens
+cls_token = features[:, 0, :]      # (B, 1536) - Pour OrganHead
+patch_tokens = features[:, 1:257, :]  # (B, 256, 1536) - Pour HoVer-Net
+```
+
+### Script de Vérification
+
+```bash
+# Vérifier que les features sont correctes AVANT entraînement
+python scripts/validation/verify_features.py --features_dir data/cache/pannuke_features
+
+# Sortie attendue:
+# ✅ Fold 0: CLS std = 0.768 (attendu: 0.70-0.90)
+# ✅ Fold 1: CLS std = 0.771 (attendu: 0.70-0.90)
+# ✅ Fold 2: CLS std = 0.769 (attendu: 0.70-0.90)
+```
+
+### Checklist Avant Entraînement
+
+| # | Vérification | Commande |
+|---|--------------|----------|
+| 1 | Images en uint8 | `print(image.dtype)` → `uint8` |
+| 2 | Transform identique | Comparer avec `create_hoptimus_transform()` |
+| 3 | forward_features() utilisé | Pas de hooks sur `blocks[X]` |
+| 4 | CLS std ~0.77 | `verify_features.py` |
+| 5 | Clé 'features' dans .npz | `data.keys()` → `['features', ...]` |
+
+### Format des Features Sauvegardées
+
+```python
+# Structure attendue dans les fichiers .npz
+{
+    'features': np.array,  # (N, 261, 1536) - CLS + 256 patches
+    # ou pour compatibilité ancienne:
+    'layer_24': np.array,  # Même format
+}
+
+# Les scripts d'entraînement supportent les deux clés:
+if 'features' in data:
+    features = data['features']
+elif 'layer_24' in data:
+    features = data['layer_24']
+```
+
+### Scripts de Référence
+
+| Script | Rôle | Vérifie |
+|--------|------|---------|
+| `scripts/preprocessing/extract_features.py` | Extraction features | uint8 + forward_features() |
+| `scripts/validation/verify_features.py` | Vérification CLS std | Range 0.70-0.90 |
+| `scripts/validation/test_organ_prediction_batch.py` | Test inférence | Cohérence train/inference |
+
+### Commandes de Ré-extraction Complète
+
+```bash
+# Si les features sont corrompues, ré-extraire les 3 folds:
+
+# 1. Supprimer les anciennes features
+rm -rf data/cache/pannuke_features/*.npz
+
+# 2. Ré-extraire chaque fold (avec chunking pour économiser la RAM)
+for fold in 0 1 2; do
+    python scripts/preprocessing/extract_features.py \
+        --data_dir /home/amar/data/PanNuke \
+        --fold $fold \
+        --batch_size 8 \
+        --chunk_size 500
+done
+
+# 3. Vérifier
+python scripts/validation/verify_features.py --features_dir data/cache/pannuke_features
+
+# 4. Ré-entraîner OrganHead
+python scripts/training/train_organ_head.py --folds 0 1 2 --epochs 50
+
+# 5. Ré-entraîner HoVer-Net par famille
+for family in glandular digestive urologic respiratory epidermal; do
+    python scripts/training/train_hovernet_family.py --family $family --epochs 50 --augment
+done
+```
+
+---
+
 ## Cartes HV (Horizontal/Vertical) — Séparation d'Instances
 
 ### Problème
