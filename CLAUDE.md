@@ -945,14 +945,14 @@ OrganHead   HoVerNet
 | OrganHead | Organes à 100% | 18/19 |
 | OOD | Threshold | 45.55 |
 
-**Résultats HoVer-Net par Famille (après fix preprocessing) :**
+**Résultats HoVer-Net par Famille (après fix preprocessing) — COMPLET :**
 | Famille | Samples | Dice | HV MSE | NT Acc | Checkpoint | Statut |
 |---------|---------|------|--------|--------|------------|--------|
 | Glandulaire | 3391 | **0.9648** | **0.0106** | **0.9111** | `hovernet_glandular_best.pth` | ✅ |
 | Digestive | 2430 | **0.9634** | **0.0163** | **0.8824** | `hovernet_digestive_best.pth` | ✅ |
 | Urologique | 1101 | **0.9318** | 0.2812 | **0.9139** | `hovernet_urologic_best.pth` | ✅ |
-| Épidermoïde | 571 | ⏳ | ⏳ | ⏳ | `hovernet_epidermal_best.pth` | En attente |
-| Respiratoire | 408 | ⏳ | ⏳ | ⏳ | `hovernet_respiratory_best.pth` | En attente |
+| Épidermoïde | 571 | **0.9542** | 0.2653 | 0.8857 | `hovernet_epidermal_best.pth` | ✅ |
+| Respiratoire | 408 | **0.9409** | **0.0500** | **0.9183** | `hovernet_respiratory_best.pth` | ✅ |
 
 **Amélioration après fix preprocessing (Glandulaire) :**
 | Métrique | Avant (corrompu) | Après (corrigé) | Amélioration |
@@ -1278,43 +1278,34 @@ img_float64 = [100, 150, 200]  # Pixel rose H&E
 - `scripts/validation/diagnose_ood_issue.py` — Diagnostic des problèmes OOD
 - `scripts/setup/download_and_prepare_pannuke.py` — Téléchargement + réorganisation PanNuke
 
-### 2025-12-21 — Résultats Entraînement (Après Fix Preprocessing)
+### 2025-12-21 — Entraînement 5 Familles COMPLET ✅
 
-**Statut des 5 familles HoVer-Net:**
+**Toutes les familles HoVer-Net sont maintenant entraînées:**
 
 | Famille | Statut | NP Dice | HV MSE | NT Acc |
 |---------|--------|---------|--------|--------|
 | Glandulaire | ✅ | 0.9648 | 0.0106 | 0.9111 |
 | Digestive | ✅ | 0.9634 | 0.0163 | 0.8824 |
 | Urologique | ✅ | 0.9318 | 0.2812 | 0.9139 |
-| Épidermoïde | ⏳ | - | - | - |
-| Respiratoire | ⏳ | - | - | - |
+| Épidermoïde | ✅ | 0.9542 | 0.2653 | 0.8857 |
+| Respiratoire | ✅ | 0.9409 | 0.0500 | 0.9183 |
 
 **Observations clés:**
-- Glandulaire et Digestive (>2000 samples): HV MSE excellent (<0.02)
-- Urologique (1101 samples): HV MSE dégradé (0.28) mais NT Acc très bon (0.91)
-- Seuil critique: ~2000 samples pour HV MSE < 0.05
+- **Glandulaire et Digestive** (>2000 samples): HV MSE excellent (<0.02)
+- **Respiratoire** (408 samples): Surprise positive! HV MSE = 0.05 malgré peu de données
+- **Urologique et Épidermoïde**: HV MSE dégradé (~0.27) mais NP Dice et NT Acc très bons
+- **Seuil critique**: ~2000 samples pour HV MSE < 0.05 (exception Respiratoire)
 
-**Note environnement:** Les familles Épidermoïde et Respiratoire requièrent un accès aux données PanNuke pour finaliser l'entraînement. Le téléchargement est bloqué par proxy dans l'environnement actuel.
+**Analyse Respiratoire (surprise):**
+La famille Respiratoire (Lung + Liver) obtient un excellent HV MSE (0.05) malgré seulement 408 samples. Hypothèses:
+- Structures ouvertes (alvéoles, travées hépatiques) → noyaux naturellement espacés
+- Moins de chevauchement nucléaire → frontières plus faciles à apprendre
+- Homogénéité morphologique Lung/Liver
 
-**Commandes pour reprendre l'entraînement:**
-```bash
-# 1. Télécharger PanNuke (depuis un environnement avec accès réseau)
-python scripts/setup/download_and_prepare_pannuke.py --output_dir /path/to/PanNuke
-
-# 2. Extraire les features H-optimus-0
-python scripts/preprocessing/extract_features.py --data_dir /path/to/PanNuke --fold 0 --all_layers
-python scripts/preprocessing/extract_features.py --data_dir /path/to/PanNuke --fold 1 --all_layers
-python scripts/preprocessing/extract_features.py --data_dir /path/to/PanNuke --fold 2 --all_layers
-
-# 3. Préparer les données par famille
-python scripts/preprocessing/prepare_family_data.py --family epidermal
-python scripts/preprocessing/prepare_family_data.py --family respiratory
-
-# 4. Entraîner les familles restantes
-python scripts/training/train_hovernet_family.py --family epidermal --epochs 50 --augment
-python scripts/training/train_hovernet_family.py --family respiratory --epochs 50 --augment
-```
+**Tous les objectifs POC atteints:**
+- OrganHead: 99.94% accuracy
+- 5/5 familles: Dice ≥ 0.93
+- Pipeline complet fonctionnel
 
 ---
 
