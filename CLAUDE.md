@@ -222,7 +222,7 @@ cellvit-optimus/
 
 > **ATTENTION: Cette section est OBLIGATOIRE à lire avant tout entraînement.**
 >
-> Deux bugs critiques ont causé des semaines de travail perdu. Ne pas répéter ces erreurs.
+> Trois bugs critiques ont causé des semaines de travail perdu. Ne pas répéter ces erreurs.
 
 ### Vue d'ensemble du Pipeline
 
@@ -298,6 +298,82 @@ features = backbone.forward_features(tensor)  # Inclut LayerNorm
 ```
 
 **Vérification:** CLS token std doit être entre **0.70 et 0.90**.
+
+### BUG #3: Training/Eval Instance Mismatch (DÉCOUVERT 2025-12-21)
+
+**Problème:** Le modèle crée UNE INSTANCE GÉANTE au lieu de plusieurs petites instances séparées.
+
+**Cause racine:** Incohérence entre la génération des targets d'entraînement et l'évaluation Ground Truth:
+
+```python
+# ❌ TRAINING PIPELINE (prepare_family_data.py):
+# Utilise connectedComponents qui FUSIONNE les cellules qui se touchent
+np_mask = mask[:, :, 1:].sum(axis=-1) > 0  # Union binaire
+_, labels = cv2.connectedComponents(binary_uint8)
+hv_targets = compute_hv_maps(labels)  # HV maps pour instances FUSIONNÉES
+
+# ❌ ÉVALUATION GROUND TRUTH (convert_annotations.py):
+# Utilise également connectedComponents pour matcher le training
+# MAIS le modèle prédit des gradients HV FAIBLES car il a appris des instances fusionnées!
+
+# Résultat: Watershed post-processing ne peut PAS séparer les cellules
+# car les gradients HV ne sont pas assez forts aux frontières
+```
+
+**Impact visuel (image_00002_diagnosis.png):**
+- GT: 9 instances séparées (connectedComponents sur union)
+- Prédiction: 1 INSTANCE VIOLETTE GÉANTE couvrant toute l'image
+- Recall: 7.69% (TP: 9, FP: 53, FN: 108)
+
+**Problème fondamental:**
+
+PanNuke contient les VRAIES instances séparées dans les canaux 1-4:
+- Canal 1: IDs d'instances Neoplastic [88, 96, 107, ...]
+- Canal 2: IDs d'instances Inflammatory
+- etc.
+
+Mais le training **IGNORE** ces IDs et recalcule avec `connectedComponents`, fusionnant les cellules qui se touchent!
+
+**Solutions possibles:**
+
+1. **Court terme**: Ajuster les paramètres watershed (edge_threshold, dist_threshold)
+   - Peu de chances de succès si les gradients HV sont vraiment faibles
+   - Voir `scripts/evaluation/test_watershed_params.py`
+
+2. **Long terme**: Ré-entraîner avec les VRAIES instances PanNuke
+   ```python
+   # ✅ SOLUTION CIBLE:
+   # Extraire les IDs d'instances de PanNuke au lieu de connectedComponents
+   inst_map = np.zeros((256, 256), dtype=np.int32)
+   instance_counter = 1
+
+   # Canaux 1-4: instances déjà annotées
+   for c in range(1, 5):
+       class_instances = mask[:, :, c]
+       inst_ids = np.unique(class_instances)
+       inst_ids = inst_ids[inst_ids > 0]
+       for inst_id in inst_ids:
+           inst_mask = class_instances == inst_id
+           inst_map[inst_mask] = instance_counter
+           instance_counter += 1
+
+   # Canal 5 (Epithelial) est binaire, garder connectedComponents
+   _, epithelial_labels = cv2.connectedComponents(mask[:, :, 5])
+   # Fusionner avec inst_map
+
+   # Maintenant compute_hv_maps() aura des frontières RÉELLES entre cellules
+   hv_targets = compute_hv_maps(inst_map)
+   ```
+
+   **Coût**: Ré-entraînement complet des 5 familles HoVer-Net (~10 heures)
+
+**Diagnostics créés:**
+- `results/DIAGNOSTIC_REPORT_LOW_RECALL.md`: Rapport complet avec analyse visuelle
+- `image_00002_diagnosis.png`: Visualisation GT vs Prédictions (1 instance géante)
+- `scripts/evaluation/visualize_raw_predictions.py`: Inspection NP/HV/gradients
+- `scripts/evaluation/test_watershed_params.py`: Sweep paramètres watershed
+
+**Statut:** ⚠️ BLOQUANT pour évaluation Ground Truth - Décision requise sur stratégie
 
 ### Transform Canonique (À COPIER)
 
