@@ -169,41 +169,62 @@ class OptimusGateInferenceMultiFamily:
         """
         Watershed sur les cartes HV pour séparer les instances.
 
-        Paramètres optimisés via grid search (commit 48306b3):
-        - edge_threshold: 0.2 (au lieu de 0.3)
-        - dist_threshold: 1 (au lieu de 2)
-        - min_size: 10 pixels
+        Utilise l'algorithme EXACT de optimize_watershed_params.py avec paramètres optimaux:
+        - edge_threshold: 0.2 (trouvé par grid search sur 245 combinaisons)
+        - dist_threshold: 1 (min_distance pour peak_local_max)
+        - min_size: 10 pixels (filtrage post-processing)
+
+        Résultat attendu: 4 instances (Error=0 vs GT)
         """
-        binary_mask = np_pred > self.np_threshold
+        from skimage.feature import peak_local_max
+        from skimage.segmentation import watershed
+
+        # Binary mask
+        binary_mask = (np_pred > self.np_threshold).astype(np.uint8)
 
         if not binary_mask.any():
             return np.zeros_like(np_pred, dtype=np.int32)
 
-        h_grad = np.abs(cv2.Sobel(hv_pred[0], cv2.CV_64F, 1, 0, ksize=3))
-        v_grad = np.abs(cv2.Sobel(hv_pred[1], cv2.CV_64F, 0, 1, ksize=3))
+        # 1. Compute gradient magnitude from HV maps
+        h_grad = cv2.Sobel(hv_pred[0], cv2.CV_64F, 1, 0, ksize=3)
+        v_grad = cv2.Sobel(hv_pred[1], cv2.CV_64F, 0, 1, ksize=3)
+        gradient = np.sqrt(h_grad**2 + v_grad**2)
 
-        edge = h_grad + v_grad
-        edge = (edge - edge.min()) / (edge.max() - edge.min() + 1e-8)
+        # 2. Threshold to get edges (paramètre optimisé)
+        edge_threshold = 0.2
+        edges = gradient > edge_threshold
 
-        markers = np_pred.copy()
-        markers[edge > 0.2] = 0  # ← OPTIMISÉ: 0.3 → 0.2
-        markers = (markers > 0.7).astype(np.uint8)
+        # 3. Distance transform on INVERTED edges
+        dist = ndimage.distance_transform_edt(~edges)
 
-        dist = ndimage.distance_transform_edt(binary_mask)
-        markers = ndimage.label(markers * (dist > 1))[0]  # ← OPTIMISÉ: 2 → 1
+        # 4. Find local maxima as markers (paramètre optimisé)
+        dist_threshold = 1
+        local_max = peak_local_max(
+            dist,
+            min_distance=dist_threshold,
+            labels=binary_mask.astype(int),
+            exclude_border=False,
+        )
 
+        # 5. Create markers from local maxima
+        markers = np.zeros_like(binary_mask, dtype=int)
+        if len(local_max) > 0:
+            markers[tuple(local_max.T)] = np.arange(1, len(local_max) + 1)
+
+        # 6. Watershed segmentation
         if markers.max() > 0:
-            from skimage.segmentation import watershed
             instance_map = watershed(-dist, markers, mask=binary_mask)
         else:
+            # Fallback si aucun marker trouvé
             instance_map = ndimage.label(binary_mask)[0]
 
-        # Filtrer les petites instances (min_size = 10 pixels)
+        # 7. Remove small instances (min_size optimisé)
+        min_size = 10
         for inst_id in range(1, instance_map.max() + 1):
-            if (instance_map == inst_id).sum() < 10:
+            if (instance_map == inst_id).sum() < min_size:
                 instance_map[instance_map == inst_id] = 0
 
-        # Re-labeler pour enlever les gaps
+        # 8. Re-label to remove gaps
         instance_map, _ = ndimage.label(instance_map > 0)
 
         return instance_map
