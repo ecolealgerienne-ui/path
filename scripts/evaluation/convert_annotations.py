@@ -28,6 +28,7 @@ Usage:
 import argparse
 import numpy as np
 import scipy.io as sio
+import cv2
 from pathlib import Path
 from typing import Tuple, Dict
 from tqdm import tqdm
@@ -135,13 +136,18 @@ def load_pannuke_annotation(
     if image.dtype != np.uint8:
         image = image.clip(0, 255).astype(np.uint8)
 
-    # Extract instance map (channel 5)
-    inst_map = mask[:, :, 5]
+    # Extract instance map using connectedComponents (matching training pipeline)
+    # Channel 5 in PanNuke is NOT directly usable - instances must be computed
+    # Following the exact logic from prepare_family_data.py:
+    # 1. Create binary mask (union of all cell types, channels 1-5)
+    np_mask = mask[:, :, 1:].sum(axis=-1) > 0
+    # 2. Compute instances with connectedComponents
+    _, inst_map = cv2.connectedComponents(np_mask.astype(np.uint8))
 
     # Create type map from class channels (1-5)
     # Following the same logic as prepare_family_data.py (training pipeline)
     # Channels 1-5 correspond to classes 1-5 (Neoplastic, Inflammatory, Connective, Dead, Epithelial)
-    type_map = np.zeros_like(inst_map, dtype=np.uint8)
+    type_map = np.zeros((256, 256), dtype=np.uint8)
 
     for c in range(5):  # Iterate over 5 classes
         class_mask = mask[:, :, c + 1] > 0  # Channels 1-5 (indices 1, 2, 3, 4, 5)
