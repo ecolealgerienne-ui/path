@@ -251,10 +251,15 @@ def validate_fixed_data(
 
     # Row 2: OLD data (if available)
     if old_data is not None and sample_idx < old_data['np_targets'].shape[0]:
-        image_old = old_data['images'][sample_idx]
-
-        axes[1, 0].imshow(image_old)
-        axes[1, 0].set_title("Image (OLD)", fontsize=14)
+        # Check if OLD has 'images' key (might only have targets)
+        if 'images' in old_data:
+            image_old = old_data['images'][sample_idx]
+            axes[1, 0].imshow(image_old)
+            axes[1, 0].set_title("Image (OLD)", fontsize=14)
+        else:
+            # Use NEW image for OLD row (same tissue)
+            axes[1, 0].imshow(image_new)
+            axes[1, 0].set_title("Image (OLD - same as NEW)", fontsize=14)
         axes[1, 0].axis('off')
 
         axes[1, 1].imshow(np_old, cmap='gray')
