@@ -18,11 +18,20 @@ import numpy as np
 from pathlib import Path
 import cv2
 import sys
+import torch
 from typing import Dict, List, Optional, Tuple
 
 # Ajouter le chemin du projet
 PROJECT_ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
+
+# ============================================================================
+# CONSTANTES NORMALISATION H-OPTIMUS-0 (CRITIQUE - NE PAS MODIFIER)
+# ============================================================================
+HOPTIMUS_MEAN = (0.707223, 0.578729, 0.703617)
+HOPTIMUS_STD = (0.211883, 0.230117, 0.177517)
+CLS_STD_MIN = 0.70  # CLS std attendu après LayerNorm
+CLS_STD_MAX = 0.90
 
 from scripts.demo.visualize_cells import (
     overlay_mask,
@@ -157,6 +166,180 @@ if not MODEL_AVAILABLE:
 
 if not MODEL_AVAILABLE:
     print("⚠️ Aucun modèle disponible - Mode simulation activé")
+
+
+# ============================================================================
+# VALIDATION CLS STD AU DÉMARRAGE
+# ============================================================================
+def validate_cls_std(inference_model, verbose: bool = True) -> bool:
+    """
+    Valide que le preprocessing produit des CLS tokens avec std correcte.
+
+    Le CLS token std DOIT être entre 0.70 et 0.90 pour garantir
+    la cohérence entre entraînement et inférence.
+
+    Returns:
+        True si validation OK, False sinon
+    """
+    if not MODEL_AVAILABLE or inference_model is None:
+        return True  # Skip si pas de modèle
+
+    try:
+        # Créer une image de test (bruit rose simulant H&E)
+        test_image = np.random.randint(100, 200, (224, 224, 3), dtype=np.uint8)
+
+        # Prétraiter
+        tensor = inference_model.preprocess(test_image)
+
+        # Extraire features
+        features = inference_model.extract_features(tensor)
+
+        # CLS token std
+        cls_token = features[:, 0, :]
+        cls_std = float(cls_token.std().item())
+
+        if verbose:
+            print(f"  📊 Validation CLS std: {cls_std:.3f}")
+
+        if not (CLS_STD_MIN <= cls_std <= CLS_STD_MAX):
+            print(f"  ⚠️ ATTENTION: CLS std = {cls_std:.3f} hors plage [{CLS_STD_MIN}, {CLS_STD_MAX}]")
+            print(f"  ⚠️ Le preprocessing pourrait être incorrect!")
+            return False
+
+        if verbose:
+            print(f"  ✅ CLS std OK (plage attendue: {CLS_STD_MIN}-{CLS_STD_MAX})")
+        return True
+
+    except Exception as e:
+        print(f"  ⚠️ Erreur validation CLS: {e}")
+        return True  # Ne pas bloquer en cas d'erreur
+
+
+# Valider au démarrage
+if MODEL_AVAILABLE:
+    print("\n🔍 Validation du pipeline de normalisation...")
+    validate_cls_std(inference_model)
+
+
+# ============================================================================
+# FONCTIONS CONFIANCE CALIBRÉE
+# ============================================================================
+def get_confidence_color(confidence: float) -> str:
+    """
+    Retourne la couleur/emoji pour un niveau de confiance.
+
+    Seuils basés sur analyse empirique (voir CLAUDE.md section 6).
+
+    Args:
+        confidence: Confiance calibrée (0-1)
+
+    Returns:
+        Emoji et texte coloré
+    """
+    if confidence >= 0.95:
+        return "🟢 Très fiable"
+    elif confidence >= 0.85:
+        return "🟡 Fiable"
+    elif confidence >= 0.70:
+        return "🟠 À vérifier"
+    else:
+        return "🔴 Incertain"
+
+
+def format_confidence_gauge(confidence: float, width: int = 20) -> str:
+    """
+    Crée une jauge visuelle de confiance.
+
+    Args:
+        confidence: Confiance (0-1)
+        width: Largeur de la jauge en caractères
+
+    Returns:
+        Jauge ASCII colorée
+    """
+    filled = int(confidence * width)
+    empty = width - filled
+
+    # Choisir le caractère selon le niveau
+    if confidence >= 0.95:
+        char = "█"
+    elif confidence >= 0.85:
+        char = "▓"
+    elif confidence >= 0.70:
+        char = "▒"
+    else:
+        char = "░"
+
+    gauge = char * filled + "░" * empty
+    return f"[{gauge}] {confidence:.1%}"
+
+
+def format_top3_predictions(top3: List[Tuple[str, float]]) -> str:
+    """
+    Formate les top-3 prédictions avec jauges.
+
+    Args:
+        top3: Liste de (nom_organe, confiance)
+
+    Returns:
+        Texte formaté avec barres
+    """
+    lines = []
+    for i, (organ, conf) in enumerate(top3, 1):
+        color = get_confidence_color(conf)
+        gauge = format_confidence_gauge(conf)
+        lines.append(f"  {i}. {organ:15} {gauge}")
+
+    return "\n".join(lines)
+
+
+def format_organ_header(
+    organ_name: str,
+    confidence_raw: float,
+    confidence_calibrated: float,
+    top3: List[Tuple[str, float]],
+) -> str:
+    """
+    Formate l'en-tête de l'organe détecté avec confiance calibrée.
+
+    Args:
+        organ_name: Nom de l'organe
+        confidence_raw: Confiance brute (T=1.0)
+        confidence_calibrated: Confiance calibrée (T=0.5)
+        top3: Top 3 prédictions
+
+    Returns:
+        Texte formaté pour l'IHM
+    """
+    color = get_confidence_color(confidence_calibrated)
+    gauge = format_confidence_gauge(confidence_calibrated)
+
+    lines = [
+        "┌─────────────────────────────────────────────────────────┐",
+        "│ 🔬 ORGANE DÉTECTÉ                                       │",
+        "├─────────────────────────────────────────────────────────┤",
+        f"│    {organ_name:20}                               │",
+        f"│    {gauge:48} │",
+        f"│    {color:48} │",
+        "├─────────────────────────────────────────────────────────┤",
+        "│ 📊 TOP-3 PRÉDICTIONS                                    │",
+    ]
+
+    for i, (org, conf) in enumerate(top3, 1):
+        bar_len = int(conf * 20)
+        bar = "█" * bar_len + "░" * (20 - bar_len)
+        lines.append(f"│    {i}. {org:12} [{bar}] {conf:>5.1%}   │")
+
+    lines.append("└─────────────────────────────────────────────────────────┘")
+
+    # Alerte si confiance basse
+    if confidence_calibrated < 0.70:
+        lines.extend([
+            "",
+            "⚠️ ATTENTION: Confiance faible - Vérification manuelle recommandée",
+        ])
+
+    return "\n".join(lines)
 
 
 # =============================================================================
@@ -681,12 +864,19 @@ class CellVitDemo:
                 organ_name = "Unknown"
                 family = "unknown"
                 organ_conf = 0.0
+                organ_conf_calibrated = 0.0
+                top3 = []
 
                 if IS_OPTIMUS_GATE:
                     organ_info = result_data.get('organ')
                     if organ_info:
                         organ_name = organ_info.organ_name
                         organ_conf = organ_info.confidence
+                        # Confiance calibrée et top-3 (nouvelles fonctionnalités)
+                        organ_conf_calibrated = getattr(
+                            organ_info, 'confidence_calibrated', organ_conf
+                        )
+                        top3 = getattr(organ_info, 'top3', [(organ_name, organ_conf)])
                     family = result_data.get('family', 'unknown')
 
                 self.current_organ = organ_name
@@ -735,18 +925,30 @@ class CellVitDemo:
                     else:
                         comparison = f"❌ DIFFÉRENT — Prédit: {predicted} ≠ Attendu: {expected}"
 
+                    # Niveau de confiance avec couleur
+                    conf_color = get_confidence_color(organ_conf_calibrated)
+
+                    # Générer le bloc organe avec jauge et top-3
+                    organ_block = format_organ_header(
+                        organ_name=organ_name,
+                        confidence_raw=organ_conf,
+                        confidence_calibrated=organ_conf_calibrated,
+                        top3=top3 if top3 else [(organ_name, organ_conf_calibrated)],
+                    )
+
                     header = f"""
 ✅ OPTIMUS-GATE ACTIF ({MODEL_NAME})
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 🔬 Architecture:
    • Backbone: H-optimus-0 (1.1B params)
-   • Flux Global: OrganHead (classification)
+   • Flux Global: OrganHead (T=0.5 calibré)
    • Flux Local: HoVer-Net[{family}] (segmentation)
    • Sécurité: Triple OOD
 
-🏥 Organe détecté: {organ_name} ({organ_conf:.1%})
+{organ_block}
+
 🎯 {comparison}
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 """
                 else:

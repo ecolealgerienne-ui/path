@@ -14,7 +14,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
-from typing import Dict, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass
 
 
@@ -48,8 +48,11 @@ class OrganPrediction:
     organ_idx: int              # Index de l'organe prédit
     organ_name: str             # Nom de l'organe
     confidence: float           # Confiance (0-1)
+    confidence_calibrated: float  # Confiance calibrée avec Temperature Scaling
     entropy: float              # Entropie normalisée (0-1)
     probabilities: np.ndarray   # Probabilités pour chaque organe
+    probabilities_calibrated: np.ndarray  # Probabilités calibrées
+    top3: List[Tuple[str, float]]  # Top 3 prédictions (nom, confiance calibrée)
     is_ood: bool                # True si détecté comme OOD
     ood_score: float            # Score OOD combiné
 
@@ -58,10 +61,24 @@ class OrganPrediction:
             'organ_idx': self.organ_idx,
             'organ_name': self.organ_name,
             'confidence': self.confidence,
+            'confidence_calibrated': self.confidence_calibrated,
             'entropy': self.entropy,
             'is_ood': self.is_ood,
             'ood_score': self.ood_score,
+            'top3': self.top3,
         }
+
+    def get_confidence_level(self) -> str:
+        """Retourne le niveau de confiance avec couleur."""
+        conf = self.confidence_calibrated
+        if conf >= 0.95:
+            return "🟢 Très fiable"
+        elif conf >= 0.85:
+            return "🟡 Fiable"
+        elif conf >= 0.70:
+            return "🟠 À vérifier"
+        else:
+            return "🔴 Incertain"
 
 
 class OrganHead(nn.Module):
@@ -106,6 +123,10 @@ class OrganHead(nn.Module):
         self.register_buffer('cls_cov_inv', None)
         self.ood_fitted = False
         self.mahalanobis_threshold = None
+
+        # Temperature Scaling pour confiance calibrée
+        # T=0.5 déterminé empiriquement (voir scripts/calibration/calibrate_organ_head.py)
+        self.temperature = 0.5
 
     def forward(self, cls_token: torch.Tensor) -> torch.Tensor:
         """
@@ -271,40 +292,107 @@ class OrganHead(nn.Module):
 
         return ood_score, is_ood
 
+    def predict_calibrated(
+        self,
+        cls_token: torch.Tensor,
+        temperature: Optional[float] = None,
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """
+        Prédit avec probabilités calibrées via Temperature Scaling.
+
+        Args:
+            cls_token: CLS token (B, 1536) ou (1536,)
+            temperature: Température (défaut: self.temperature = 0.5)
+
+        Returns:
+            predictions: Indices des organes prédits (B,)
+            probs_raw: Probabilités brutes (B, n_organs)
+            probs_calibrated: Probabilités calibrées (B, n_organs)
+        """
+        if cls_token.dim() == 1:
+            cls_token = cls_token.unsqueeze(0)
+
+        T = temperature if temperature is not None else self.temperature
+
+        logits = self.forward(cls_token)
+        probs_raw = F.softmax(logits, dim=-1)
+        probs_calibrated = F.softmax(logits / T, dim=-1)
+        predictions = probs_calibrated.argmax(dim=-1)
+
+        return predictions, probs_raw, probs_calibrated
+
+    def get_top_k(
+        self,
+        probs: torch.Tensor,
+        k: int = 3,
+    ) -> List[Tuple[str, float]]:
+        """
+        Retourne les top-k prédictions avec confiance.
+
+        Args:
+            probs: Probabilités (B, n_organs) ou (n_organs,)
+            k: Nombre de prédictions à retourner
+
+        Returns:
+            Liste de (nom_organe, confiance)
+        """
+        if probs.dim() == 2:
+            probs = probs.squeeze(0)
+
+        top_probs, top_indices = probs.topk(k)
+
+        result = []
+        for i in range(k):
+            idx = top_indices[i].item()
+            conf = top_probs[i].item()
+            result.append((self.organ_names[idx], conf))
+
+        return result
+
     def predict_with_ood(
         self,
         cls_token: torch.Tensor,
     ) -> OrganPrediction:
         """
-        Prédit l'organe avec détection OOD.
+        Prédit l'organe avec détection OOD et confiance calibrée.
 
         Args:
             cls_token: CLS token (1536,)
 
         Returns:
-            OrganPrediction avec toutes les informations
+            OrganPrediction avec toutes les informations incluant:
+            - Confiance calibrée (Temperature Scaling T=0.5)
+            - Top-3 prédictions
         """
         if cls_token.dim() == 1:
             cls_token = cls_token.unsqueeze(0)
 
-        # Prédiction
-        pred_idx, probs = self.predict(cls_token)
+        # Prédiction avec calibration
+        pred_idx, probs_raw, probs_calibrated = self.predict_calibrated(cls_token)
         pred_idx = pred_idx.item()
-        probs_np = probs.squeeze().detach().cpu().numpy()
+        probs_raw_np = probs_raw.squeeze().detach().cpu().numpy()
+        probs_calibrated_np = probs_calibrated.squeeze().detach().cpu().numpy()
 
         # Métriques
-        confidence = float(probs.max().detach())
-        entropy = self.compute_entropy(probs.detach()).item()
+        confidence_raw = float(probs_raw.max().detach())
+        confidence_calibrated = float(probs_calibrated.max().detach())
+        entropy = self.compute_entropy(probs_raw.detach()).item()
 
-        # OOD
-        ood_score, is_ood = self.compute_ood_score(cls_token, probs)
+        # Top-3 prédictions (avec confiances calibrées)
+        top3 = self.get_top_k(probs_calibrated.squeeze(), k=3)
+
+        # OOD (utilise probs brutes pour stabilité)
+        ood_score, is_ood = self.compute_ood_score(cls_token, probs_raw)
 
         return OrganPrediction(
             organ_idx=pred_idx,
             organ_name=self.organ_names[pred_idx],
-            confidence=confidence,
+            confidence=confidence_raw,
+            confidence_calibrated=confidence_calibrated,
             entropy=entropy,
-            probabilities=probs_np,
+            probabilities=probs_raw_np,
+            probabilities_calibrated=probs_calibrated_np,
+            top3=top3,
             is_ood=is_ood,
             ood_score=ood_score,
         )
