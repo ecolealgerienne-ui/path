@@ -128,6 +128,13 @@ def load_pannuke_annotation(
     image = images[index]  # (256, 256, 3)
     mask = masks[index]    # (256, 256, 6)
 
+    # CRITICAL: Convert float64 to uint8 BEFORE saving
+    # PanNuke images are float64 [0, 255]
+    # ToPILImage() in inference expects uint8, otherwise it multiplies by 255 → overflow!
+    # See CLAUDE.md section "BUG #1: ToPILImage avec float64"
+    if image.dtype != np.uint8:
+        image = image.clip(0, 255).astype(np.uint8)
+
     # Extract instance map (channel 5)
     inst_map = mask[:, :, 5]
 
