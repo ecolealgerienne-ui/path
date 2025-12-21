@@ -25,6 +25,10 @@ def count_instances_in_target(hv_target: np.ndarray, np_target: np.ndarray) -> i
 
     Utilise watershed sur le gradient HV pour reconstruire les instances.
     """
+    # Ensure float32 for cv2.Sobel compatibility
+    if hv_target.dtype != np.float32:
+        hv_target = hv_target.astype(np.float32)
+
     # Calculer le gradient du HV map
     sobel_h = cv2.Sobel(hv_target[0], cv2.CV_64F, 1, 0, ksize=5)
     sobel_v = cv2.Sobel(hv_target[1], cv2.CV_64F, 0, 1, ksize=5)
@@ -161,11 +165,20 @@ def validate_fixed_data(
     # Compare with OLD data if available
     if old_data is not None and sample_idx < old_data['np_targets'].shape[0]:
         np_old = old_data['np_targets'][sample_idx]
-        hv_old = old_data['hv_targets'][sample_idx]
+        hv_old_raw = old_data['hv_targets'][sample_idx]
 
-        print(f"\n📊 OLD DATA (BUGGY):")
+        # CRITICAL: Normalize OLD if it's int8 [-127, 127]
+        if hv_old_raw.dtype == np.int8:
+            hv_old = hv_old_raw.astype(np.float32) / 127.0
+            print(f"\n📊 OLD DATA (BUGGY - int8 normalized for comparison):")
+            print(f"   ⚠️  Original range: [{hv_old_raw.min()}, {hv_old_raw.max()}] (int8)")
+            print(f"   ✓ Normalized to: [{hv_old.min():.3f}, {hv_old.max():.3f}] (float32)")
+        else:
+            hv_old = hv_old_raw
+            print(f"\n📊 OLD DATA (BUGGY):")
+            print(f"   HV range: [{hv_old.min():.3f}, {hv_old.max():.3f}]")
+
         print(f"   NP coverage: {np_old.sum() / np_old.size * 100:.2f}%")
-        print(f"   HV range: [{hv_old.min():.3f}, {hv_old.max():.3f}]")
         print(f"   HV gradient magnitude: {np.abs(np.gradient(hv_old, axis=(1, 2))).mean():.4f}")
 
         n_instances_old = count_instances_in_target(hv_old, np_old)
