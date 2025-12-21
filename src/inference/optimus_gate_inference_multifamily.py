@@ -166,7 +166,14 @@ class OptimusGateInferenceMultiFamily:
         np_pred: np.ndarray,
         hv_pred: np.ndarray,
     ) -> np.ndarray:
-        """Watershed sur les cartes HV pour séparer les instances."""
+        """
+        Watershed sur les cartes HV pour séparer les instances.
+
+        Paramètres optimisés via grid search (commit 48306b3):
+        - edge_threshold: 0.2 (au lieu de 0.3)
+        - dist_threshold: 1 (au lieu de 2)
+        - min_size: 10 pixels
+        """
         binary_mask = np_pred > self.np_threshold
 
         if not binary_mask.any():
@@ -179,17 +186,25 @@ class OptimusGateInferenceMultiFamily:
         edge = (edge - edge.min()) / (edge.max() - edge.min() + 1e-8)
 
         markers = np_pred.copy()
-        markers[edge > 0.3] = 0
+        markers[edge > 0.2] = 0  # ← OPTIMISÉ: 0.3 → 0.2
         markers = (markers > 0.7).astype(np.uint8)
 
         dist = ndimage.distance_transform_edt(binary_mask)
-        markers = ndimage.label(markers * (dist > 2))[0]
+        markers = ndimage.label(markers * (dist > 1))[0]  # ← OPTIMISÉ: 2 → 1
 
         if markers.max() > 0:
             from skimage.segmentation import watershed
             instance_map = watershed(-dist, markers, mask=binary_mask)
         else:
             instance_map = ndimage.label(binary_mask)[0]
+
+        # Filtrer les petites instances (min_size = 10 pixels)
+        for inst_id in range(1, instance_map.max() + 1):
+            if (instance_map == inst_id).sum() < 10:
+                instance_map[instance_map == inst_id] = 0
+
+        # Re-labeler pour enlever les gaps
+        instance_map, _ = ndimage.label(instance_map > 0)
 
         return instance_map
 
