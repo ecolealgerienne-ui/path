@@ -52,7 +52,9 @@ def compute_metrics(pred_np, pred_hv, pred_nt, target_np, target_hv, target_nt):
     # HV MSE (sur pixels de noyaux uniquement)
     mask = target_np > 0
     if mask.sum() > 0:
-        hv_mse = ((pred_hv - target_hv) ** 2)[mask].mean()
+        # Broadcast mask to HV shape (2, H, W)
+        mask_hv = mask.unsqueeze(0).expand_as(pred_hv)
+        hv_mse = ((pred_hv - target_hv) ** 2)[mask_hv].mean()
     else:
         hv_mse = torch.tensor(0.0)
 
