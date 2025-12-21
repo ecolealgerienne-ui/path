@@ -1196,6 +1196,17 @@ OrganHead   HoVerNet
 | HV MSE | 0.0150 | **0.0106** | **-29%** |
 | NT Acc | 0.88 | **0.9111** | **+3.5%** |
 
+**Résultats avec Uncertainty Weighting (Kendall et al. 2018) :**
+| Famille | Dice | HV MSE | NT Acc | w_np | w_hv | w_nt |
+|---------|------|--------|--------|------|------|------|
+| Urologique | 0.9312 | 0.2734 | 0.9055 | 1.16 | 1.15 | 1.11 |
+| Épidermoïde | 0.9544 | 0.2755 | 0.8971 | 1.09 | 1.08 | 1.07 |
+
+**Observations Uncertainty Weighting:**
+- Les poids appris convergent vers ~1.1 pour toutes les branches (équilibré)
+- Aucune branche n'est sur-pondérée → entraînement stable
+- Légère préférence pour NP (w_np légèrement > autres) → focus segmentation
+
 **Triple Sécurité OOD:**
 - Entropie organe (softmax uncertainty)
 - Mahalanobis global (CLS token distance)
