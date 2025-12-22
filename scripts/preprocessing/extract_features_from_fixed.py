@@ -60,6 +60,15 @@ def main():
     print(f"  → {n_samples} samples")
     print(f"  → Images: {images.shape} ({images.dtype})")
     print(f"  → HV targets: {hv_targets.shape} ({hv_targets.dtype})")
+
+    # Conversion uint8 si nécessaire (économie 8× espace + évite Bug #1)
+    if images.dtype != np.uint8:
+        print(f"\n⚠️  WARNING: Images en {images.dtype} au lieu de uint8")
+        print(f"   Conversion uint8 (économie ~{images.nbytes / 1e9:.1f} GB → {images.nbytes / 8 / 1e9:.1f} GB)")
+        if images.max() <= 1.0:
+            images = (images * 255).astype(np.uint8)
+        else:
+            images = images.clip(0, 255).astype(np.uint8)
     print("")
 
     # Charger H-optimus-0
