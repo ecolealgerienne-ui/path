@@ -21,9 +21,9 @@ import cv2
 PROJECT_ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-# Constantes
-HOPTIMUS_MEAN = (0.707223, 0.578729, 0.703617)
-HOPTIMUS_STD = (0.211883, 0.230117, 0.177517)
+# Imports des modules centralisés (Phase 1 Refactoring)
+from src.preprocessing import create_hoptimus_transform, HOPTIMUS_MEAN, HOPTIMUS_STD
+from src.models.loader import ModelLoader
 
 # Liste des organes PanNuke (ordre CRITIQUE pour les indices)
 PANNUKE_ORGANS = [
@@ -32,16 +32,6 @@ PANNUKE_ORGANS = [
     "Lung", "Ovarian", "Pancreatic", "Prostate", "Skin",
     "Stomach", "Testis", "Thyroid", "Uterus"
 ]
-
-
-def create_hoptimus_transform():
-    """Transform IDENTIQUE à l'entraînement."""
-    return transforms.Compose([
-        transforms.ToPILImage(),
-        transforms.Resize((224, 224)),
-        transforms.ToTensor(),
-        transforms.Normalize(mean=HOPTIMUS_MEAN, std=HOPTIMUS_STD),
-    ])
 
 
 def diagnose_preprocessing(image_path: str, expected_organ: str = "Breast"):
@@ -136,20 +126,12 @@ def diagnose_preprocessing(image_path: str, expected_organ: str = "Breast"):
     print("-" * 50)
 
     try:
-        import timm
-
         device = "cuda" if torch.cuda.is_available() else "cpu"
         print(f"  Device: {device}")
 
         print("  Chargement H-optimus-0...")
-        backbone = timm.create_model(
-            "hf-hub:bioptimus/H-optimus-0",
-            pretrained=True,
-            init_values=1e-5,
-            dynamic_img_size=False,
-        )
-        backbone.eval()
-        backbone.to(device)
+        # Utiliser le chargeur centralisé (Phase 1 Refactoring)
+        backbone = ModelLoader.load_hoptimus0(device=device)
         print("  ✓ H-optimus-0 chargé")
 
         # Forward via forward_features() qui inclut le LayerNorm final

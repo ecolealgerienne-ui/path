@@ -17,14 +17,13 @@ from pathlib import Path
 import numpy as np
 import torch
 from PIL import Image
-from torchvision import transforms
 
 # Ajouter le répertoire racine au path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-# Normalisation H-optimus-0
-HOPTIMUS_MEAN = (0.707223, 0.578729, 0.703617)
-HOPTIMUS_STD = (0.211883, 0.230117, 0.177517)
+# Imports des modules centralisés (Phase 1 Refactoring)
+from src.preprocessing import create_hoptimus_transform
+from src.models.loader import ModelLoader
 
 # Mapping nom fichier → organe attendu
 def extract_expected_organ(filename: str) -> str:
@@ -35,16 +34,6 @@ def extract_expected_organ(filename: str) -> str:
     name = Path(filename).stem  # breast_01
     organ = name.rsplit('_', 1)[0]  # breast
     return organ.capitalize()  # Breast
-
-
-def create_transform():
-    """Transform identique à extract_features.py"""
-    return transforms.Compose([
-        transforms.ToPILImage(),
-        transforms.Resize((224, 224)),
-        transforms.ToTensor(),
-        transforms.Normalize(mean=HOPTIMUS_MEAN, std=HOPTIMUS_STD),
-    ])
 
 
 def test_with_temperature(
@@ -137,20 +126,10 @@ def main():
     print(f"Images: {len(image_files)}")
     print(f"Checkpoint: {args.checkpoint}")
 
-    # Charger H-optimus-0
+    # Charger H-optimus-0 via le chargeur centralisé (Phase 1 Refactoring)
     print("\n⏳ Chargement H-optimus-0...")
-    import timm
     device = "cuda" if torch.cuda.is_available() else "cpu"
-
-    backbone = timm.create_model(
-        "hf-hub:bioptimus/H-optimus-0",
-        pretrained=True,
-        init_values=1e-5,
-        dynamic_img_size=False,
-    )
-    backbone.eval().to(device)
-    for param in backbone.parameters():
-        param.requires_grad = False
+    backbone = ModelLoader.load_hoptimus0(device=device)
     print("  ✓ H-optimus-0 chargé")
 
     # Charger OrganHead
@@ -169,8 +148,8 @@ def main():
     if calibrated_temp:
         print(f"  ✓ Température calibrée trouvée: T={calibrated_temp:.4f}")
 
-    # Transform
-    transform = create_transform()
+    # Transform centralisé (Phase 1 Refactoring)
+    transform = create_hoptimus_transform()
 
     # Mode comparaison multi-températures
     if args.compare_temps:

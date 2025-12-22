@@ -25,8 +25,13 @@ import argparse
 import sys
 from pathlib import Path
 import numpy as np
+import torch
 
-# Constantes de validation
+# Imports des modules centralisés (Phase 1 Refactoring)
+from src.preprocessing import create_hoptimus_transform, validate_features, preprocess_image
+from src.models.loader import ModelLoader
+
+# Constantes de validation (valeurs directes pour compatibilité avec prints)
 EXPECTED_CLS_STD_MIN = 0.70
 EXPECTED_CLS_STD_MAX = 0.90
 CORRUPTED_CLS_STD_MAX = 0.40  # Features sans LayerNorm ont std ~0.28
@@ -147,14 +152,6 @@ def verify_fresh_extraction(
 
     Permet de détecter les différences de preprocessing.
     """
-    import torch
-    from torchvision import transforms
-
-    try:
-        import timm
-    except ImportError:
-        return {"valid": False, "issues": ["timm non installé"]}
-
     result = {"valid": False, "issues": []}
 
     # Charger les features cachées
@@ -183,27 +180,13 @@ def verify_fresh_extraction(
 
     print(f"\n🔬 Vérification fresh extraction ({n_samples} échantillons)...")
 
-    # Charger H-optimus-0
+    # Charger H-optimus-0 via le chargeur centralisé (Phase 1 Refactoring)
     print("  Chargement H-optimus-0...")
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    model = timm.create_model(
-        "hf-hub:bioptimus/H-optimus-0",
-        pretrained=True,
-        init_values=1e-5,
-        dynamic_img_size=False
-    )
-    model.eval().to(device)
+    model = ModelLoader.load_hoptimus0(device=device)
 
-    # Transform
-    HOPTIMUS_MEAN = (0.707223, 0.578729, 0.703617)
-    HOPTIMUS_STD = (0.211883, 0.230117, 0.177517)
-
-    transform = transforms.Compose([
-        transforms.ToPILImage(),
-        transforms.Resize((224, 224)),
-        transforms.ToTensor(),
-        transforms.Normalize(mean=HOPTIMUS_MEAN, std=HOPTIMUS_STD),
-    ])
+    # Utiliser le transform centralisé (Phase 1 Refactoring)
+    transform = create_hoptimus_transform()
 
     # Extraire les features fraîches
     differences = []

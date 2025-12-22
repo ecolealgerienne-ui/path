@@ -14,25 +14,12 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 import torch
 import torch.nn.functional as F
-from torchvision import transforms
 
+# Imports des modules centralisés (Phase 1 Refactoring)
+from src.preprocessing import create_hoptimus_transform
 from src.inference.optimus_gate_inference_multifamily import OptimusGateInferenceMultiFamily
 from src.models.hovernet_decoder import HoVerNetDecoder
 from src.inference.optimus_gate_multifamily import ORGAN_TO_FAMILY
-
-# Normalisation H-optimus-0
-HOPTIMUS_MEAN = (0.707223, 0.578729, 0.703617)
-HOPTIMUS_STD = (0.211883, 0.230117, 0.177517)
-
-
-def create_transform():
-    """Transform CANONIQUE."""
-    return transforms.Compose([
-        transforms.ToPILImage(),
-        transforms.Resize((224, 224)),
-        transforms.ToTensor(),
-        transforms.Normalize(mean=HOPTIMUS_MEAN, std=HOPTIMUS_STD),
-    ])
 
 
 def compare_pipelines(
@@ -84,7 +71,8 @@ def compare_pipelines(
     else:
         image_uint8 = image
 
-    transform = create_transform()
+    # Utiliser transform centralisé (Phase 1 Refactoring)
+    transform = create_hoptimus_transform()
     tensor_inf = transform(image_uint8).unsqueeze(0).cuda()
     print(f"   Tensor shape: {tensor_inf.shape}")
     print(f"   Tensor range: [{tensor_inf.min():.3f}, {tensor_inf.max():.3f}]")
