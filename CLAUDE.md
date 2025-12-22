@@ -3017,3 +3017,155 @@ pytest tests/unit/test_preprocessing.py -v
 - Vérifier que les nouveaux scripts utilisent les modules centralisés
 
 **Statut:** ✅ Phase 1 archivée et prête pour production
+
+### 2025-12-22 — Scripts de Validation par Famille ✅ PRÊTS
+
+**Contexte:** Suite au problème de ground truth (Recall 7.69% - 1 instance géante au lieu de 9 instances séparées), création d'un pipeline de validation pour isoler la source du problème.
+
+**Objectif:** Déterminer si le problème vient de:
+1. Modèles de famille mal entraînés
+2. Routage OrganHead → Famille incorrect
+3. Instance mismatch fondamental (connectedComponents fusionne les cellules)
+
+#### Scripts Créés (4/4)
+
+| # | Script | Rôle | Statut |
+|---|--------|------|--------|
+| 1 | `prepare_test_samples_by_family.py` | Extrait 500 échantillons fold2, sélectionne 10 par organe, groupe par famille | ✅ |
+| 2 | `test_family_models_isolated.py` | Teste chaque modèle HoVer-Net sur ses propres données | ✅ |
+| 3 | `test_organ_routing.py` | Vérifie précision OrganHead et mapping organe → famille | ✅ |
+| 4 | `run_family_validation_pipeline.sh` | Orchestre les 3 étapes en séquence | ✅ |
+
+#### Stratégie d'Extraction Optimisée
+
+**Problème initial:** Charger tout fold2 en mémoire (~2722 images) causerait RAM overflow.
+
+**Solution implémentée:** Approche en deux étapes
+
+```python
+# Étape 1: Charger UNIQUEMENT les 500 premiers échantillons
+images_full = np.load(images_path, mmap_mode='r')  # Memory-mapped (0 RAM)
+masks_full = np.load(masks_path, mmap_mode='r')
+types_full = np.load(types_path)
+
+n_to_load = min(500, len(images_full))
+
+# Copier en mémoire SEULEMENT les N premiers
+images = images_full[:n_to_load].copy()  # ~500 MB
+masks = masks_full[:n_to_load].copy()
+types = types_full[:n_to_load]
+
+# Étape 2: Sélectionner max 10 par organe (reproductible avec seed=42)
+for organ, samples in organ_samples.items():
+    n_to_select = min(10, len(samples))
+    np.random.seed(42)
+    selected_indices = np.random.choice(len(samples), n_to_select, replace=False)
+    selected_samples = [samples[i] for i in selected_indices]
+```
+
+**Bénéfices:**
+- RAM max: ~1 GB au lieu de ~5.5 GB
+- Temps extraction: ~30s au lieu de ~3 minutes
+- Reproductibilité garantie (seed=42)
+- Distribution représentative des 5 familles
+
+#### Format de Sortie
+
+**Structure répertoire:**
+```
+data/test_samples_by_family/
+├── glandular/
+│   ├── test_samples.npz      # (images, masks, organs, indices)
+│   └── metadata.json         # (family, fold, n_samples, organs)
+├── digestive/
+├── urologic/
+├── epidermal/
+├── respiratory/
+└── global_report.json        # Distribution complète
+```
+
+**Exemple `metadata.json`:**
+```json
+{
+  "family": "glandular",
+  "fold": 2,
+  "n_samples": 35,
+  "organs": {
+    "Breast": 10,
+    "Prostate": 10,
+    "Thyroid": 8,
+    "Pancreatic": 5,
+    "Adrenal_gland": 2
+  }
+}
+```
+
+#### Métriques de Validation
+
+**Tests Isolés (`test_family_models_isolated.py`):**
+| Métrique | Cible | Signification |
+|----------|-------|---------------|
+| NP Dice | > 0.93 | Segmentation binaire correcte |
+| HV MSE | < 0.05 | Gradients pour séparation instances |
+| NT Acc | > 0.85 | Classification 5 types précise |
+
+**Routage (`test_organ_routing.py`):**
+| Métrique | Cible | Signification |
+|----------|-------|---------------|
+| Organ Accuracy | > 95% | OrganHead prédit l'organe correct |
+| Family Accuracy | > 99% | Mapping ORGAN_TO_FAMILY correct |
+
+#### Scénarios de Diagnostic
+
+**Scénario 1: Tests Isolés ✅, Ground Truth ❌**
+- NP Dice > 0.93 ✅, HV MSE < 0.05 ✅, NT Acc > 0.85 ✅
+- Mais Recall GT = 7.69% ❌
+- **Diagnostic:** Instance mismatch (Bug #3)
+- **Solution:** Ré-entraîner avec vraies instances PanNuke
+
+**Scénario 2: Tests Isolés ❌ pour certaines familles**
+- Glandular/Digestive OK, mais Urologic/Epidermal/Respiratory KO
+- **Diagnostic:** Données insuffisantes (< 2000 samples)
+- **Solution:** Data augmentation + ré-entraînement
+
+**Scénario 3: Routage ❌**
+- Organ Accuracy < 95% ou Family Accuracy < 99%
+- **Diagnostic:** OrganHead mal calibré ou ORGAN_TO_FAMILY incorrect
+- **Solution:** Vérifier features H-optimus-0, ré-calibrer OrganHead
+
+#### Documentation Créée
+
+| Document | Contenu | Localisation |
+|----------|---------|--------------|
+| Guide complet | Prérequis, exécution, interprétation, dépannage | `docs/GUIDE_VALIDATION_PAR_FAMILLE.md` |
+| README technique | Quick reference pour développeurs | `scripts/evaluation/README_VALIDATION_PAR_FAMILLE.md` |
+
+#### Commande d'Exécution
+
+**Pipeline complet (recommandé):**
+```bash
+bash scripts/evaluation/run_family_validation_pipeline.sh \
+    /home/amar/data/PanNuke \
+    models/checkpoints
+```
+
+**Temps estimé:** 5-10 minutes (GPU), 15-20 minutes (CPU)
+
+**Sortie:**
+```
+results/family_validation_YYYYMMDD_HHMMSS/
+├── test_samples/           # Échantillons par famille
+├── isolated_tests/         # Métriques NP/HV/NT par famille
+└── routing_tests/          # Organ/Family accuracy
+```
+
+#### Prochaines Étapes
+
+- [ ] Exécuter le pipeline (nécessite accès aux données PanNuke + checkpoints)
+- [ ] Analyser les rapports JSON générés
+- [ ] Identifier le scénario correspondant (1, 2 ou 3)
+- [ ] Appliquer la solution recommandée
+- [ ] Documenter les résultats dans CLAUDE.md
+
+**Statut:** ✅ Scripts prêts et documentés — En attente d'exécution avec données réelles
+
