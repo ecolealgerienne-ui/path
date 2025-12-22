@@ -40,6 +40,7 @@ ENV/
 
 # Data (trop lourd pour git)
 data/
+!src/data/  # Exception: src/data/ contient du code, pas des donnees
 *.h5
 *.hdf5
 *.npy
