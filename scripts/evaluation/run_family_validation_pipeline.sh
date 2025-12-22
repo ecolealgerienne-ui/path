@@ -52,7 +52,7 @@ echo ""
 python scripts/evaluation/prepare_test_samples_by_family.py \
     --pannuke_dir "$PANNUKE_DIR" \
     --fold 2 \
-    --samples_per_organ 10 \
+    --max_samples 500 \
     --output_dir "$OUTPUT_BASE/test_samples"
 
 if [ $? -ne 0 ]; then
