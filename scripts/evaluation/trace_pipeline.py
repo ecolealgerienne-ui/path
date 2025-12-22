@@ -381,26 +381,69 @@ def compare_pipelines():
     print(f"  • HV target: range [{hv_t_train.min():.3f}, {hv_t_train.max():.3f}], std {hv_t_train.std():.3f}")
     print()
 
-    # Le vrai diagnostic
-    if hv_out_train.std() < 0.1:
-        print("🔍 PROBLÈME IDENTIFIÉ:")
+    # Test de l'expert: Scaling test
+    print("=" * 80)
+    print("TEST DE SCALING (Hypothèse Expert)")
+    print("=" * 80)
+    print()
+
+    print("Hypothèse: Le modèle a appris la DIRECTION correcte des gradients,")
+    print("           mais pas la MAGNITUDE (intensité).")
+    print()
+
+    # Tester différents facteurs de scaling
+    scaling_factors = [1.0, 1.5, 2.0, 2.5, 3.0, 5.0, 10.0, 16.0]
+
+    mse_results = []
+    for scale in scaling_factors:
+        scaled_hv = hv_out_train * scale
+        diff = (scaled_hv - hv_t_train) ** 2
+        masked_diff = diff * mask_train
+        mse_scaled = (masked_diff.sum() / (mask_train.sum() * 2)).item()
+        mse_results.append(mse_scaled)
+
+        print(f"  Scale {scale:5.1f}x → MSE = {mse_scaled:.6f}")
+
+    # Trouver le meilleur scaling
+    best_idx = np.argmin(mse_results)
+    best_scale = scaling_factors[best_idx]
+    best_mse = mse_results[best_idx]
+
+    print()
+    print(f"  ✨ Meilleur scaling: {best_scale:.1f}x → MSE = {best_mse:.6f}")
+    print(f"  📊 Amélioration: {((mse_results[0] - best_mse) / mse_results[0] * 100):.1f}%")
+    print()
+
+    # Ratio std pred/target
+    ratio_std = hv_out_train.std() / hv_t_train.std()
+    print(f"  📐 Ratio std (pred/target): {ratio_std.item():.4f}")
+    print(f"  📐 Scaling théorique optimal: {1.0/ratio_std.item():.1f}x")
+    print()
+
+    # Diagnostic final
+    print("=" * 80)
+    print("DIAGNOSTIC FINAL")
+    print("=" * 80)
+    print()
+
+    if best_scale > 1.5:
+        print("🔍 PROBLÈME CONFIRMÉ: Scaling des gradients")
         print()
-        print("  Le modèle produit des HV très proches de 0:")
-        print(f"    - std = {hv_out_train.std():.4f} (attendu ~{hv_t_train.std():.4f})")
-        print(f"    - range compressé: [{hv_out_train.min():.3f}, {hv_out_train.max():.3f}]")
+        print(f"  Le modèle a appris la DIRECTION correcte (forme des gradients)")
+        print(f"  Mais pas la MAGNITUDE (intensité × {best_scale:.1f} trop faible)")
         print()
-        print("  CAUSE:")
-        print("    Le checkpoint a été entraîné avec targets DIVISÉS par 127")
-        print("    → Le modèle a appris à prédire des valeurs ~[-0.01, 0.01]")
-        print("    → Maintenant on teste avec targets CORRECTS [-1, 1]")
-        print("    → MSE = 0.30 car prédictions et targets sont dans des plages différentes")
+        print("  CAUSES POSSIBLES:")
+        print("  1. Poids de hv_head trop petits (mauvaise initialisation)")
+        print("  2. Learning rate HV trop faible")
+        print("  3. Targets normalisés différemment pendant l'entraînement")
         print()
         print("  SOLUTION:")
-        print("    Ré-entraîner from scratch avec données FIXED (sans division par 127)")
-        print("    → Le modèle apprendra à utiliser toute la plage [-1, 1]")
-        print("    → HV MSE descendra < 0.05")
+        print(f"  Option A: Multiplier hv_head par {best_scale:.1f} dans le forward")
+        print("  Option B: Ré-entraîner avec learning rate HV × 3")
+        print("  Option C: Ré-entraîner from scratch (plus safe)")
     else:
-        print("✅ Le modèle utilise bien la plage [-1, 1]")
+        print("✅ Le modèle utilise la bonne magnitude")
+        print("   Le problème est ailleurs (direction, forme des gradients)")
     print()
 
 
