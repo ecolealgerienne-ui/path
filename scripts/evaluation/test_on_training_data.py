@@ -83,7 +83,16 @@ def test_on_training_data(
 
     print(f"Chargement features: {features_path}")
     features_data = np.load(features_path)
-    features = features_data['features']  # (N, 261, 1536)
+
+    # Support des deux formats de clés (features ou layer_24)
+    if 'features' in features_data:
+        features = features_data['features']  # (N, 261, 1536)
+    elif 'layer_24' in features_data:
+        features = features_data['layer_24']  # Ancien format
+    else:
+        print(f"❌ ERREUR: Clés disponibles: {list(features_data.keys())}")
+        print("   Attendu: 'features' ou 'layer_24'")
+        return
 
     print(f"Chargement targets: {targets_path}")
     targets_data = np.load(targets_path)
