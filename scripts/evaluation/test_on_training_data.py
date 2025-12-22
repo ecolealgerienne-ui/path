@@ -132,8 +132,9 @@ def test_on_training_data(
         # RESIZE TARGETS 256→224 (EXACTEMENT comme le DataLoader)
         import torch.nn.functional as F
 
-        np_target_t = torch.from_numpy(np_target_256).unsqueeze(0).unsqueeze(0)
-        hv_target_t = torch.from_numpy(hv_target_256).unsqueeze(0)
+        # Convertir en tenseurs avec le bon type (float pour interpolation bilinear)
+        np_target_t = torch.from_numpy(np_target_256).float().unsqueeze(0).unsqueeze(0)
+        hv_target_t = torch.from_numpy(hv_target_256).float().unsqueeze(0)
         nt_target_t = torch.from_numpy(nt_target_256).float().unsqueeze(0).unsqueeze(0)
 
         np_target_t = F.interpolate(np_target_t, size=(224, 224), mode='nearest').squeeze()
