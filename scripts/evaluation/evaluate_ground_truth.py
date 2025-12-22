@@ -361,6 +361,14 @@ Examples:
         help="Print detailed per-image results"
     )
 
+    parser.add_argument(
+        "--force_family",
+        type=str,
+        default=None,
+        choices=["glandular", "digestive", "urologic", "respiratory", "epidermal"],
+        help="Force a specific HoVer-Net family (bypass OrganHead routing)"
+    )
+
     args = parser.parse_args()
 
     # Set random seed
@@ -412,8 +420,8 @@ Examples:
             # Load GT
             image, gt_inst, gt_type = load_ground_truth(npz_file)
 
-            # Predict
-            pred_result = model.predict(image)
+            # Predict (with optional forced family)
+            pred_result = model.predict(image, force_family=args.force_family)
             pred_inst = pred_result['instance_map']
             pred_type_raw = pred_result['nt_mask']
 
