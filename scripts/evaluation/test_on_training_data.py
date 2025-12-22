@@ -69,34 +69,35 @@ def test_on_training_data(
     data_dir = Path(data_dir)
 
     # Support pour les deux formats:
-    # Format FIXED: {family}_data_FIXED.npz (tout en un SAUF features)
-    # Format OLD: {family}_features.npz + {family}_targets.npz (séparés)
+    # Format PRÉFÉRÉ: {family}_features.npz + {family}_targets.npz (séparés)
+    # Format LEGACY: {family}_data_FIXED.npz (tout en un SAUF features)
 
-    data_fixed_path = data_dir / f"{family}_data_FIXED.npz"
     features_path = data_dir / f"{family}_features.npz"
     targets_path = data_dir / f"{family}_targets.npz"
+    data_fixed_path = data_dir / f"{family}_data_FIXED.npz"
 
-    # Essayer format FIXED d'abord
-    if data_fixed_path.exists():
+    # Essayer format FEATURES + TARGETS d'abord (format actuel)
+    if features_path.exists() and targets_path.exists():
+        print(f"✅ Format features+targets détecté")
+        print(f"   Features: {features_path}")
+        print(f"   Targets:  {targets_path}")
+        print("")
+
+    # Sinon, vérifier si format FIXED existe (legacy - features non extraites)
+    elif data_fixed_path.exists():
         print(f"⚠️  Format FIXED détecté: {data_fixed_path}")
         print("   Ce fichier contient images + targets, mais PAS les features.")
         print("")
         print("   Pour tester le modèle, vous devez d'abord extraire les features:")
-        print(f"   python scripts/preprocessing/extract_features.py \\")
-        print(f"       --data_file {data_fixed_path} \\")
-        print(f"       --output_file {data_dir / f'{family}_features.npz'}")
+        print(f"   python scripts/preprocessing/extract_all_family_features.py")
         print("")
-        print("   Ou utilisez les anciennes données avec --data_dir data/cache/family_data")
         return
 
-    # Sinon, charger format OLD
-    if not features_path.exists():
-        print(f"❌ ERREUR: {features_path} introuvable")
-        print("Les données d'entraînement n'ont pas été préparées.")
-        return
-
-    if not targets_path.exists():
-        print(f"❌ ERREUR: {targets_path} introuvable")
+    # Aucun format trouvé
+    else:
+        print(f"❌ ERREUR: Données introuvables dans {data_dir}")
+        print(f"   Attendu: {features_path} + {targets_path}")
+        print(f"   Ou: {data_fixed_path}")
         return
 
     print(f"Chargement features: {features_path}")
