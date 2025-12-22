@@ -75,8 +75,8 @@ def main():
 
     # Load model
     print("🚀 Loading model...")
-    model = OptimusGateInferenceMultiFamily.from_pretrained(
-        checkpoint_dir=args.checkpoint_dir,
+    model = OptimusGateInferenceMultiFamily(
+        checkpoint_dir=str(args.checkpoint_dir),
         device='cuda'
     )
 
