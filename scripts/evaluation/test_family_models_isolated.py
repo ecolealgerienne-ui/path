@@ -207,13 +207,13 @@ def test_family(
             # Extraction patch tokens
             patch_tokens = features[:, 1:257, :]  # (1, 256, 1536)
 
-            # HoVer-Net prediction
-            outputs = hovernet(patch_tokens)
+            # HoVer-Net prediction (retourne tuple: np_out, hv_out, nt_out)
+            np_out, hv_out, nt_out = hovernet(patch_tokens)
 
         # Convertir en numpy
-        np_pred = torch.sigmoid(outputs["np"]).cpu().numpy()[0, 0]  # (256, 256)
-        hv_pred = outputs["hv"].cpu().numpy()[0]  # (2, 256, 256)
-        nt_pred = torch.softmax(outputs["nt"], dim=1).cpu().numpy()[0]  # (6, 256, 256)
+        np_pred = torch.sigmoid(np_out).cpu().numpy()[0, 0]  # (256, 256)
+        hv_pred = hv_out.cpu().numpy()[0]  # (2, 256, 256)
+        nt_pred = torch.softmax(nt_out, dim=1).cpu().numpy()[0]  # (n_classes, 256, 256)
 
         # Préparer ground truth
         np_gt = mask[:, :, 1:].sum(axis=-1) > 0  # Binary union
