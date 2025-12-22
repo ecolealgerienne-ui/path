@@ -231,9 +231,10 @@ class ModelLoader:
 
             # Gérer différents formats de checkpoint
             if "model_state_dict" in state_dict:
-                model.load_state_dict(state_dict["model_state_dict"])
+                # strict=False pour permettre le chargement des buffers OOD (cls_mean, cls_cov_inv)
+                model.load_state_dict(state_dict["model_state_dict"], strict=False)
             else:
-                model.load_state_dict(state_dict)
+                model.load_state_dict(state_dict, strict=False)
 
             # Transfert + eval
             model = model.to(device)
@@ -255,7 +256,7 @@ class ModelLoader:
         checkpoint_path: Path,
         device: str = "cuda",
         embed_dim: int = 1536,
-        num_classes: int = 6,
+        num_classes: int = 5,  # 5 types de cellules (pas de background)
         dropout: float = 0.1
     ) -> torch.nn.Module:
         """
@@ -278,7 +279,7 @@ class ModelLoader:
             checkpoint_path: Chemin vers le fichier .pth
             device: Device PyTorch
             embed_dim: Dimension des patch tokens (1536)
-            num_classes: Nombre de classes cellulaires (6 = BG + 5 types)
+            num_classes: Nombre de classes cellulaires (5 types PanNuke)
             dropout: Dropout rate (0.1)
 
         Returns:
