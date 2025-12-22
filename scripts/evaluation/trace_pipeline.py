@@ -286,18 +286,23 @@ def trace_test_pipeline():
     print("ÉTAPE 5: Calcul métriques TEST")
     print("=" * 80)
 
-    mask = np_target_256 > 0  # Attention: mask 256×256 ici!
+    # Resize np_target pour avoir le mask à 224×224 (comme dans le vrai test script ligne 159)
+    np_target_t = torch.from_numpy(np_target_256).float().unsqueeze(0).unsqueeze(0)
+    np_target_224 = F.interpolate(np_target_t, size=(224, 224), mode='nearest').squeeze().numpy()
+
+    mask = np_target_224 > 0  # Mask à 224×224 maintenant
 
     if mask.sum() > 0:
-        # Test script calcule MSE comme ça
+        # Test script calcule MSE comme ça (compute_mse function)
         hv_mse = ((hv_pred[:, mask] - hv_target_224[:, mask]) ** 2).mean()
     else:
         hv_mse = 0.0
 
     print(f"\nHV MSE (test method): {hv_mse:.6f}")
-    print(f"⚠️  PROBLÈME POTENTIEL: mask est 256×256, pred et target sont 224×224!")
+    print(f"  Mask pixels: {mask.sum():.0f}")
+    print(f"  Total pixels: {np.prod(hv_pred.shape)}")
 
-    return hv_pred, hv_target_224
+    return hv_pred, hv_target_224, mask
 
 
 def compare_pipelines():
@@ -310,27 +315,69 @@ def compare_pipelines():
     print()
 
     hv_out_train, hv_t_train, mask_train = trace_train_pipeline()
-    hv_pred_test, hv_target_test = trace_test_pipeline()
+    hv_pred_test, hv_target_test, mask_test = trace_test_pipeline()
 
     print()
     print("=" * 80)
-    print("DIFFÉRENCES DÉTECTÉES")
+    print("ANALYSE DES DIFFÉRENCES")
     print("=" * 80)
     print()
 
-    print("1. Chargement HV targets:")
-    print("   TRAIN: Conversion int8→float32 si dtype==int8")
-    print("   TEST:  Pas de conversion")
+    # Comparaison des sorties HV
+    print("1. SORTIES MODÈLE HV:")
+    print(f"   TRAIN: range [{hv_out_train.min():.6f}, {hv_out_train.max():.6f}], std {hv_out_train.std():.6f}")
+    print(f"   TEST:  range [{hv_pred_test.min():.6f}, {hv_pred_test.max():.6f}], std {hv_pred_test.std():.6f}")
+    print(f"   → Identiques? {torch.allclose(hv_out_train, torch.from_numpy(hv_pred_test))}")
     print()
 
-    print("2. Calcul MSE:")
-    print("   TRAIN: mask.sum() * 2 (diviseur)")
-    print("   TEST:  .mean() directement")
+    # Comparaison des targets HV
+    print("2. TARGETS HV (après resize 224×224):")
+    print(f"   TRAIN: range [{hv_t_train.min():.6f}, {hv_t_train.max():.6f}], std {hv_t_train.std():.6f}")
+    print(f"   TEST:  range [{hv_target_test.min():.6f}, {hv_target_test.max():.6f}], std {hv_target_test.std():.6f}")
+    print(f"   → Identiques? {np.allclose(hv_t_train.numpy(), hv_target_test)}")
     print()
 
-    print("3. Shape mask:")
-    print("   TRAIN: mask = (1, 1, 224, 224)")
-    print("   TEST:  mask = (256, 256) ???")
+    # Comparaison méthode de calcul
+    print("3. MÉTHODE CALCUL MSE:")
+    print("   TRAIN: masked_diff.sum() / (mask.sum() * 2)")
+    print("   TEST:  ((pred[:, mask] - target[:, mask]) ** 2).mean()")
+    print()
+
+    # Recalculer MSE avec les deux méthodes pour comparer
+    mask_train_np = mask_train.numpy()[0, 0]  # (224, 224)
+
+    # Méthode TRAIN
+    diff_train = (hv_out_train - hv_t_train) ** 2
+    masked_diff_train = diff_train * mask_train
+    mse_train_method = (masked_diff_train.sum() / (mask_train.sum() * 2)).item()
+
+    # Méthode TEST sur mêmes données
+    hv_out_np = hv_out_train.numpy()[0]  # (2, 224, 224)
+    hv_t_np = hv_t_train.numpy()[0]  # (2, 224, 224)
+    mse_test_method = ((hv_out_np[:, mask_train_np] - hv_t_np[:, mask_train_np]) ** 2).mean()
+
+    print(f"   MSE (méthode TRAIN): {mse_train_method:.6f}")
+    print(f"   MSE (méthode TEST):  {mse_test_method:.6f}")
+    print(f"   → Différence: {abs(mse_train_method - mse_test_method):.6f}")
+    print()
+
+    # Diagnostic final
+    print("=" * 80)
+    print("DIAGNOSTIC FINAL")
+    print("=" * 80)
+    print()
+
+    if hv_out_train.std() < 0.1:
+        print("❌ PROBLÈME DÉTECTÉ: HV outputs très proches de 0")
+        print(f"   std = {hv_out_train.std():.6f} (attendu > 0.3 pour utiliser [-1, 1])")
+        print()
+        print("   CAUSES POSSIBLES:")
+        print("   1. Poids HV trop petits (mauvaise init)")
+        print("   2. Learning rate HV trop faible")
+        print("   3. Tanh saturé car entrées trop petites")
+        print("   4. Checkpoint corrompu/incomplet")
+    else:
+        print("✅ HV outputs utilisent bien la plage [-1, 1]")
     print()
 
 
