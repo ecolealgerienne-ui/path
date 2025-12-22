@@ -113,21 +113,31 @@ def trace_train_pipeline():
     print_tensor_info("hv_targets[0]", hv_sample, level=1)
     print_tensor_info("nt_targets[0]", nt_sample, level=1)
 
-    # 4. Conversion torch (ce que fait le DataLoader)
+    # 4. Conversion torch + RESIZE 256→224 (ce que fait DataLoader.__getitem__)
     print()
     print("=" * 80)
-    print("ÉTAPE 4: Conversion torch.Tensor (DataLoader batch)")
+    print("ÉTAPE 4: Resize 256→224 + Conversion torch.Tensor (DataLoader)")
     print("=" * 80)
 
     feat_t = torch.from_numpy(feat_sample).unsqueeze(0)  # (1, 261, 1536)
-    np_t = torch.from_numpy(np_sample).unsqueeze(0)  # (1, 224, 224)
-    hv_t = torch.from_numpy(hv_sample).unsqueeze(0)  # (1, 2, 224, 224)
-    nt_t = torch.from_numpy(nt_sample).unsqueeze(0)  # (1, 224, 224)
+
+    # Resize targets 256→224 (train_hovernet_family.py lignes 172-183)
+    np_target_t = torch.from_numpy(np_sample)
+    hv_target_t = torch.from_numpy(hv_sample)
+    nt_target_t = torch.from_numpy(nt_sample)
+
+    np_t = F.interpolate(np_target_t.unsqueeze(0).unsqueeze(0),
+                         size=(224, 224), mode='nearest').squeeze(0)  # (1, 224, 224)
+    hv_t = F.interpolate(hv_target_t.unsqueeze(0),
+                         size=(224, 224), mode='bilinear',
+                         align_corners=False)  # (1, 2, 224, 224)
+    nt_t = F.interpolate(nt_target_t.float().unsqueeze(0).unsqueeze(0),
+                         size=(224, 224), mode='nearest').squeeze(0).long()  # (1, 224, 224)
 
     print_tensor_info("features (batch)", feat_t, level=1)
-    print_tensor_info("np_target (batch)", np_t, level=1)
-    print_tensor_info("hv_target (batch)", hv_t, level=1)
-    print_tensor_info("nt_target (batch)", nt_t, level=1)
+    print_tensor_info("np_target 224×224 (batch)", np_t, level=1)
+    print_tensor_info("hv_target 224×224 (batch)", hv_t, level=1)
+    print_tensor_info("nt_target 224×224 (batch)", nt_t, level=1)
 
     # 5. Entrée modèle
     print()
