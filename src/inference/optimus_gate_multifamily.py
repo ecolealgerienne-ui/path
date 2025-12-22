@@ -232,7 +232,8 @@ class OptimusGateMultiFamily(nn.Module):
         # Masques et cartes
         np_mask = (np_probs[0, 1] > threshold_np).cpu().numpy()
         hv_map = hv_out[0].cpu().numpy()
-        type_map = nt_probs[0].argmax(dim=0).cpu().numpy()
+        # CORRECTIF: Model trains/outputs [0-4], PanNuke labels are [1-5] → +1 REQUIRED
+        type_map = nt_probs[0].argmax(dim=0).cpu().numpy() + 1
         type_probs = nt_probs[0].cpu().numpy()
 
         # Incertitude
@@ -300,13 +301,16 @@ class OptimusGateMultiFamily(nn.Module):
 
             types_in_cell = type_map[mask]
             type_idx = int(np.bincount(types_in_cell).argmax())
-            confidence = float(type_probs[type_idx, mask].mean())
+            # type_idx est dans [1-5] après +1, convertir vers [0-4] pour indexer type_probs et CELL_TYPES
+            if not (1 <= type_idx <= 5):
+                continue
+            confidence = float(type_probs[type_idx - 1, mask].mean())
 
             if confidence >= threshold:
                 cells.append(CellDetection(
                     x=x, y=y,
                     type_idx=type_idx,
-                    type_name=CELL_TYPES[type_idx],
+                    type_name=CELL_TYPES[type_idx - 1],
                     confidence=confidence,
                 ))
 
