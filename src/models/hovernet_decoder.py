@@ -241,8 +241,18 @@ class HoVerNetLoss(nn.Module):
         dice = (2 * intersection + smooth) / (union + smooth)
         return 1 - dice
 
-    def gradient_loss(self, pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
-        """SmoothL1 sur les gradients (pour HV maps) - moins sensible aux outliers."""
+    def gradient_loss(self, pred: torch.Tensor, target: torch.Tensor, mask: torch.Tensor = None) -> torch.Tensor:
+        """
+        SmoothL1 sur les gradients (pour HV maps) - moins sensible aux outliers.
+
+        IMPORTANT: Littérature (Graham et al.) recommande de calculer les gradients
+        pour forcer le modèle à apprendre les variations spatiales (MSGE).
+
+        Args:
+            pred: Prédictions HV (B, 2, H, W)
+            target: Targets HV (B, 2, H, W)
+            mask: Masque des noyaux (B, 1, H, W) - optionnel
+        """
         # Gradient horizontal
         pred_h = pred[:, :, :, 1:] - pred[:, :, :, :-1]
         target_h = target[:, :, :, 1:] - target[:, :, :, :-1]
@@ -251,7 +261,20 @@ class HoVerNetLoss(nn.Module):
         pred_v = pred[:, :, 1:, :] - pred[:, :, :-1, :]
         target_v = target[:, :, 1:, :] - target[:, :, :-1, :]
 
-        return self.smooth_l1(pred_h, target_h) + self.smooth_l1(pred_v, target_v)
+        if mask is not None:
+            # Masquer les gradients aussi (cohérence avec masked SmoothL1)
+            mask_h = mask[:, :, :, 1:]  # Même shape que pred_h
+            mask_v = mask[:, :, 1:, :]  # Même shape que pred_v
+
+            grad_loss_h = F.smooth_l1_loss(pred_h * mask_h, target_h * mask_h, reduction='sum')
+            grad_loss_v = F.smooth_l1_loss(pred_v * mask_v, target_v * mask_v, reduction='sum')
+
+            # Normaliser par le nombre de pixels masqués
+            grad_loss = (grad_loss_h + grad_loss_v) / (mask_h.sum() + mask_v.sum() + 1e-8)
+            return grad_loss
+        else:
+            # Fallback sans masque (backward compatibility)
+            return self.smooth_l1(pred_h, target_h) + self.smooth_l1(pred_v, target_v)
 
     def forward(
         self,
@@ -289,7 +312,10 @@ class HoVerNetLoss(nn.Module):
         else:
             hv_l1 = torch.tensor(0.0, device=hv_pred.device)
 
-        hv_loss = hv_l1  # Gradient loss sera réactivé après ce fix
+        # Gradient loss (MSGE - Graham et al.): force le modèle à apprendre les variations spatiales
+        # Poids 0.5× recommandé pour ne pas dominer le SmoothL1
+        hv_gradient = self.gradient_loss(hv_pred, hv_target, mask=mask)
+        hv_loss = hv_l1 + 0.5 * hv_gradient
 
         # NT loss: CE (sur tous les pixels)
         nt_loss = self.bce(nt_pred, nt_target.long())
