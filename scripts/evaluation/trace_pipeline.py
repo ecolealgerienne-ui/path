@@ -40,9 +40,14 @@ def print_tensor_info(name: str, data, level=0):
 
     if hasattr(data, 'min'):
         data_flat = data.flatten() if hasattr(data, 'flatten') else data
+        # Convert to float for mean/std if needed (int64 doesn't support these ops)
+        if hasattr(data_flat, 'dtype') and 'int' in str(data_flat.dtype):
+            data_flat_f = data_flat.float() if isinstance(data_flat, torch.Tensor) else data_flat.astype(np.float32)
+        else:
+            data_flat_f = data_flat
         print(f"{indent}  range: [{float(data_flat.min()):.6f}, {float(data_flat.max()):.6f}]")
-        print(f"{indent}  mean:  {float(data_flat.mean()):.6f}")
-        print(f"{indent}  std:   {float(data_flat.std()):.6f}")
+        print(f"{indent}  mean:  {float(data_flat_f.mean()):.6f}")
+        print(f"{indent}  std:   {float(data_flat_f.std()):.6f}")
 
 
 def trace_train_pipeline():
