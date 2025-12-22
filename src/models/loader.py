@@ -224,7 +224,7 @@ class ModelLoader:
 
         try:
             # Créer modèle
-            model = OrganHead(embed_dim=embed_dim, num_organs=num_organs)
+            model = OrganHead(embed_dim=embed_dim, n_organs=num_organs)  # OrganHead attend n_organs
 
             # Charger poids
             state_dict = torch.load(checkpoint_path, map_location=device)
@@ -319,7 +319,7 @@ class ModelLoader:
             # Créer modèle
             model = HoVerNetDecoder(
                 embed_dim=embed_dim,
-                num_classes=num_classes,
+                n_classes=num_classes,  # HoVerNetDecoder attend n_classes
                 dropout=dropout
             )
 
