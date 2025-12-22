@@ -48,8 +48,7 @@ for family in "${families[@]}"; do
     python scripts/preprocessing/prepare_family_data_FIXED.py \
         --data_dir "$PANNUKE_DIR" \
         --output_dir "$OUTPUT_DIR" \
-        --family "$family" \
-        --folds 0 1 2
+        --family "$family"
 
     echo ""
     echo "✅ $family complété"
