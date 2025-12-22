@@ -25,11 +25,10 @@ from typing import Dict, List, Optional, Tuple
 PROJECT_ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-# ============================================================================
-# CONSTANTES NORMALISATION H-OPTIMUS-0 (CRITIQUE - NE PAS MODIFIER)
-# ============================================================================
-HOPTIMUS_MEAN = (0.707223, 0.578729, 0.703617)
-HOPTIMUS_STD = (0.211883, 0.230117, 0.177517)
+# Imports des constantes centralisées (Phase 1 Refactoring)
+from src.preprocessing import HOPTIMUS_MEAN, HOPTIMUS_STD
+
+# Constantes de validation CLS (pour vérification au démarrage)
 CLS_STD_MIN = 0.70  # CLS std attendu après LayerNorm
 CLS_STD_MAX = 0.90
 
