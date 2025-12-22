@@ -172,7 +172,14 @@ def test_on_training_data(
             np_out, hv_out, nt_out = hovernet(patch_tokens)
 
         # Convertir en numpy (sorties à 224×224)
-        np_pred = torch.sigmoid(np_out).cpu().numpy()[0, 0]  # (224, 224)
+        # NP: Si 2 canaux (softmax), prendre canal 1 (nuclei), sinon sigmoid
+        if np_out.shape[1] == 2:
+            # Softmax 2-classes: [background, nuclei]
+            np_pred = torch.softmax(np_out, dim=1).cpu().numpy()[0, 1]  # (224, 224) - canal nuclei
+        else:
+            # Sigmoid 1-classe
+            np_pred = torch.sigmoid(np_out).cpu().numpy()[0, 0]  # (224, 224)
+
         hv_pred = hv_out.cpu().numpy()[0]  # (2, 224, 224)
         nt_pred = torch.softmax(nt_out, dim=1).cpu().numpy()[0]  # (n_classes, 224, 224)
 
