@@ -3836,3 +3836,75 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 **Statut:** ✅ Module validé, données régénérées, Bug #3 confirmé — Prêt pour extraction features
 
+### 2025-12-22 — Décision Cleanup pannuke_features ✅ DOCUMENTÉ
+
+**Question utilisateur:** "Il y a un nettoyage à faire aussi sur data/cache/pannuke_features?"
+
+**Analyse:**
+
+Le répertoire `pannuke_features/` contient les features H-optimus-0 extraites des folds PanNuke complets (~12 GB):
+- `fold0_features.npz` (~4.26 GB)
+- `fold1_features.npz` (~4.04 GB)
+- `fold2_features.npz` (~4.36 GB)
+
+**Utilisation actuelle:**
+- Script `train_organ_head.py` charge ces features (ligne 89)
+- OrganHead entraîné à 99.94% accuracy avec ces features
+
+**Problème identifié:**
+Ces features ont été extraites **AVANT** les fix Bug #1 et Bug #2:
+- Bug #1 (ToPILImage float64): Couleurs corrompues
+- Bug #2 (LayerNorm mismatch): CLS std ~0.28 au lieu de ~0.77
+
+**Décision: OUI, supprimer**
+
+| Raison | Impact |
+|--------|--------|
+| Features extraites avec preprocessing corrompu | CLS std incorrect |
+| COMMANDES_ENTRAINEMENT.md prévoit ré-extraction Phase 2 | Redondance |
+| OrganHead devra être ré-entraîné de toute façon | Pas de perte |
+| Libère ~12 GB d'espace SSD | Nécessaire (saturation disque) |
+
+**Commande de suppression:**
+```bash
+# Vérifier taille
+du -sh data/cache/pannuke_features
+
+# Supprimer
+rm -rf data/cache/pannuke_features
+
+# Libération: ~12 GB
+```
+
+**Impact sur workflow:**
+
+D'après `COMMANDES_ENTRAINEMENT.md`, le workflow complet devient:
+
+1. **Phase 1 (✅ FAIT):** Régénérer family_data_FIXED avec uint8
+2. **Phase 2 (TODO):** Extraire features fold 0, 1, 2 (preprocessing corrigé)
+   ```bash
+   python scripts/preprocessing/extract_features.py \
+       --data_dir /home/amar/data/PanNuke \
+       --fold 0 \
+       --batch_size 8 \
+       --chunk_size 300
+   ```
+3. **Phase 2b (TODO):** Valider CLS std ~0.77
+   ```bash
+   python scripts/validation/verify_features.py --features_dir data/cache/pannuke_features
+   ```
+4. **Phase 3 (TODO):** Ré-entraîner OrganHead
+   ```bash
+   python scripts/training/train_organ_head.py --folds 0 1 2 --epochs 50
+   ```
+5. **Phase 4 (TODO):** Extraire features par famille depuis FIXED data
+   ```bash
+   python scripts/preprocessing/extract_features_from_fixed.py --family glandular
+   # Répéter pour digestive, urologic, epidermal, respiratory
+   ```
+6. **Phase 5 (TODO):** Entraîner 5 familles HoVer-Net
+
+**Temps total estimé:** ~3h (30 min extraction + 10 min OrganHead + 2h HoVer-Net)
+
+**Statut:** ✅ Décision documentée — Cleanup recommandé avant Phase 2
+
