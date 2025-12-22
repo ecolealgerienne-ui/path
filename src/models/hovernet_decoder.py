@@ -115,7 +115,10 @@ class HoVerNetDecoder(nn.Module):
 
         # ===== TÊTES SPÉCIALISÉES (légères) =====
         self.np_head = DecoderHead(64, 2)        # Nuclei Presence (binaire)
-        self.hv_head = DecoderHead(64, 2)        # Horizontal-Vertical maps
+        self.hv_head = nn.Sequential(
+            DecoderHead(64, 2),
+            nn.Tanh()  # OBLIGATOIRE: forcer HV dans [-1, 1] pour matcher targets
+        )
         self.nt_head = DecoderHead(64, n_classes)  # Nuclei Type (5 classes)
 
     def reshape_features(self, x: torch.Tensor) -> torch.Tensor:
@@ -270,10 +273,9 @@ class HoVerNetLoss(nn.Module):
         np_dice = self.dice_loss(np_pred, np_target.float())
         np_loss = np_bce + np_dice
 
-        # HV loss: SmoothL1 + Gradient SmoothL1 (moins sensible aux outliers)
+        # HV loss: SmoothL1 uniquement (gradient loss retiré temporairement)
         hv_l1 = self.smooth_l1(hv_pred, hv_target)
-        hv_grad = self.gradient_loss(hv_pred, hv_target)
-        hv_loss = hv_l1 + hv_grad
+        hv_loss = hv_l1  # Gradient loss peut perturber avec targets [-1,1]
 
         # NT loss: CE (sur tous les pixels)
         nt_loss = self.bce(nt_pred, nt_target.long())

@@ -143,12 +143,20 @@ class FamilyHoVerDataset(Dataset):
         print(f"Chargement {targets_path.name}...")
         targets_data = np.load(targets_path)
         self.np_targets = targets_data['np_targets']
-        # HV stocké en int8 [-127, 127] → reconvertir en float32 [-1, 1]
-        hv_int8 = targets_data['hv_targets']
-        self.hv_targets = hv_int8.astype(np.float32) / 127.0
+
+        # HV: Gérer à la fois OLD (int8) et NEW (float32) formats
+        hv_raw = targets_data['hv_targets']
+        if hv_raw.dtype == np.int8:
+            # OLD format: int8 [-127, 127] → convertir en float32 [-1, 1]
+            self.hv_targets = hv_raw.astype(np.float32) / 127.0
+            print(f"  ⚠️  HV format OLD détecté (int8) - conversion en float32")
+        else:
+            # NEW format FIXED: déjà en float32 [-1, 1]
+            self.hv_targets = hv_raw
+
         self.nt_targets = targets_data['nt_targets']
         total_targets_gb = (self.np_targets.nbytes + self.hv_targets.nbytes + self.nt_targets.nbytes) / 1e9
-        print(f"  → Targets: {total_targets_gb:.2f} GB (HV reconverti int8→float32)")
+        print(f"  → Targets: {total_targets_gb:.2f} GB")
 
         print(f"\n📊 Dataset famille {family}: {self.n_samples} samples (tout en RAM)")
 

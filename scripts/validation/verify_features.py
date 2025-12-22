@@ -27,6 +27,9 @@ from pathlib import Path
 import numpy as np
 import torch
 
+# Ajouter le répertoire racine au PYTHONPATH
+sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+
 # Imports des modules centralisés (Phase 1 Refactoring)
 from src.preprocessing import create_hoptimus_transform, validate_features, preprocess_image
 from src.models.loader import ModelLoader

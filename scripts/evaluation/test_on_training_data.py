@@ -46,7 +46,7 @@ def compute_accuracy(pred: np.ndarray, target: np.ndarray, mask: np.ndarray) -> 
 def test_on_training_data(
     family: str,
     checkpoint_path: str,
-    data_dir: str = "data/cache/family_data",
+    data_dir: str = "data/cache/family_data_FIXED",
     n_samples: int = 100,
     device: str = "cuda"
 ):
@@ -68,17 +68,36 @@ def test_on_training_data(
 
     data_dir = Path(data_dir)
 
-    # Charger features et targets (EXACTEMENT comme le DataLoader)
+    # Support pour les deux formats:
+    # Format PRÉFÉRÉ: {family}_features.npz + {family}_targets.npz (séparés)
+    # Format LEGACY: {family}_data_FIXED.npz (tout en un SAUF features)
+
     features_path = data_dir / f"{family}_features.npz"
     targets_path = data_dir / f"{family}_targets.npz"
+    data_fixed_path = data_dir / f"{family}_data_FIXED.npz"
 
-    if not features_path.exists():
-        print(f"❌ ERREUR: {features_path} introuvable")
-        print("Les données d'entraînement n'ont pas été préparées.")
+    # Essayer format FEATURES + TARGETS d'abord (format actuel)
+    if features_path.exists() and targets_path.exists():
+        print(f"✅ Format features+targets détecté")
+        print(f"   Features: {features_path}")
+        print(f"   Targets:  {targets_path}")
+        print("")
+
+    # Sinon, vérifier si format FIXED existe (legacy - features non extraites)
+    elif data_fixed_path.exists():
+        print(f"⚠️  Format FIXED détecté: {data_fixed_path}")
+        print("   Ce fichier contient images + targets, mais PAS les features.")
+        print("")
+        print("   Pour tester le modèle, vous devez d'abord extraire les features:")
+        print(f"   python scripts/preprocessing/extract_all_family_features.py")
+        print("")
         return
 
-    if not targets_path.exists():
-        print(f"❌ ERREUR: {targets_path} introuvable")
+    # Aucun format trouvé
+    else:
+        print(f"❌ ERREUR: Données introuvables dans {data_dir}")
+        print(f"   Attendu: {features_path} + {targets_path}")
+        print(f"   Ou: {data_fixed_path}")
         return
 
     print(f"Chargement features: {features_path}")
@@ -153,7 +172,14 @@ def test_on_training_data(
             np_out, hv_out, nt_out = hovernet(patch_tokens)
 
         # Convertir en numpy (sorties à 224×224)
-        np_pred = torch.sigmoid(np_out).cpu().numpy()[0, 0]  # (224, 224)
+        # NP: Si 2 canaux (softmax), prendre canal 1 (nuclei), sinon sigmoid
+        if np_out.shape[1] == 2:
+            # Softmax 2-classes: [background, nuclei]
+            np_pred = torch.softmax(np_out, dim=1).cpu().numpy()[0, 1]  # (224, 224) - canal nuclei
+        else:
+            # Sigmoid 1-classe
+            np_pred = torch.sigmoid(np_out).cpu().numpy()[0, 0]  # (224, 224)
+
         hv_pred = hv_out.cpu().numpy()[0]  # (2, 224, 224)
         nt_pred = torch.softmax(nt_out, dim=1).cpu().numpy()[0]  # (n_classes, 224, 224)
 
@@ -258,7 +284,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Test modèle sur données d'entraînement")
     parser.add_argument("--family", type=str, required=True, choices=["glandular", "digestive", "urologic", "respiratory", "epidermal"])
     parser.add_argument("--checkpoint", type=str, required=True, help="Chemin vers hovernet_*_best.pth")
-    parser.add_argument("--data_dir", type=str, default="data/cache/family_data")
+    parser.add_argument("--data_dir", type=str, default="data/cache/family_data_FIXED")
     parser.add_argument("--n_samples", type=int, default=100, help="Nombre d'échantillons à tester")
     parser.add_argument("--device", type=str, default="cuda")
 

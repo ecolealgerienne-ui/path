@@ -7,14 +7,21 @@ import numpy as np
 from pathlib import Path
 import sys
 
-def diagnose_targets(family: str, data_dir: str = "data/cache/family_data"):
+def diagnose_targets(family: str, data_dir: str = "data/cache/family_data_FIXED"):
     """Inspecte les targets pré-calculés."""
 
     data_dir = Path(data_dir)
-    targets_path = data_dir / f"{family}_targets.npz"
+
+    # Support both naming conventions (FIXED and old)
+    targets_path = data_dir / f"{family}_data_FIXED.npz"
+    if not targets_path.exists():
+        targets_path = data_dir / f"{family}_targets.npz"  # Fallback to old naming
 
     if not targets_path.exists():
         print(f"❌ ERREUR: {targets_path} introuvable")
+        print(f"\nCherché dans:")
+        print(f"  - {data_dir / f'{family}_data_FIXED.npz'}")
+        print(f"  - {data_dir / f'{family}_targets.npz'}")
         return
 
     print("=" * 80)
@@ -168,7 +175,7 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(description="Diagnostic des targets pré-calculés")
     parser.add_argument("--family", type=str, required=True, choices=["glandular", "digestive", "urologic", "respiratory", "epidermal"])
-    parser.add_argument("--data_dir", type=str, default="data/cache/family_data")
+    parser.add_argument("--data_dir", type=str, default="data/cache/family_data_FIXED")
 
     args = parser.parse_args()
 

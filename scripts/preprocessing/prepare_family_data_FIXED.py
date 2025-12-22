@@ -223,7 +223,7 @@ def prepare_family_data(data_dir: Path, output_dir: Path, family: str, chunk_siz
             chunk_image_ids = []
 
             for idx in tqdm(chunk_indices, desc="      Processing", leave=False):
-                image = np.array(images[idx])  # Copie en RAM seulement ce dont on a besoin
+                image = np.array(images[idx], dtype=np.uint8)  # Force uint8 (économie 8×)
                 mask = np.array(masks[idx])
 
                 # ✅ FIXÉ: Utiliser vraies instances PanNuke
