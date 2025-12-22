@@ -46,7 +46,7 @@ def compute_accuracy(pred: np.ndarray, target: np.ndarray, mask: np.ndarray) -> 
 def test_on_training_data(
     family: str,
     checkpoint_path: str,
-    data_dir: str = "data/cache/family_data",
+    data_dir: str = "data/cache/family_data_FIXED",
     n_samples: int = 100,
     device: str = "cuda"
 ):
@@ -68,10 +68,28 @@ def test_on_training_data(
 
     data_dir = Path(data_dir)
 
-    # Charger features et targets (EXACTEMENT comme le DataLoader)
+    # Support pour les deux formats:
+    # Format FIXED: {family}_data_FIXED.npz (tout en un SAUF features)
+    # Format OLD: {family}_features.npz + {family}_targets.npz (séparés)
+
+    data_fixed_path = data_dir / f"{family}_data_FIXED.npz"
     features_path = data_dir / f"{family}_features.npz"
     targets_path = data_dir / f"{family}_targets.npz"
 
+    # Essayer format FIXED d'abord
+    if data_fixed_path.exists():
+        print(f"⚠️  Format FIXED détecté: {data_fixed_path}")
+        print("   Ce fichier contient images + targets, mais PAS les features.")
+        print("")
+        print("   Pour tester le modèle, vous devez d'abord extraire les features:")
+        print(f"   python scripts/preprocessing/extract_features.py \\")
+        print(f"       --data_file {data_fixed_path} \\")
+        print(f"       --output_file {data_dir / f'{family}_features.npz'}")
+        print("")
+        print("   Ou utilisez les anciennes données avec --data_dir data/cache/family_data")
+        return
+
+    # Sinon, charger format OLD
     if not features_path.exists():
         print(f"❌ ERREUR: {features_path} introuvable")
         print("Les données d'entraînement n'ont pas été préparées.")
@@ -258,7 +276,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Test modèle sur données d'entraînement")
     parser.add_argument("--family", type=str, required=True, choices=["glandular", "digestive", "urologic", "respiratory", "epidermal"])
     parser.add_argument("--checkpoint", type=str, required=True, help="Chemin vers hovernet_*_best.pth")
-    parser.add_argument("--data_dir", type=str, default="data/cache/family_data")
+    parser.add_argument("--data_dir", type=str, default="data/cache/family_data_FIXED")
     parser.add_argument("--n_samples", type=int, default=100, help="Nombre d'échantillons à tester")
     parser.add_argument("--device", type=str, default="cuda")
 
