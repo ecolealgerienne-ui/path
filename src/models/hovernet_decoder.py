@@ -115,7 +115,10 @@ class HoVerNetDecoder(nn.Module):
 
         # ===== TÊTES SPÉCIALISÉES (légères) =====
         self.np_head = DecoderHead(64, 2)        # Nuclei Presence (binaire)
-        self.hv_head = DecoderHead(64, 2)        # HV maps (entraîné sans activation)
+        self.hv_head = nn.Sequential(
+            DecoderHead(64, 2),
+            nn.Tanh()  # OBLIGATOIRE: forcer HV dans [-1, 1] pour matcher targets
+        )
         self.nt_head = DecoderHead(64, n_classes)  # Nuclei Type (5 classes)
 
     def reshape_features(self, x: torch.Tensor) -> torch.Tensor:
