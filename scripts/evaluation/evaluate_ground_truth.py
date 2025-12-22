@@ -418,16 +418,18 @@ Examples:
             pred_type_raw = pred_result['nt_mask']
 
             # Convert nt_mask to type_map
+            # Note: nt_mask already contains types in [1-5] range (model outputs with +1 applied)
             pred_type = np.zeros_like(pred_inst, dtype=np.uint8)
             for inst_id in range(1, pred_inst.max() + 1):
                 inst_mask = pred_inst == inst_id
                 if inst_mask.sum() == 0:
                     continue
                 types_in_inst = pred_type_raw[inst_mask]
-                types_valid = types_in_inst[types_in_inst >= 0]
+                types_valid = types_in_inst[types_in_inst > 0]  # Exclude background (0 or -1)
                 if len(types_valid) > 0:
+                    # nt_mask is already [1-5], just take majority vote (no +1 needed)
                     inst_type = int(np.bincount(types_valid).argmax())
-                    pred_type[inst_mask] = inst_type + 1
+                    pred_type[inst_mask] = inst_type
 
             # Resize if needed
             if pred_inst.shape != gt_inst.shape:
