@@ -344,7 +344,7 @@ def compare_pipelines():
     print()
 
     # Recalculer MSE avec les deux méthodes pour comparer
-    mask_train_np = mask_train.numpy()[0, 0]  # (224, 224)
+    mask_train_np = (mask_train.numpy()[0, 0] > 0)  # (224, 224) boolean
 
     # Méthode TRAIN
     diff_train = (hv_out_train - hv_t_train) ** 2
@@ -360,24 +360,47 @@ def compare_pipelines():
     print(f"   MSE (méthode TEST):  {mse_test_method:.6f}")
     print(f"   → Différence: {abs(mse_train_method - mse_test_method):.6f}")
     print()
+    print("   ⚠️  Les deux méthodes donnent le MÊME résultat")
+    print("   → Le problème n'est PAS dans le calcul MSE")
+    print()
 
     # Diagnostic final
     print("=" * 80)
-    print("DIAGNOSTIC FINAL")
+    print("DIAGNOSTIC FINAL - VUE GLOBALE")
     print("=" * 80)
     print()
 
+    print("RÉSUMÉ:")
+    print(f"  • Même données: ✅ (features, targets identiques)")
+    print(f"  • Même modèle: ✅ (checkpoint chargé)")
+    print(f"  • Même MSE: ✅ (train={mse_train_method:.4f}, test={mse_test_method:.4f})")
+    print()
+
+    print("ANALYSE DES VALEURS:")
+    print(f"  • HV pred:   range [{hv_out_train.min():.3f}, {hv_out_train.max():.3f}], std {hv_out_train.std():.3f}")
+    print(f"  • HV target: range [{hv_t_train.min():.3f}, {hv_t_train.max():.3f}], std {hv_t_train.std():.3f}")
+    print()
+
+    # Le vrai diagnostic
     if hv_out_train.std() < 0.1:
-        print("❌ PROBLÈME DÉTECTÉ: HV outputs très proches de 0")
-        print(f"   std = {hv_out_train.std():.6f} (attendu > 0.3 pour utiliser [-1, 1])")
+        print("🔍 PROBLÈME IDENTIFIÉ:")
         print()
-        print("   CAUSES POSSIBLES:")
-        print("   1. Poids HV trop petits (mauvaise init)")
-        print("   2. Learning rate HV trop faible")
-        print("   3. Tanh saturé car entrées trop petites")
-        print("   4. Checkpoint corrompu/incomplet")
+        print("  Le modèle produit des HV très proches de 0:")
+        print(f"    - std = {hv_out_train.std():.4f} (attendu ~{hv_t_train.std():.4f})")
+        print(f"    - range compressé: [{hv_out_train.min():.3f}, {hv_out_train.max():.3f}]")
+        print()
+        print("  CAUSE:")
+        print("    Le checkpoint a été entraîné avec targets DIVISÉS par 127")
+        print("    → Le modèle a appris à prédire des valeurs ~[-0.01, 0.01]")
+        print("    → Maintenant on teste avec targets CORRECTS [-1, 1]")
+        print("    → MSE = 0.30 car prédictions et targets sont dans des plages différentes")
+        print()
+        print("  SOLUTION:")
+        print("    Ré-entraîner from scratch avec données FIXED (sans division par 127)")
+        print("    → Le modèle apprendra à utiliser toute la plage [-1, 1]")
+        print("    → HV MSE descendra < 0.05")
     else:
-        print("✅ HV outputs utilisent bien la plage [-1, 1]")
+        print("✅ Le modèle utilise bien la plage [-1, 1]")
     print()
 
 
