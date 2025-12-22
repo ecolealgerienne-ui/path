@@ -3722,3 +3722,117 @@ loss = ((hv_pred - hv_target_t) ** 2).mean()
 
 **Statut:** ✅ Factorisation complète — En attente validation tests
 
+### 2025-12-22 — Validation Module & Régénération Données ✅ COMPLET
+
+**Phase 1: Validation Module (✅ COMPLÉTÉ)**
+
+Tous les tests du module `src/data/preprocessing.py` ont passé avec succès:
+
+```bash
+python scripts/validation/test_preprocessing_module.py
+
+✅ TEST 1: TargetFormat Dataclass - All fields correct
+✅ TEST 2: Validation Targets Corrects - Accepts float32 [-1, 1]
+✅ TEST 3: Détection Bug #3 - Correctly rejects int8 [-127, 127]
+✅ TEST 4: Resize Targets 256 → 224 - Correct interpolation
+✅ TEST 5: Batch Preparation - DataLoader compatible
+
+🎉 TOUS LES TESTS PASSENT
+```
+
+**Phase 2: Régénération Données (✅ COMPLÉTÉ)**
+
+Régénération des 5 familles avec `--chunk_size 300` pour optimisation RAM:
+
+```bash
+bash scripts/preprocessing/regenerate_all_family_data.sh
+
+✅ Glandular (3391 samples)
+✅ Digestive (2430 samples)
+✅ Urologic (1101 samples)
+✅ Epidermal (571 samples)
+✅ Respiratory (408 samples)
+```
+
+**Résultats:**
+- Anciennes données sauvegardées: `family_data_OLD_int8_20251222_163212/`
+- Nouvelles données: `family_data_FIXED/`
+- Symlink créé: `family_data → family_data_FIXED`
+- RAM peak: ~11 GB par famille (chunking efficace)
+
+**Phase 3: Validation HV Targets (✅ COMPLÉTÉ)**
+
+Vérification des targets avec `diagnose_targets.py`:
+
+```
+HV TARGETS (Glandular):
+✅ Dtype:  float32  (before: int8)
+✅ Min:    -1.000   (before: -127)
+✅ Max:    1.000    (before: +127)
+✅ Mean:   0.000    (coherent)
+✅ Std:    0.535    (coherent)
+```
+
+**Phase 4: Confirmation Bug #3 (✅ COMPLÉTÉ)**
+
+Test avec anciennes données int8 pour confirmer le bug:
+
+```bash
+python scripts/evaluation/test_on_training_data.py \
+    --family glandular \
+    --checkpoint models/checkpoints/hovernet_glandular_best.pth \
+    --n_samples 10 \
+    --data_dir data/cache/family_data_OLD_int8_20251222_163212
+
+Résultats (OLD int8):
+NP Dice:  0.0184 ± 0.0113  (vs 0.9648 expected, Δ -98.1%)
+HV MSE:   4681.8 ± 462.5   (vs 0.0106 expected, Δ +44,168,002%)
+NT Acc:   0.9518 ± 0.0209  (vs 0.9111 expected, Δ +4.5%)
+```
+
+**Conclusion:** Bug #3 confirmé — Ratio MSE: 4681.8 / 0.0106 = **441,698× pire** avec int8!
+
+**Phase 5: Fix Script extract_features.py (✅ COMPLÉTÉ)**
+
+Le script `extract_features.py` avait un problème d'import (`ModuleNotFoundError: No module named 'src'`).
+
+**Fix appliqué:**
+```python
+# Ajout PYTHONPATH setup (lignes 28-30)
+import sys
+from pathlib import Path
+
+# Ajouter le répertoire racine au PYTHONPATH
+sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+```
+
+**Commit:** `e0b8299` — "fix: Add PYTHONPATH setup to extract_features.py for module imports"
+
+**Prochaines Étapes:**
+
+**Phase 6: Extraction Features (EN COURS)**
+- [ ] Extraire features H-optimus-0 pour données FIXED (5 familles)
+- [ ] Commande recommandée (avec chunking):
+  ```bash
+  python scripts/preprocessing/extract_features.py \
+      --data_dir /home/amar/data/PanNuke \
+      --fold 0 \
+      --batch_size 8 \
+      --chunk_size 300
+  ```
+
+**Phase 7: Validation Performance (APRÈS extraction)**
+- [ ] Tester modèle avec données FIXED (float32)
+- [ ] Attendu: NP Dice ~0.96, HV MSE ~0.01 (vs 4681.8 avec int8)
+
+**Phase 8: Décision Ré-entraînement**
+- [ ] Si modèles OK avec FIXED: skip ré-entraînement (gain 10h)
+- [ ] Si modèles KO: ré-entraîner 5 familles
+
+**Phase 9: Cleanup Disque**
+- [ ] Exécuter `identify_redundant_data.py`
+- [ ] Supprimer `family_data_OLD_int8_*` (après validation)
+- [ ] Libérer SSD
+
+**Statut:** ✅ Module validé, données régénérées, Bug #3 confirmé — Prêt pour extraction features
+
