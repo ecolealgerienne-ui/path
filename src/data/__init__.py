@@ -1,8 +1,8 @@
 """
-Module de gestion des données.
+Module de gestion des donnees.
 
 Ce module centralise toutes les fonctions de preprocessing et de chargement
-des données pour garantir la cohérence entre entraînement et évaluation.
+des donnees pour garantir la coherence entre entrainement et evaluation.
 """
 
 from .preprocessing import (
