@@ -312,10 +312,9 @@ class HoVerNetLoss(nn.Module):
         else:
             hv_l1 = torch.tensor(0.0, device=hv_pred.device)
 
-        # Gradient loss (MSGE - Graham et al.): force le modèle à apprendre les variations spatiales
-        # Poids 0.5× recommandé pour ne pas dominer le SmoothL1
-        hv_gradient = self.gradient_loss(hv_pred, hv_target, mask=mask)
-        hv_loss = hv_l1 + 0.5 * hv_gradient
+        # Gradient loss désactivé: crée des discontinuités artificielles aux bordures du masque
+        # Le masquage seul est suffisant (HV MSE: 0.30 → 0.25 sans gradient_loss)
+        hv_loss = hv_l1
 
         # NT loss: CE (sur tous les pixels)
         nt_loss = self.bce(nt_pred, nt_target.long())
