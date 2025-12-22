@@ -11,7 +11,6 @@ import cv2
 from pathlib import Path
 from typing import Dict, Optional
 from scipy import ndimage
-from torchvision import transforms
 
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
@@ -25,24 +24,9 @@ from src.inference.optimus_gate_multifamily import (
 )
 from src.uncertainty import ConfidenceLevel
 
-# Normalisation H-optimus-0
-HOPTIMUS_MEAN = (0.707223, 0.578729, 0.703617)
-HOPTIMUS_STD = (0.211883, 0.230117, 0.177517)
-
-
-def create_hoptimus_transform():
-    """
-    Crée la transformation EXACTE utilisée pendant l'extraction des features.
-
-    IMPORTANT: Doit être identique à scripts/preprocessing/extract_features.py
-    pour garantir la cohérence entre entraînement et inférence.
-    """
-    return transforms.Compose([
-        transforms.ToPILImage(),
-        transforms.Resize((224, 224)),
-        transforms.ToTensor(),
-        transforms.Normalize(mean=HOPTIMUS_MEAN, std=HOPTIMUS_STD),
-    ])
+# Imports des modules centralisés (Phase 1 Refactoring)
+from src.preprocessing import preprocess_image, validate_features
+from src.models.loader import ModelLoader
 
 # Couleurs pour visualisation
 CELL_COLORS = {
@@ -87,21 +71,9 @@ class OptimusGateInferenceMultiFamily:
 
         print(f"🚀 Chargement Optimus-Gate Multi-Famille sur {device}...")
 
-        # 1. Charger H-optimus-0 backbone
-        import timm
+        # 1. Charger H-optimus-0 backbone via ModelLoader (centralisé)
         print("  ⏳ Chargement H-optimus-0 (1.1B params)...")
-        self.backbone = timm.create_model(
-            "hf-hub:bioptimus/H-optimus-0",
-            pretrained=True,
-            init_values=1e-5,
-            dynamic_img_size=False,
-        )
-        self.backbone.eval()
-        self.backbone.to(device)
-
-        for param in self.backbone.parameters():
-            param.requires_grad = False
-
+        self.backbone = ModelLoader.load_hoptimus0(device=device)
         print("  ✓ H-optimus-0 chargé")
 
         # 2. Charger Optimus-Gate Multi-Famille
@@ -110,9 +82,6 @@ class OptimusGateInferenceMultiFamily:
             device=device,
         )
 
-        # 3. Créer le transform (DOIT être identique à extract_features.py)
-        self.transform = create_hoptimus_transform()
-
         print("  ✅ Optimus-Gate Multi-Famille prêt!")
 
     def extract_features(self, x: torch.Tensor) -> torch.Tensor:
@@ -120,46 +89,45 @@ class OptimusGateInferenceMultiFamily:
         Extrait les features de H-optimus-0 via forward_features().
 
         IMPORTANT: Utilise forward_features() qui inclut le LayerNorm final.
-        Ceci est cohérent avec scripts/preprocessing/extract_features.py.
+        Validation automatique des features pour détecter les bugs.
 
         Args:
             x: Tensor d'entrée (B, 3, 224, 224)
 
         Returns:
             Features (B, 261, 1536) - CLS token + 256 patch tokens
+
+        Raises:
+            RuntimeError: Si features corrompues (CLS std hors plage)
         """
         # forward_features() inclut le LayerNorm final
         features = self.backbone.forward_features(x)
+
+        # Validation automatique (Phase 1 Refactoring - détection bugs)
+        validation = validate_features(features)
+        if not validation["valid"]:
+            raise RuntimeError(
+                f"❌ Features corrompues détectées!\n{validation['message']}\n\n"
+                f"Cela indique un problème de preprocessing ou de chargement modèle."
+            )
+
         return features.float()
 
     def preprocess(self, image: np.ndarray) -> torch.Tensor:
         """
         Prétraitement de l'image pour H-optimus-0.
 
-        IMPORTANT: Utilise EXACTEMENT le même pipeline torchvision que
-        l'extraction des features (scripts/preprocessing/extract_features.py)
-        pour garantir la cohérence entre entraînement et inférence.
+        Utilise le module centralisé src.preprocessing pour garantir
+        la cohérence parfaite entre entraînement et inférence.
 
-        Gère automatiquement:
-        - uint8 [0, 255] → via ToPILImage + ToTensor + Normalize
-        - float [0, 1] → converti en uint8 d'abord
-        - float [0, 255] → converti en uint8 d'abord
+        Args:
+            image: Image RGB (H, W, 3) - uint8, float [0-1], ou float [0-255]
+
+        Returns:
+            Tensor (1, 3, 224, 224) normalisé
         """
-        # Convertir en uint8 [0, 255] pour ToPILImage
-        # (ToPILImage attend uint8 ou float [0,1], pas float [0,255])
-        if image.dtype != np.uint8:
-            if image.max() <= 1.0:
-                # float [0, 1] → uint8 [0, 255]
-                image = (image * 255).clip(0, 255).astype(np.uint8)
-            else:
-                # float [0, 255] → uint8 [0, 255]
-                image = image.clip(0, 255).astype(np.uint8)
-
-        # Appliquer le transform torchvision (identique à l'entraînement)
-        tensor = self.transform(image)
-
-        # Ajouter dimension batch
-        return tensor.unsqueeze(0).to(self.device)
+        # Utiliser la fonction centralisée (Phase 1 Refactoring)
+        return preprocess_image(image, device=self.device)
 
     def post_process_hv(
         self,
