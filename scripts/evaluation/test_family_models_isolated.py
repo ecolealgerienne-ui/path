@@ -31,6 +31,8 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from src.models.organ_families import FAMILIES
 from src.models.loader import ModelLoader
 from src.preprocessing import preprocess_image, validate_features
+from src.utils.image_utils import prepare_predictions_for_evaluation
+from src.constants import PANNUKE_IMAGE_SIZE
 
 
 def compute_hv_maps_from_mask(mask: np.ndarray) -> np.ndarray:
@@ -210,22 +212,27 @@ def test_family(
             # HoVer-Net prediction (retourne tuple: np_out, hv_out, nt_out)
             np_out, hv_out, nt_out = hovernet(patch_tokens)
 
-        # Convertir en numpy
-        np_pred = torch.sigmoid(np_out).cpu().numpy()[0, 0]  # (256, 256)
-        hv_pred = hv_out.cpu().numpy()[0]  # (2, 256, 256)
-        nt_pred = torch.softmax(nt_out, dim=1).cpu().numpy()[0]  # (n_classes, 256, 256)
+        # Convertir en numpy (sorties HoVer-Net sont à 224×224)
+        np_pred_raw = torch.sigmoid(np_out).cpu().numpy()[0, 0]  # (224, 224)
+        hv_pred_raw = hv_out.cpu().numpy()[0]  # (2, 224, 224)
+        nt_pred_raw = torch.softmax(nt_out, dim=1).cpu().numpy()[0]  # (n_classes, 224, 224)
 
-        # Préparer ground truth
+        # Resize vers taille PanNuke (256×256) pour compatibilité avec GT
+        np_pred, hv_pred, nt_pred = prepare_predictions_for_evaluation(
+            np_pred_raw, hv_pred_raw, nt_pred_raw, target_size=PANNUKE_IMAGE_SIZE
+        )
+
+        # Préparer ground truth (déjà à 256×256)
         np_gt = mask[:, :, 1:].sum(axis=-1) > 0  # Binary union
         hv_gt = compute_hv_maps_from_mask(np_gt)
 
         # NT ground truth (argmax sur canaux 1-5)
-        nt_gt = np.zeros((256, 256), dtype=np.int64)
+        nt_gt = np.zeros((PANNUKE_IMAGE_SIZE, PANNUKE_IMAGE_SIZE), dtype=np.int64)
         for c in range(5):
             type_mask = mask[:, :, c + 1] > 0
             nt_gt[type_mask] = c
 
-        # Calculer métriques
+        # Calculer métriques (maintenant toutes à 256×256)
         pred = {"np": np_pred, "hv": hv_pred, "nt": nt_pred}
         gt = {"np": np_gt.astype(np.float32), "hv": hv_gt, "nt": nt_gt}
 
