@@ -15,7 +15,7 @@ Basé sur:
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from typing import Tuple, Optional
+from typing import Tuple
 
 
 class UpsampleBlock(nn.Module):
@@ -45,17 +45,14 @@ class DecoderHead(nn.Module):
     Prend les features du tronc commun et prédit la sortie spécifique.
     """
 
-    def __init__(self, in_channels: int, out_channels: int, activation: Optional[nn.Module] = None):
+    def __init__(self, in_channels: int, out_channels: int):
         super().__init__()
-        layers = [
+        self.head = nn.Sequential(
             nn.Conv2d(in_channels, in_channels // 2, 3, padding=1, bias=False),
             nn.BatchNorm2d(in_channels // 2),
             nn.ReLU(inplace=True),
             nn.Conv2d(in_channels // 2, out_channels, 1),
-        ]
-        if activation is not None:
-            layers.append(activation)
-        self.head = nn.Sequential(*layers)
+        )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.head(x)
@@ -118,7 +115,7 @@ class HoVerNetDecoder(nn.Module):
 
         # ===== TÊTES SPÉCIALISÉES (légères) =====
         self.np_head = DecoderHead(64, 2)        # Nuclei Presence (binaire)
-        self.hv_head = DecoderHead(64, 2, activation=nn.Tanh())  # HV maps dans [-1, 1]
+        self.hv_head = DecoderHead(64, 2)        # HV maps (entraîné sans activation)
         self.nt_head = DecoderHead(64, n_classes)  # Nuclei Type (5 classes)
 
     def reshape_features(self, x: torch.Tensor) -> torch.Tensor:
