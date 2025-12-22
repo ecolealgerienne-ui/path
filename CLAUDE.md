@@ -215,6 +215,120 @@ cellvit-optimus/
 4. **Cache d'embeddings versionné** — Hash [Backbone]+[Preprocessing]+[Resolution]+[Date]
 5. **Distillation limitée au pré-triage** — Le modèle original reste obligatoire pour diagnostic
 6. **Cartes HV pré-calculées** — Stockage int8 pour économie mémoire (voir section ci-dessous)
+7. **Interface standardisée pour modèles** — Wrappers pour isoler les changements d'implémentation (voir section ci-dessous)
+
+---
+
+## 🎯 Interface Standardisée des Modèles (2025-12-22)
+
+### Problème Identifié
+
+Les scripts d'évaluation/inférence accédaient directement aux sorties des modèles, créant une **dépendance forte** sur les détails d'implémentation (tuple vs dict, ordre des retours, etc.).
+
+**Symptôme typique :**
+```python
+# ❌ Script fragile
+outputs = hovernet(features)
+np_pred = outputs["np"]  # ERREUR si le modèle retourne un tuple
+```
+
+**Impact :**
+- Changement d'implémentation modèle → **bug dans tous les scripts**
+- Onboarding difficile (chaque développeur doit connaître les détails internes)
+- Tests fragiles (cassent lors de refactoring)
+
+### Solution : Wrappers Standardisés
+
+Module créé : `src/models/model_interface.py`
+
+**3 wrappers principaux :**
+
+| Wrapper | Rôle | Format de sortie |
+|---------|------|------------------|
+| `HoVerNetWrapper` | Normalise HoVer-Net | `HoVerNetOutput(np, hv, nt)` |
+| `OrganHeadWrapper` | Normalise OrganHead | `OrganHeadOutput(logits, organ_name, confidence, ...)` |
+| `BackboneWrapper` | Normalise H-optimus-0 | `torch.Tensor` + validation auto |
+
+### Usage Recommandé
+
+#### Avant (fragile)
+
+```python
+from src.models.loader import ModelLoader
+
+hovernet = ModelLoader.load_hovernet(checkpoint, device)
+outputs = hovernet(features)  # tuple ou dict ?
+
+# ❌ Erreur si implémentation change
+np_pred = outputs["np"]  # TypeError si tuple
+```
+
+#### Après (robuste)
+
+```python
+from src.models import create_hovernet_wrapper
+
+hovernet = create_hovernet_wrapper(checkpoint, device)
+output = hovernet(features)  # TOUJOURS HoVerNetOutput
+
+# ✅ Interface stable
+np_pred = output.np  # Fonctionne toujours
+result = output.to_numpy(apply_activations=True)  # {"np": ..., "hv": ..., "nt": ...}
+```
+
+### Avantages
+
+✅ **Isolation des changements** : Modèle interne peut changer (tuple → dict → dataclass) sans casser les scripts
+
+✅ **Validation automatique** : BackboneWrapper vérifie CLS std [0.70-0.90] par défaut
+
+✅ **Activations intégrées** : `output.to_numpy(apply_activations=True)` applique sigmoid/softmax automatiquement
+
+✅ **Type safety** : Les IDEs peuvent autocomplete les attributs (`output.np`, `output.hv`, etc.)
+
+✅ **Debugging simplifié** : Un seul endroit à modifier pour tous les scripts
+
+### Migration Progressive
+
+**Nouveaux scripts** : DOIVENT utiliser les wrappers
+
+**Scripts existants** : Migration optionnelle mais recommandée
+
+**Exemple de migration** :
+
+```python
+# Ancienne version (scripts/evaluation/test_family_models_isolated.py lignes 210-216)
+outputs = hovernet(patch_tokens)
+np_pred = torch.sigmoid(outputs["np"]).cpu().numpy()[0, 0]  # ❌ Fragile
+
+# Nouvelle version (recommandée)
+from src.models import HoVerNetWrapper
+
+hovernet_wrapper = HoVerNetWrapper(hovernet, device)
+output = hovernet_wrapper(patch_tokens)
+np_pred = output.to_numpy()["np"]  # ✅ Robuste
+```
+
+### Factories Disponibles
+
+```python
+from src.models import (
+    create_hovernet_wrapper,
+    create_organ_head_wrapper,
+    create_backbone_wrapper,
+)
+
+# Créer tous les wrappers en 3 lignes
+backbone = create_backbone_wrapper(device="cuda")
+organ_head = create_organ_head_wrapper("models/checkpoints/organ_head_best.pth", temperature=0.5)
+hovernet = create_hovernet_wrapper("models/checkpoints/hovernet_glandular_best.pth")
+```
+
+### Principe de Design
+
+> **"Les scripts ne doivent JAMAIS dépendre de la structure interne des modèles."**
+
+Cette règle évite les bugs de compatibilité et facilite la maintenance à long terme.
 
 ---
 
