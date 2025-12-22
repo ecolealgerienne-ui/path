@@ -273,9 +273,23 @@ class HoVerNetLoss(nn.Module):
         np_dice = self.dice_loss(np_pred, np_target.float())
         np_loss = np_bce + np_dice
 
-        # HV loss: SmoothL1 uniquement (gradient loss retiré temporairement)
-        hv_l1 = self.smooth_l1(hv_pred, hv_target)
-        hv_loss = hv_l1  # Gradient loss peut perturber avec targets [-1,1]
+        # HV loss: SmoothL1 MASQUÉ (uniquement sur pixels de noyaux)
+        # Littérature (Graham et al.): MSE doit être calculé UNIQUEMENT sur les noyaux
+        # Sinon le modèle apprend à prédire 0 (background domine 70-80% des pixels)
+        mask = np_target.float().unsqueeze(1)  # (B, 1, H, W)
+
+        if mask.sum() > 0:
+            # Masquer pred et target
+            hv_pred_masked = hv_pred * mask
+            hv_target_masked = hv_target * mask
+
+            # SmoothL1 sur les versions masquées
+            hv_l1_sum = F.smooth_l1_loss(hv_pred_masked, hv_target_masked, reduction='sum')
+            hv_l1 = hv_l1_sum / (mask.sum() * 2)  # *2 car 2 canaux (H, V)
+        else:
+            hv_l1 = torch.tensor(0.0, device=hv_pred.device)
+
+        hv_loss = hv_l1  # Gradient loss sera réactivé après ce fix
 
         # NT loss: CE (sur tous les pixels)
         nt_loss = self.bce(nt_pred, nt_target.long())
