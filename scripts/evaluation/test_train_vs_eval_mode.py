@@ -15,13 +15,18 @@ from src.models.loader import ModelLoader
 
 def compute_hv_mse_like_training(hv_pred, hv_target, np_target):
     """Calcul EXACT comme dans train_hovernet_family.py ligne 208-221."""
-    mask = np_target.float().unsqueeze(0).unsqueeze(0)  # (1, 1, H, W)
+    # Convertir numpy arrays en tensors
+    np_target_t = torch.from_numpy(np_target)
+    hv_pred_t = torch.from_numpy(hv_pred)
+    hv_target_t = torch.from_numpy(hv_target)
+
+    mask = np_target_t.float().unsqueeze(0).unsqueeze(0)  # (1, 1, H, W)
 
     if mask.sum() == 0:
         return 0.0
 
-    hv_pred_t = torch.from_numpy(hv_pred).unsqueeze(0)  # (1, 2, H, W)
-    hv_target_t = torch.from_numpy(hv_target).unsqueeze(0)  # (1, 2, H, W)
+    hv_pred_t = hv_pred_t.unsqueeze(0)  # (1, 2, H, W)
+    hv_target_t = hv_target_t.unsqueeze(0)  # (1, 2, H, W)
 
     diff = (hv_pred_t - hv_target_t) ** 2
     masked_diff = diff * mask
