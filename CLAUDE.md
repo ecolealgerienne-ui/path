@@ -216,6 +216,7 @@ cellvit-optimus/
 5. **Distillation limitée au pré-triage** — Le modèle original reste obligatoire pour diagnostic
 6. **Cartes HV pré-calculées** — Stockage int8 pour économie mémoire (voir section ci-dessous)
 7. **Interface standardisée pour modèles** — Wrappers pour isoler les changements d'implémentation (voir section ci-dessous)
+8. **Constantes centralisées** — Source unique de vérité pour dimensions, normalisation, validation (voir section ci-dessous)
 
 ---
 
@@ -329,6 +330,299 @@ hovernet = create_hovernet_wrapper("models/checkpoints/hovernet_glandular_best.p
 > **"Les scripts ne doivent JAMAIS dépendre de la structure interne des modèles."**
 
 Cette règle évite les bugs de compatibilité et facilite la maintenance à long terme.
+
+---
+
+## 📏 Constantes Centralisées et Gestion des Tailles (2025-12-22)
+
+### Problème Identifié
+
+Les constantes (dimensions, normalisation) et fonctions de resize étaient **dupliquées dans 15+ fichiers**, causant :
+
+**1. Bug de Size Mismatch (découvert 2025-12-22) :**
+```python
+# scripts/evaluation/test_family_models_isolated.py
+np_pred = torch.sigmoid(np_out).cpu().numpy()[0, 0]  # (224, 224)
+np_gt = mask[:, :, 1:].sum(axis=-1) > 0              # (256, 256)
+metrics = compute_metrics(pred, gt)
+# ValueError: operands could not be broadcast together with shapes (224,224) (256,256)
+```
+
+**Cause racine :**
+- HoVer-Net produit des sorties à **224×224** (taille d'entrée H-optimus-0)
+- PanNuke ground truth est à **256×256** (taille dataset originale)
+- Pas de resize standardisé → comparaison impossible
+
+**2. Duplication de Constantes :**
+- `HOPTIMUS_MEAN/STD` redéfini dans 11 fichiers
+- Risque de divergence entre entraînement et inférence
+- Changement de valeur → modification dans 11 endroits
+
+**3. Logique de Resize Éparpillée :**
+- Chaque script implémentait son propre resize
+- Choix d'interpolation incohérents (nearest vs linear vs cubic)
+- Pas de validation automatique des shapes
+
+### Solution : Modules Centralisés
+
+#### Module 1 : `src/constants.py` (Source Unique de Vérité)
+
+```python
+"""
+Constantes globales du projet.
+
+Principe: Une constante définie ICI est utilisée PARTOUT, jamais redéfinie.
+"""
+
+# =============================================================================
+# TAILLES D'IMAGES
+# =============================================================================
+
+# H-optimus-0 backbone (ViT-Giant/14)
+HOPTIMUS_INPUT_SIZE = 224      # Taille d'entrée fixe du modèle
+HOPTIMUS_PATCH_SIZE = 14       # Taille des patches ViT
+HOPTIMUS_NUM_PATCHES = 256     # (224 / 14)^2 = 256 patches
+HOPTIMUS_EMBED_DIM = 1536      # Dimension des embeddings
+
+# PanNuke dataset
+PANNUKE_IMAGE_SIZE = 256       # Taille originale des images PanNuke
+PANNUKE_NUM_CLASSES = 5        # Neoplastic, Inflammatory, Connective, Dead, Epithelial
+PANNUKE_NUM_ORGANS = 19        # 19 organes dans PanNuke
+
+# HoVer-Net decoder
+HOVERNET_OUTPUT_SIZE = HOPTIMUS_INPUT_SIZE  # Sorties à la même taille que l'input (224×224)
+
+# =============================================================================
+# NORMALISATION H-OPTIMUS-0
+# =============================================================================
+
+HOPTIMUS_MEAN = (0.707223, 0.578729, 0.703617)
+HOPTIMUS_STD = (0.211883, 0.230117, 0.177517)
+
+# Validation features
+HOPTIMUS_CLS_STD_MIN = 0.70   # Minimum attendu pour CLS std (détecte Bug #2 LayerNorm)
+HOPTIMUS_CLS_STD_MAX = 0.90   # Maximum attendu
+
+# =============================================================================
+# HELPER FUNCTIONS
+# =============================================================================
+
+def get_image_size_mismatch_info() -> dict:
+    """
+    Retourne les informations de mismatch entre HoVer-Net et PanNuke.
+
+    Returns:
+        {
+            "hovernet_size": 224,
+            "pannuke_size": 256,
+            "needs_resize": True,
+            "resize_direction": "predictions → ground_truth"
+        }
+    """
+    return {
+        "hovernet_size": HOVERNET_OUTPUT_SIZE,
+        "pannuke_size": PANNUKE_IMAGE_SIZE,
+        "needs_resize": HOVERNET_OUTPUT_SIZE != PANNUKE_IMAGE_SIZE,
+        "resize_direction": "predictions → ground_truth"
+    }
+```
+
+#### Module 2 : `src/utils/image_utils.py` (Resize Standardisé)
+
+**Fonction de référence** : `prepare_predictions_for_evaluation()`
+
+```python
+def prepare_predictions_for_evaluation(
+    np_pred: np.ndarray,   # (H, W) - float [0, 1] après sigmoid
+    hv_pred: np.ndarray,   # (2, H, W) - float [-1, 1]
+    nt_pred: np.ndarray,   # (n_classes, H, W) - float [0, 1] après softmax
+    target_size: int = PANNUKE_IMAGE_SIZE
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Prépare les prédictions HoVer-Net pour évaluation contre ground truth PanNuke.
+
+    Cette fonction est LA RÉFÉRENCE pour convertir les sorties HoVer-Net avant
+    calcul des métriques. Elle gère automatiquement le resize et valide les shapes.
+
+    Args:
+        np_pred: Nuclear Presence (H, W) - float [0, 1] après sigmoid
+        hv_pred: HV maps (2, H, W) - float [-1, 1]
+        nt_pred: Nuclear Type (n_classes, H, W) - float [0, 1] après softmax
+        target_size: Taille cible pour le resize (défaut: 256)
+
+    Returns:
+        (np_resized, hv_resized, nt_resized) - Tous à (target_size, target_size)
+
+    Raises:
+        ValueError: Si shapes invalides
+
+    Example:
+        >>> # Après inférence HoVer-Net
+        >>> output = hovernet_wrapper(features)
+        >>> result = output.to_numpy(apply_activations=True)
+        >>>
+        >>> # Préparer pour évaluation
+        >>> np_eval, hv_eval, nt_eval = prepare_predictions_for_evaluation(
+        ...     result["np"], result["hv"], result["nt"]
+        ... )
+        >>> # Maintenant compatibles avec GT PanNuke 256×256
+        >>> metrics = compute_metrics(np_eval, hv_eval, nt_eval, gt_np, gt_hv, gt_nt)
+    """
+    # Validation des shapes d'entrée
+    if np_pred.ndim != 2:
+        raise ValueError(f"NP shape invalide: {np_pred.shape}. Attendu: (H, W).")
+
+    if hv_pred.ndim != 3 or hv_pred.shape[0] != 2:
+        raise ValueError(f"HV shape invalide: {hv_pred.shape}. Attendu: (2, H, W).")
+
+    if nt_pred.ndim != 3:
+        raise ValueError(f"NT shape invalide: {nt_pred.shape}. Attendu: (n_classes, H, W).")
+
+    # Resize avec interpolation adaptée
+    np_resized = resize_to_match_ground_truth(
+        np_pred,
+        target_size=target_size,
+        interpolation="linear"  # Probabilités → linear
+    )
+
+    hv_resized = resize_to_match_ground_truth(
+        hv_pred,
+        target_size=target_size,
+        interpolation="linear"  # Gradients → linear
+    )
+
+    nt_resized = resize_to_match_ground_truth(
+        nt_pred,
+        target_size=target_size,
+        interpolation="linear"  # Probabilités → linear
+    )
+
+    return np_resized, hv_resized, nt_resized
+```
+
+**Autres fonctions utilitaires :**
+- `resize_to_match_ground_truth()` — Resize générique avec validation
+- `resize_ground_truth_to_prediction()` — Inverse (rarement utilisé)
+- `check_size_compatibility()` — Diagnostic mismatch avec suggestions
+
+### Usage dans les Scripts
+
+#### Exemple : Script d'Évaluation
+
+```python
+# scripts/evaluation/test_family_models_isolated.py (APRÈS fix)
+
+from src.utils.image_utils import prepare_predictions_for_evaluation
+from src.constants import PANNUKE_IMAGE_SIZE
+
+# Inférence HoVer-Net
+np_out, hv_out, nt_out = hovernet(patch_tokens)  # Sorties à 224×224
+
+# Convertir en numpy (sorties HoVer-Net sont à 224×224)
+np_pred_raw = torch.sigmoid(np_out).cpu().numpy()[0, 0]  # (224, 224)
+hv_pred_raw = hv_out.cpu().numpy()[0]  # (2, 224, 224)
+nt_pred_raw = torch.softmax(nt_out, dim=1).cpu().numpy()[0]  # (n_classes, 224, 224)
+
+# ✅ Resize vers taille PanNuke (256×256) pour compatibilité avec GT
+np_pred, hv_pred, nt_pred = prepare_predictions_for_evaluation(
+    np_pred_raw, hv_pred_raw, nt_pred_raw, target_size=PANNUKE_IMAGE_SIZE
+)
+
+# Préparer ground truth (déjà à 256×256)
+np_gt = mask[:, :, 1:].sum(axis=-1) > 0  # Binary union
+hv_gt = compute_hv_maps_from_mask(np_gt)
+nt_gt = np.zeros((PANNUKE_IMAGE_SIZE, PANNUKE_IMAGE_SIZE), dtype=np.int64)
+
+# ✅ Calculer métriques (maintenant toutes à 256×256)
+pred = {"np": np_pred, "hv": hv_pred, "nt": nt_pred}
+gt = {"np": np_gt.astype(np.float32), "hv": hv_gt, "nt": nt_gt}
+metrics = compute_metrics(pred, gt)  # Fonctionne !
+```
+
+### Exports Consolidés
+
+**`src/constants.py`** expose :
+```python
+# Tailles
+HOPTIMUS_INPUT_SIZE, PANNUKE_IMAGE_SIZE, HOVERNET_OUTPUT_SIZE
+
+# Normalisation
+HOPTIMUS_MEAN, HOPTIMUS_STD
+
+# Validation
+HOPTIMUS_CLS_STD_MIN, HOPTIMUS_CLS_STD_MAX
+
+# Helpers
+get_image_size_mismatch_info(), validate_image_size()
+```
+
+**`src/utils/__init__.py`** expose :
+```python
+from .image_utils import (
+    resize_to_match_ground_truth,
+    resize_ground_truth_to_prediction,
+    prepare_predictions_for_evaluation,
+    check_size_compatibility,
+)
+```
+
+### Principe de Design
+
+> **"Une constante définie dans `src/constants.py` est TOUJOURS importée, JAMAIS redéfinie."**
+
+**Règles strictes :**
+
+❌ **INTERDIT :**
+```python
+# NE JAMAIS faire ça
+HOPTIMUS_MEAN = (0.707223, 0.578729, 0.703617)  # Redéfinition locale
+```
+
+✅ **OBLIGATOIRE :**
+```python
+from src.constants import HOPTIMUS_MEAN, PANNUKE_IMAGE_SIZE
+```
+
+**Bénéfices :**
+- Changement de constante en 1 seul endroit → propagation automatique
+- Détection d'erreurs à la compilation (import manquant)
+- Code review simplifié (grep pour détecter redéfinitions)
+
+### Impact Mesurable
+
+| Métrique | Avant | Après | Amélioration |
+|----------|-------|-------|--------------|
+| Fichiers avec constantes dupliquées | 11 | 1 | -91% |
+| Lignes de code resize custom | ~45 | 0 | -100% |
+| Scripts avec size mismatch | 1 détecté | 0 | ✅ Fix |
+| Points de modification pour changer une constante | 11 | 1 | -91% |
+
+### Tests de Validation
+
+**Vérification automatique :**
+```python
+from src.constants import get_image_size_mismatch_info
+
+info = get_image_size_mismatch_info()
+# {
+#   "hovernet_size": 224,
+#   "pannuke_size": 256,
+#   "needs_resize": True,
+#   "resize_direction": "predictions → ground_truth"
+# }
+```
+
+**Détection de mismatch :**
+```python
+from src.utils.image_utils import check_size_compatibility
+
+result = check_size_compatibility((224, 224), (256, 256), auto_fix=True)
+# {
+#   "compatible": False,
+#   "mismatch": True,
+#   "fix_function": "prepare_predictions_for_evaluation()"
+# }
+```
 
 ---
 
