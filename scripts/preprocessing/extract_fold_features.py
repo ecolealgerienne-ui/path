@@ -36,64 +36,27 @@ import sys
 PROJECT_ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-# Normalisation H-optimus-0
-HOPTIMUS_MEAN = np.array([0.707223, 0.578729, 0.703617])
-HOPTIMUS_STD = np.array([0.211883, 0.230117, 0.177517])
+# Imports des modules centralisés (Phase 1 Refactoring)
+from src.preprocessing import preprocess_image
+from src.models.loader import ModelLoader
 
 
-def load_backbone(device: str = "cuda"):
-    """Charge H-optimus-0 backbone."""
-    import timm
-
-    print("⏳ Chargement H-optimus-0 (1.1B params)...")
-    model = timm.create_model(
-        "hf-hub:bioptimus/H-optimus-0",
-        pretrained=True,
-        init_values=1e-5,
-        dynamic_img_size=False,
-    )
-    model.eval()
-    model.to(device)
-
-    # Freeze
-    for param in model.parameters():
-        param.requires_grad = False
-
-    print("✅ H-optimus-0 chargé")
-    return model
-
-
-def preprocess_batch(images: np.ndarray) -> torch.Tensor:
+def preprocess_batch(images: np.ndarray, device: str = "cuda") -> torch.Tensor:
     """
     Prétraite un batch d'images pour H-optimus-0.
 
+    Utilise le preprocessing centralisé pour cohérence.
+
     Args:
         images: (B, 256, 256, 3) uint8 ou float
+        device: Device pour les tensors
 
     Returns:
         tensor: (B, 3, 224, 224) normalized
     """
-    import cv2
-
-    batch = []
-    for img in images:
-        # Convertir en float [0, 1]
-        if img.max() > 1.0:
-            img = img.astype(np.float32) / 255.0
-        else:
-            img = img.astype(np.float32)
-
-        # Resize 256 → 224
-        img = cv2.resize(img, (224, 224))
-
-        # Normaliser
-        img = (img - HOPTIMUS_MEAN) / HOPTIMUS_STD
-
-        # HWC → CHW
-        img = np.transpose(img, (2, 0, 1))
-        batch.append(img)
-
-    return torch.from_numpy(np.stack(batch)).float()
+    # Utiliser la fonction centralisée pour chaque image (Phase 1 Refactoring)
+    batch_tensors = [preprocess_image(img, device=device).squeeze(0) for img in images]
+    return torch.stack(batch_tensors)
 
 
 @torch.no_grad()
@@ -122,9 +85,10 @@ def extract_features(
 
     for i in tqdm(range(0, n_images, batch_size), desc="Extraction"):
         batch = images[i:i+batch_size]
-        x = preprocess_batch(batch).to(device)
+        # Utiliser preprocessing centralisé (Phase 1 Refactoring)
+        x = preprocess_batch(batch, device=device)
 
-        # Forward
+        # Forward via forward_features() (inclut LayerNorm final)
         features = model.forward_features(x)  # (B, 261, 1536)
 
         # Séparer CLS et patches
@@ -185,8 +149,10 @@ def main():
     print(f"   Types: {types.shape}")
     print(f"   Masks: {masks.shape}")
 
-    # Charger le backbone
-    model = load_backbone(args.device)
+    # Charger le backbone (Phase 1 Refactoring - chargeur centralisé)
+    print("⏳ Chargement H-optimus-0 (1.1B params)...")
+    model = ModelLoader.load_hoptimus0(device=args.device)
+    print("✅ H-optimus-0 chargé")
 
     # Extraire les features
     print(f"\n🔄 Extraction des features (batch_size={args.batch_size})...")

@@ -28,31 +28,11 @@ import gc
 from pathlib import Path
 import numpy as np
 import torch
-from torchvision import transforms
 from tqdm import tqdm
 
-try:
-    import timm
-except ImportError:
-    raise ImportError("Installez timm: pip install timm")
-
-# Normalisation spécifique H-optimus-0
-HOPTIMUS_MEAN = (0.707223, 0.578729, 0.703617)
-HOPTIMUS_STD = (0.211883, 0.230117, 0.177517)
-
-# Valeurs de référence pour vérification (avec LayerNorm final)
-EXPECTED_CLS_STD_MIN = 0.70  # Minimum attendu
-EXPECTED_CLS_STD_MAX = 0.90  # Maximum attendu
-
-
-def create_transform():
-    """Crée la transformation pour H-optimus-0."""
-    return transforms.Compose([
-        transforms.ToPILImage(),
-        transforms.Resize((224, 224)),
-        transforms.ToTensor(),
-        transforms.Normalize(mean=HOPTIMUS_MEAN, std=HOPTIMUS_STD),
-    ])
+# Imports des modules centralisés (Phase 1 Refactoring)
+from src.preprocessing import create_hoptimus_transform, validate_features
+from src.models.loader import ModelLoader
 
 
 class HOptimusFeatureExtractor:
@@ -68,13 +48,8 @@ class HOptimusFeatureExtractor:
 
     def __init__(self, device="cuda"):
         print("Chargement de H-optimus-0...")
-        self.model = timm.create_model(
-            "hf-hub:bioptimus/H-optimus-0",
-            pretrained=True,
-            init_values=1e-5,
-            dynamic_img_size=False
-        )
-        self.model = self.model.eval().to(device)
+        # Utiliser le chargeur centralisé (Phase 1 Refactoring)
+        self.model = ModelLoader.load_hoptimus0(device=device)
         self.device = device
 
         num_params = sum(p.numel() for p in self.model.parameters()) / 1e9
@@ -98,30 +73,6 @@ class HOptimusFeatureExtractor:
         features = self.model.forward_features(batch)
 
         return features.cpu().float().numpy()
-
-    def verify_features(self, features: np.ndarray) -> bool:
-        """
-        Vérifie que les features sont cohérentes (LayerNorm appliqué).
-
-        Args:
-            features: (B, 261, 1536)
-
-        Returns:
-            True si les features sont valides
-        """
-        cls_tokens = features[:, 0, :]  # (B, 1536)
-        std = cls_tokens.std()
-
-        if std < EXPECTED_CLS_STD_MIN:
-            print(f"  ⚠️ ATTENTION: CLS std={std:.4f} < {EXPECTED_CLS_STD_MIN}")
-            print(f"     → Cela suggère que le LayerNorm n'est PAS appliqué!")
-            return False
-        elif std > EXPECTED_CLS_STD_MAX:
-            print(f"  ⚠️ ATTENTION: CLS std={std:.4f} > {EXPECTED_CLS_STD_MAX}")
-            return False
-        else:
-            print(f"  ✓ CLS std={std:.4f} (attendu: {EXPECTED_CLS_STD_MIN}-{EXPECTED_CLS_STD_MAX})")
-            return True
 
 
 def extract_features_chunked(
@@ -158,8 +109,12 @@ def extract_features_chunked(
     feature_shape = first_features.shape[1:]  # (261, 1536)
     print(f"  → Shape features: {feature_shape}")
 
-    # Vérifier les features du premier batch
-    extractor.verify_features(first_features)
+    # Vérifier les features du premier batch (Phase 1 Refactoring - validation centralisée)
+    validation = validate_features(torch.from_numpy(first_features))
+    if not validation["valid"]:
+        print(f"  ⚠️ ATTENTION: {validation['message']}")
+    else:
+        print(f"  ✓ CLS std={validation['cls_std']:.4f} (attendu: 0.70-0.90)")
 
     # Pré-allouer l'array de sortie sur disque (memory-mapped)
     temp_path = output_path.parent / "_temp_features.npy"
@@ -222,12 +177,16 @@ def extract_features_chunked(
     # Forcer l'écriture sur disque
     all_features.flush()
 
-    # Vérification finale sur un échantillon
+    # Vérification finale sur un échantillon (Phase 1 Refactoring - validation centralisée)
     print(f"\n✅ Extraction terminée: {global_idx} images")
     print("\n🔍 Vérification finale...")
     sample_indices = np.random.choice(n_images, min(100, n_images), replace=False)
     sample_features = all_features[sample_indices]
-    extractor.verify_features(sample_features)
+    validation = validate_features(torch.from_numpy(sample_features))
+    if not validation["valid"]:
+        print(f"  ⚠️ ATTENTION: {validation['message']}")
+    else:
+        print(f"  ✓ CLS std={validation['cls_std']:.4f} (attendu: 0.70-0.90)")
 
     return all_features, temp_path
 
@@ -265,7 +224,8 @@ def main():
 
     # Créer l'extracteur (utilise forward_features avec LayerNorm)
     extractor = HOptimusFeatureExtractor()
-    transform = create_transform()
+    # Utiliser le transform centralisé (Phase 1 Refactoring)
+    transform = create_hoptimus_transform()
 
     # Mesurer le temps
     start_time = time.time()
@@ -303,8 +263,9 @@ def main():
     cls_mean = cls_tokens.mean()
     print(f"  → CLS token stats: mean={cls_mean:.4f}, std={cls_std:.4f}")
 
-    if cls_std < EXPECTED_CLS_STD_MIN or cls_std > EXPECTED_CLS_STD_MAX:
-        print(f"  ⚠️ ATTENTION: CLS std hors plage attendue [{EXPECTED_CLS_STD_MIN}, {EXPECTED_CLS_STD_MAX}]!")
+    # Vérifier avec la validation centralisée (Phase 1 Refactoring)
+    if cls_std < 0.70 or cls_std > 0.90:
+        print(f"  ⚠️ ATTENTION: CLS std hors plage attendue [0.70, 0.90]!")
     else:
         print(f"  ✓ CLS std dans la plage attendue")
 
