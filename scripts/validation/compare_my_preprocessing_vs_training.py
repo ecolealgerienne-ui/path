@@ -178,6 +178,11 @@ def main():
     print("RÉSULTATS COMPARAISON")
     print("="*70)
 
+    print(f"\n📌 VÉRIFICATION MÊME IMAGE:")
+    print(f"   Fold ID: {fold_id_train}")
+    print(f"   Image ID: {image_id_train}")
+    print(f"   Organ: {types[actual_idx]}")
+
     # Features
     print("\n📊 FEATURES H-optimus-0:")
     features_diff = np.abs(features_train - features_mine).max()
