@@ -86,7 +86,7 @@ def main():
     # Load models
     print("\n🔧 Chargement modèles...")
     backbone = ModelLoader.load_hoptimus0(device=args.device)
-    hovernet = HoVerNetDecoder(embed_dim=1536, n_classes=5, adaptive=False).to(args.device)
+    hovernet = HoVerNetDecoder(embed_dim=1536, n_classes=5).to(args.device)
     checkpoint = torch.load(args.checkpoint, map_location=args.device)
     hovernet.load_state_dict(checkpoint['model_state_dict'])
     hovernet.eval()
