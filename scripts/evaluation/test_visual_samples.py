@@ -42,7 +42,7 @@ FAMILIES = ["glandular", "digestive", "urologic", "respiratory", "epidermal"]
 
 def load_pannuke_fold(data_dir: Path, fold: int):
     """Charge un fold PanNuke."""
-    fold_dir = data_dir / f"Fold {fold}"
+    fold_dir = data_dir / f"fold{fold}"  # Minuscule, pas d'espace
     images = np.load(fold_dir / "images.npy", mmap_mode='r')
     masks = np.load(fold_dir / "masks.npy", mmap_mode='r')
     types = np.load(fold_dir / "types.npy")

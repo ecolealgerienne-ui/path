@@ -116,7 +116,7 @@ def compute_nt_accuracy(nt_pred: torch.Tensor, nt_target: torch.Tensor, np_targe
 
 def load_pannuke_fold(data_dir: Path, fold: int):
     """Charge un fold PanNuke complet."""
-    fold_dir = data_dir / f"Fold {fold}"
+    fold_dir = data_dir / f"fold{fold}"  # Minuscule, pas d'espace
 
     images = np.load(fold_dir / "images.npy", mmap_mode='r')
     masks = np.load(fold_dir / "masks.npy", mmap_mode='r')
