@@ -65,6 +65,31 @@ python scripts/validation/verify_features.py \
 **Alerte déjà observée:**
 - Image 01889: "⚠️ Features SUSPECTES (CLS std=0.661, attendu 0.70-0.90)"
 
+**⚠️ CRITIQUE: Normalisation H-optimus-0 vs ImageNet**
+
+H-optimus-0 a été pré-entraîné avec **SA PROPRE normalisation**, différente d'ImageNet:
+
+```python
+# ❌ FAUX: Normalisation ImageNet (modèles ResNet/ViT standard)
+mean = [0.485, 0.456, 0.406]
+std = [0.229, 0.224, 0.225]
+
+# ✅ CORRECT: Normalisation H-optimus-0 (OBLIGATOIRE)
+mean = [0.707223, 0.578729, 0.703617]
+std = [0.211883, 0.230117, 0.177517]
+```
+
+**Symptômes si mauvaise normalisation:**
+- Features "molles" → CLS std anormal (<0.65 ou >0.95)
+- Le décodeur reçoit un signal faible
+- Cartes HV floues → AJI s'effondre
+- Cast incorrect (uint8 au lieu de float) aggrave le problème
+
+**Vérifications à faire:**
+1. `evaluate_ground_truth.py` utilise-t-il `create_hoptimus_transform()` ?
+2. Les .npz features ont-ils été générés avec la bonne normalisation ?
+3. Y a-t-il un cast uint8→float manquant ou inversé ?
+
 **Critères de validation:**
 - ✅ **SI CLS std ∈ [0.70, 0.90]:** Normalisation OK → Killer #3 ÉLIMINÉ
 - ❌ **SI CLS std < 0.65 OU > 0.95:** Features corrompues → Confirme Killer #3
