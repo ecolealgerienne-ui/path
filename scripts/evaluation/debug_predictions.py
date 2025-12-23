@@ -106,8 +106,8 @@ def main():
         features = backbone.forward_features(tensor)
         np_out, hv_out, nt_out = hovernet(features)
 
-    # Raw predictions (224×224)
-    np_pred_224 = torch.sigmoid(np_out).cpu().numpy()[0, 0]
+    # Raw predictions (224×224) - CORRECTION: NP a 2 canaux (bg, nuclei), prendre canal 1!
+    np_pred_224 = (np_out.argmax(dim=1) == 1).float().cpu().numpy()[0]
     hv_pred_224 = hv_out.cpu().numpy()[0]
 
     print(f"\nPrédictions BRUTES (224×224):")

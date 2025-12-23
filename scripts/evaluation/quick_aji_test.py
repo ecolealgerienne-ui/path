@@ -226,8 +226,8 @@ def evaluate_model_aji(
             # HoVer-Net inference
             np_out, hv_out, nt_out = model(features)
 
-            # To numpy
-            np_pred = torch.sigmoid(np_out).cpu().numpy()[0, 0]  # (224, 224)
+            # To numpy - CORRECTION: NP a 2 canaux (bg, nuclei), prendre canal 1!
+            np_pred = (np_out.argmax(dim=1) == 1).float().cpu().numpy()[0]  # (224, 224)
             hv_pred = hv_out.cpu().numpy()[0]  # (2, 224, 224)
 
             # Resize predictions to match GT (256×256)
