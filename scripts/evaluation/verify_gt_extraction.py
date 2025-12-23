@@ -110,15 +110,20 @@ def main():
 
     print("📥 Chargement données training (.npz)...")
 
+    features_file = cache_dir / f"{args.family}_features.npz"
     targets_file = cache_dir / f"{args.family}_targets.npz"
+
+    if not features_file.exists():
+        raise FileNotFoundError(f"Features non trouvées: {features_file}")
     if not targets_file.exists():
         raise FileNotFoundError(f"Targets non trouvés: {targets_file}")
 
+    features_data = np.load(features_file)
     targets_data = np.load(targets_file)
 
     np_target = targets_data['np_targets'][args.sample_idx]  # (256, 256)
-    fold_id = targets_data['fold_ids'][args.sample_idx]
-    image_id = targets_data['image_ids'][args.sample_idx]
+    fold_id = features_data['fold_ids'][args.sample_idx]
+    image_id = features_data['image_ids'][args.sample_idx]
 
     print(f"   Sample: idx={args.sample_idx}, fold={fold_id}, image_id={image_id}")
 
