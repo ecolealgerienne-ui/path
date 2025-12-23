@@ -56,9 +56,9 @@ def load_pannuke_data(data_dir: Path, fold: int):
     """
     fold_name = f"fold{fold}"
 
-    images_path = data_dir / "fold1" / "images" / fold_name / "images.npy"
-    masks_path = data_dir / "fold1" / "masks" / fold_name / "masks.npy"
-    types_path = data_dir / "fold1" / "images" / fold_name / "types.npy"
+    images_path = data_dir / fold_name / "images" / fold_name / "images.npy"
+    masks_path = data_dir / fold_name / "masks" / fold_name / "masks.npy"
+    types_path = data_dir / fold_name / "images" / fold_name / "types.npy"
 
     print(f"Chargement PanNuke fold {fold}...")
     print(f"  Images: {images_path}")
