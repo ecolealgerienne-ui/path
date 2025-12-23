@@ -100,16 +100,21 @@ def main():
     hv_target_train = targets_train_data['hv_targets'][sample_idx]  # (2, 256, 256)
     nt_target_train = targets_train_data['nt_targets'][sample_idx]  # (256, 256)
 
+    # CRITIQUE: Récupérer l'index PanNuke original
+    fold_id_train = targets_train_data['fold_ids'][sample_idx]
+    image_id_train = targets_train_data['image_ids'][sample_idx]
+
     print(f"   Features shape: {features_train.shape}")
     print(f"   NP target shape: {np_target_train.shape}")
     print(f"   HV target shape: {hv_target_train.shape}")
     print(f"   NT target shape: {nt_target_train.shape}")
+    print(f"   📌 Fold ID: {fold_id_train}, Image ID: {image_id_train}")
 
-    # 2. Charger image brute PanNuke
-    print("\n2. Chargement image brute PanNuke...")
+    # 2. Charger LA MÊME image brute PanNuke (en utilisant fold_id et image_id)
+    print("\n2. Chargement LA MÊME image brute PanNuke...")
 
     pannuke_path = Path("/home/amar/data/PanNuke")
-    fold_name = f"fold{fold}"
+    fold_name = f"fold{fold_id_train}"
 
     images_path = pannuke_path / fold_name / "images.npy"
     masks_path = pannuke_path / fold_name / "masks.npy"
@@ -119,17 +124,8 @@ def main():
     masks = np.load(masks_path)
     types = np.load(types_path)
 
-    # Trouver l'index epidermal
-    from src.models.organ_families import ORGAN_TO_FAMILY
-    family_organs = [organ for organ, fam in ORGAN_TO_FAMILY.items() if fam == family]
-
-    epidermal_indices = [i for i, organ in enumerate(types) if organ in family_organs]
-
-    if len(epidermal_indices) == 0:
-        print(f"❌ Aucune image {family} dans fold {fold}")
-        return
-
-    actual_idx = epidermal_indices[sample_idx]
+    # Utiliser l'image_id stocké dans le .npz
+    actual_idx = image_id_train
 
     image = images[actual_idx]  # (256, 256, 3)
     mask = masks[actual_idx]    # (256, 256, 6)
@@ -137,6 +133,7 @@ def main():
     print(f"   Image shape: {image.shape}, dtype: {image.dtype}")
     print(f"   Mask shape: {mask.shape}, dtype: {mask.dtype}")
     print(f"   Organ: {types[actual_idx]}")
+    print(f"   📌 PanNuke Index: {actual_idx} (fold {fold_id_train})")
 
     # 3. Mon preprocessing
     print("\n3. Mon preprocessing...")
