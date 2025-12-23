@@ -296,9 +296,10 @@ class HoVerNetLoss(nn.Module):
         np_dice = self.dice_loss(np_pred, np_target.float())
         np_loss = np_bce + np_dice
 
-        # HV loss: SmoothL1 MASQUÉ (uniquement sur pixels de noyaux)
+        # HV loss: MSE MASQUÉ (uniquement sur pixels de noyaux)
         # Littérature (Graham et al.): MSE doit être calculé UNIQUEMENT sur les noyaux
         # Sinon le modèle apprend à prédire 0 (background domine 70-80% des pixels)
+        # TEST: Changé SmoothL1 → MSE pour améliorer gradients HV (Step 3 verification)
         mask = np_target.float().unsqueeze(1)  # (B, 1, H, W)
 
         if mask.sum() > 0:
@@ -306,14 +307,14 @@ class HoVerNetLoss(nn.Module):
             hv_pred_masked = hv_pred * mask
             hv_target_masked = hv_target * mask
 
-            # SmoothL1 sur les versions masquées
-            hv_l1_sum = F.smooth_l1_loss(hv_pred_masked, hv_target_masked, reduction='sum')
-            hv_l1 = hv_l1_sum / (mask.sum() * 2)  # *2 car 2 canaux (H, V)
+            # MSE sur les versions masquées (vs SmoothL1: gradients 2× plus forts)
+            hv_mse_sum = F.mse_loss(hv_pred_masked, hv_target_masked, reduction='sum')
+            hv_l1 = hv_mse_sum / (mask.sum() * 2)  # *2 car 2 canaux (H, V)
         else:
             hv_l1 = torch.tensor(0.0, device=hv_pred.device)
 
         # Gradient loss (MSGE - Graham et al.): force le modèle à apprendre les variations spatiales
-        # Poids 0.5× recommandé pour ne pas dominer le SmoothL1
+        # Poids 0.5× recommandé pour ne pas dominer la loss HV principale
         # VALIDÉ: HV MSE 0.25 → 0.0549 avec masquage + gradient_loss
         hv_gradient = self.gradient_loss(hv_pred, hv_target, mask=mask)
         hv_loss = hv_l1 + 0.5 * hv_gradient
