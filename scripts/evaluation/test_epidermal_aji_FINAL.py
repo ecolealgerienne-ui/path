@@ -24,7 +24,7 @@ from tqdm import tqdm
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from src.constants import PANNUKE_IMAGE_SIZE
-from src.metrics.ground_truth_metrics import compute_aji, compute_dice, compute_pq
+from src.metrics.ground_truth_metrics import compute_aji, compute_dice, compute_panoptic_quality
 from src.models.hovernet_decoder import HoVerNetDecoder
 from src.models.loader import ModelLoader
 from src.preprocessing import create_hoptimus_transform
@@ -215,7 +215,7 @@ def main():
             # Compute metrics
             aji = compute_aji(pred_inst, gt_inst)
             dice = compute_dice((np_pred > 0.5).astype(np.uint8), (gt_inst > 0).astype(np.uint8))
-            pq = compute_pq(pred_inst, gt_inst)
+            pq, dq, sq, _ = compute_panoptic_quality(pred_inst, gt_inst)
 
             all_aji.append(aji)
             all_dice.append(dice)
