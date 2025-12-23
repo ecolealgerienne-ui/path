@@ -57,7 +57,7 @@ def validate_checkpoint(checkpoint_path: Path, family: str):
         }
 
         # Tester chargement du modèle
-        model = HoVerNetDecoder(input_dim=1536, n_classes=6)
+        model = HoVerNetDecoder(embed_dim=1536, n_classes=5)
         model.load_state_dict(checkpoint['model_state_dict'])
 
         result["model_params"] = sum(p.numel() for p in model.parameters())

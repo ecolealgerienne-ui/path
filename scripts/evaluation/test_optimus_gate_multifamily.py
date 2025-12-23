@@ -173,7 +173,7 @@ def main():
         checkpoint_path = checkpoints_dir / f"hovernet_{family}_best.pth"
         print(f"📥 Chargement {family}: {checkpoint_path}")
 
-        model = HoVerNetDecoder(input_dim=1536, n_classes=6).to(device)
+        model = HoVerNetDecoder(embed_dim=1536, n_classes=5).to(device)
         checkpoint = torch.load(checkpoint_path, map_location=device)
         model.load_state_dict(checkpoint['model_state_dict'])
         model.eval()
