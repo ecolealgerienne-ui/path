@@ -95,20 +95,29 @@ def main():
     features_train_data = np.load(features_train_path)
     targets_train_data = np.load(targets_train_path)
 
+    # Afficher les clés disponibles
+    print(f"   Clés features: {list(features_train_data.keys())}")
+    print(f"   Clés targets: {list(targets_train_data.keys())}")
+
     features_train = features_train_data['features'][sample_idx]  # (261, 1536)
     np_target_train = targets_train_data['np_targets'][sample_idx]  # (256, 256)
     hv_target_train = targets_train_data['hv_targets'][sample_idx]  # (2, 256, 256)
     nt_target_train = targets_train_data['nt_targets'][sample_idx]  # (256, 256)
 
-    # CRITIQUE: Récupérer l'index PanNuke original
-    fold_id_train = targets_train_data['fold_ids'][sample_idx]
-    image_id_train = targets_train_data['image_ids'][sample_idx]
+    # CRITIQUE: Récupérer l'index PanNuke original (si disponible)
+    if 'fold_ids' in targets_train_data.keys():
+        fold_id_train = targets_train_data['fold_ids'][sample_idx]
+        image_id_train = targets_train_data['image_ids'][sample_idx]
+        print(f"   📌 Fold ID: {fold_id_train}, Image ID: {image_id_train}")
+    else:
+        print(f"   ⚠️ fold_ids/image_ids non disponibles - impossible de retrouver l'image exacte")
+        print(f"   → Les données ont été générées sans ces métadonnées")
+        return
 
     print(f"   Features shape: {features_train.shape}")
     print(f"   NP target shape: {np_target_train.shape}")
     print(f"   HV target shape: {hv_target_train.shape}")
     print(f"   NT target shape: {nt_target_train.shape}")
-    print(f"   📌 Fold ID: {fold_id_train}, Image ID: {image_id_train}")
 
     # 2. Charger LA MÊME image brute PanNuke (en utilisant fold_id et image_id)
     print("\n2. Chargement LA MÊME image brute PanNuke...")
