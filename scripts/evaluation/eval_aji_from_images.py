@@ -267,26 +267,26 @@ def main():
 
         # 5. To numpy (EXACTEMENT comme training)
         np_pred_logits = np_out.cpu().numpy()[0]  # (2, 224, 224)
-        np_pred_224 = (np_pred_logits.argmax(axis=0)).astype(np.float32)  # (224, 224) [0, 1]
+        np_pred = (np_pred_logits.argmax(axis=0)).astype(np.float32)  # (224, 224) [0, 1]
 
-        hv_pred_224 = hv_out.cpu().numpy()[0]  # (2, 224, 224)
+        hv_pred = hv_out.cpu().numpy()[0]  # (2, 224, 224)
 
-        # 6. Resize 224 → 256 (pour comparer avec GT)
-        np_pred = cv2.resize(np_pred_224, (256, 256), interpolation=cv2.INTER_NEAREST)
-        hv_pred = np.stack([
-            cv2.resize(hv_pred_224[0], (256, 256), interpolation=cv2.INTER_LINEAR),
-            cv2.resize(hv_pred_224[1], (256, 256), interpolation=cv2.INTER_LINEAR)
-        ], axis=0)
+        # 6. GT instances à 256×256 (méthode FIXED)
+        inst_gt_256 = extract_gt_instances(mask)
 
-        # 7. Watershed
+        # 7. Resize GT 256 → 224 (EXACTEMENT comme training!)
+        # Training ligne 172-183: resize targets avant de calculer loss
+        inst_gt = cv2.resize(inst_gt_256.astype(np.float32), (224, 224),
+                           interpolation=cv2.INTER_NEAREST).astype(np.int32)
+
+        np_gt = (inst_gt > 0).astype(np.float32)  # GT binaire
+
+        # 8. Watershed sur prédictions 224×224
         inst_pred = watershed_from_hv(np_pred, hv_pred)
 
-        # 8. GT instances (méthode FIXED)
-        inst_gt = extract_gt_instances(mask)
-
-        # 9. Metrics
+        # 9. Metrics à 224×224 (comme training)
         aji = compute_aji(inst_pred, inst_gt)
-        dice = compute_dice(np_pred, (inst_gt > 0).astype(np.float32))
+        dice = compute_dice(np_pred, np_gt)
 
         ajis.append(aji)
         dices.append(dice)
