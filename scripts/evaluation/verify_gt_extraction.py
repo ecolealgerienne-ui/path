@@ -121,11 +121,34 @@ def main():
     features_data = np.load(features_file)
     targets_data = np.load(targets_file)
 
-    np_target = targets_data['np_targets'][args.sample_idx]  # (256, 256)
-    fold_id = features_data['fold_ids'][args.sample_idx]
-    image_id = features_data['image_ids'][args.sample_idx]
+    # Debug: afficher les clés disponibles
+    print(f"   Features keys: {list(features_data.keys())}")
+    print(f"   Targets keys: {list(targets_data.keys())}")
 
-    print(f"   Sample: idx={args.sample_idx}, fold={fold_id}, image_id={image_id}")
+    np_target = targets_data['np_targets'][args.sample_idx]  # (256, 256)
+
+    # Essayer de récupérer fold_id et image_id s'ils existent
+    if 'fold_ids' in features_data:
+        fold_id = features_data['fold_ids'][args.sample_idx]
+        image_id = features_data['image_ids'][args.sample_idx]
+        print(f"   Sample: idx={args.sample_idx}, fold={fold_id}, image_id={image_id}")
+    elif 'fold_ids' in targets_data:
+        fold_id = targets_data['fold_ids'][args.sample_idx]
+        image_id = targets_data['image_ids'][args.sample_idx]
+        print(f"   Sample: idx={args.sample_idx}, fold={fold_id}, image_id={image_id}")
+    else:
+        print(f"   ⚠️ Warning: fold_ids/image_ids not found in .npz files")
+        print(f"   Skipping PanNuke native comparison (needs fold/image mapping)")
+        print(f"   Showing connectedComponents result only...")
+
+        # Extraction GT méthode connectedComponents
+        inst_gt_cc = extract_gt_connectedcomponents(np_target)
+        n_instances_cc = len(np.unique(inst_gt_cc)) - 1
+
+        print(f"\n   Méthode connectedComponents:")
+        print(f"      → {n_instances_cc} instances détectées")
+        print(f"\n❌ Cannot proceed: need fold_ids/image_ids to load PanNuke raw data")
+        return
 
     # Extraction GT méthode connectedComponents
     inst_gt_cc = extract_gt_connectedcomponents(np_target)
