@@ -21,7 +21,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from src.preprocessing import PANNUKE_IMAGE_SIZE
+from src.constants import PANNUKE_IMAGE_SIZE
 
 
 def extract_gt_connectedcomponents(np_target: np.ndarray) -> np.ndarray:
