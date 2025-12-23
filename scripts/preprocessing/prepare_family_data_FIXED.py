@@ -130,7 +130,7 @@ def extract_pannuke_instances(mask: np.ndarray) -> np.ndarray:
     return inst_map
 
 
-def prepare_family_data(data_dir: Path, output_dir: Path, family: str, chunk_size: int = 500):
+def prepare_family_data(data_dir: Path, output_dir: Path, family: str, chunk_size: int = 500, folds: list = None):
     """
     Prépare les données d'entraînement pour une famille d'organes.
 
@@ -139,7 +139,10 @@ def prepare_family_data(data_dir: Path, output_dir: Path, family: str, chunk_siz
     Args:
         chunk_size: Nombre d'images à traiter par lot (défaut: 500)
                     Réduit la consommation RAM (~2 GB par chunk au lieu de 10+ GB)
+        folds: Liste des folds à traiter (défaut: [0, 1, 2])
     """
+    if folds is None:
+        folds = [0, 1, 2]
     print(f"\n{'='*70}")
     print(f"Préparation données famille: {family}")
     print(f"{'='*70}")
@@ -155,7 +158,7 @@ def prepare_family_data(data_dir: Path, output_dir: Path, family: str, chunk_siz
     print(f"\n📋 Phase 1: Indexing...")
     fold_indices = {}
 
-    for fold in [0, 1, 2]:
+    for fold in folds:
         fold_dir = data_dir / f"fold{fold}"
         types_path = fold_dir / "types.npy"
 
@@ -296,6 +299,8 @@ def main():
     parser.add_argument("--family", type=str, choices=FAMILIES, help="Famille spécifique (optionnel)")
     parser.add_argument("--chunk_size", type=int, default=500,
                         help="Nombre d'images par chunk (défaut: 500, réduit RAM)")
+    parser.add_argument("--folds", type=int, nargs='+', default=[0, 1, 2],
+                        help="Folds à traiter (défaut: 0 1 2)")
 
     args = parser.parse_args()
 
@@ -315,10 +320,10 @@ def main():
     print(f"  - Modèle apprendra à séparer correctement")
 
     if args.family:
-        prepare_family_data(args.data_dir, args.output_dir, args.family, args.chunk_size)
+        prepare_family_data(args.data_dir, args.output_dir, args.family, args.chunk_size, args.folds)
     else:
         for family in FAMILIES:
-            prepare_family_data(args.data_dir, args.output_dir, family, args.chunk_size)
+            prepare_family_data(args.data_dir, args.output_dir, family, args.chunk_size, args.folds)
 
     print("\n" + "=" * 70)
     print("✅ PRÉPARATION TERMINÉE")
