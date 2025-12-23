@@ -337,10 +337,11 @@ class HoVerNetLoss(nn.Module):
             hv_l1 = torch.tensor(0.0, device=hv_pred.device)
 
         # Gradient loss (MSGE - Graham et al.): force le modèle à apprendre les variations spatiales
-        # Poids 0.5× recommandé pour ne pas dominer la loss HV principale
-        # VALIDÉ: HV MSE 0.25 → 0.0549 avec masquage + gradient_loss
+        # EXPERT FIX (2025-12-23): Poids augmenté 0.5 → 10.0 pour résoudre "blob géant"
+        # Problème identifié: lambda_hv=0.5 trop faible → HV magnitude <0.2 → watershed détecte 1 blob au lieu de N noyaux
+        # AJI avant: 0.0524 (5.53% rappel), cible: >0.60 avec lambda_hv=10.0
         hv_gradient = self.gradient_loss(hv_pred, hv_target, mask=mask)
-        hv_loss = hv_l1 + 0.5 * hv_gradient
+        hv_loss = hv_l1 + 10.0 * hv_gradient
 
         # NT loss: CE (sur tous les pixels)
         nt_loss = self.bce(nt_pred, nt_target.long())
