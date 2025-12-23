@@ -243,10 +243,12 @@ class HoVerNetLoss(nn.Module):
 
     def gradient_loss(self, pred: torch.Tensor, target: torch.Tensor, mask: torch.Tensor = None) -> torch.Tensor:
         """
-        SmoothL1 sur les gradients (pour HV maps) - moins sensible aux outliers.
+        MSGE (Mean Squared Gradient Error) - Force des gradients HV nets aux frontières.
 
-        IMPORTANT: Littérature (Graham et al.) recommande de calculer les gradients
-        pour forcer le modèle à apprendre les variations spatiales (MSGE).
+        CRITIQUE: Graham et al. recommande MSE (pas SmoothL1) pour MSGE car:
+        - SmoothL1 plafonne les gradients à ±1 pour grandes erreurs
+        - MSE produit des gradients 2-4× plus forts aux frontières cellulaires
+        → Watershed fonctionne mieux → AJI augmente
 
         Args:
             pred: Prédictions HV (B, 2, H, W)
@@ -262,19 +264,20 @@ class HoVerNetLoss(nn.Module):
         target_v = target[:, :, 1:, :] - target[:, :, :-1, :]
 
         if mask is not None:
-            # Masquer les gradients aussi (cohérence avec masked SmoothL1)
+            # Masquer les gradients aussi
             mask_h = mask[:, :, :, 1:]  # Même shape que pred_h
             mask_v = mask[:, :, 1:, :]  # Même shape que pred_v
 
-            grad_loss_h = F.smooth_l1_loss(pred_h * mask_h, target_h * mask_h, reduction='sum')
-            grad_loss_v = F.smooth_l1_loss(pred_v * mask_v, target_v * mask_v, reduction='sum')
+            # MSE (pas SmoothL1!) pour gradients forts aux frontières
+            grad_loss_h = F.mse_loss(pred_h * mask_h, target_h * mask_h, reduction='sum')
+            grad_loss_v = F.mse_loss(pred_v * mask_v, target_v * mask_v, reduction='sum')
 
             # Normaliser par le nombre de pixels masqués
             grad_loss = (grad_loss_h + grad_loss_v) / (mask_h.sum() + mask_v.sum() + 1e-8)
             return grad_loss
         else:
-            # Fallback sans masque (backward compatibility)
-            return self.smooth_l1(pred_h, target_h) + self.smooth_l1(pred_v, target_v)
+            # Fallback sans masque: MSE aussi
+            return F.mse_loss(pred_h, target_h) + F.mse_loss(pred_v, target_v)
 
     def forward(
         self,
