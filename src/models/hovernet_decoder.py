@@ -268,8 +268,9 @@ class HoVerNetLoss(nn.Module):
         B, C, H, W = pred.shape
 
         # Reshape pour convolution: (B*C, 1, H, W)
-        pred_reshaped = pred.view(B * C, 1, H, W)
-        target_reshaped = target.view(B * C, 1, H, W)
+        # Utiliser reshape() au lieu de view() pour gérer tensors non-contigus
+        pred_reshaped = pred.reshape(B * C, 1, H, W)
+        target_reshaped = target.reshape(B * C, 1, H, W)
 
         # Gradients Sobel avec padding pour garder la taille
         pred_grad_h = F.conv2d(pred_reshaped, sobel_h, padding=1)
@@ -279,10 +280,10 @@ class HoVerNetLoss(nn.Module):
         target_grad_v = F.conv2d(target_reshaped, sobel_v, padding=1)
 
         # Reshape back: (B, C, H, W)
-        pred_grad_h = pred_grad_h.view(B, C, H, W)
-        pred_grad_v = pred_grad_v.view(B, C, H, W)
-        target_grad_h = target_grad_h.view(B, C, H, W)
-        target_grad_v = target_grad_v.view(B, C, H, W)
+        pred_grad_h = pred_grad_h.reshape(B, C, H, W)
+        pred_grad_v = pred_grad_v.reshape(B, C, H, W)
+        target_grad_h = target_grad_h.reshape(B, C, H, W)
+        target_grad_v = target_grad_v.reshape(B, C, H, W)
 
         if mask is not None:
             # Masquer les gradients (uniquement sur les noyaux)
