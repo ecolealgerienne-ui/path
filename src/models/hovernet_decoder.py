@@ -338,7 +338,12 @@ class HoVerNetLoss(nn.Module):
 
         # Gradient loss (MSGE - Graham et al.): force le modèle à apprendre les variations spatiales
         # EXPERT FIX (2025-12-23): Poids augmenté 0.5 → 10.0 pour résoudre "blob géant"
-        # Problème identifié: lambda_hv=0.5 trop faible → HV magnitude <0.2 → watershed détecte 1 blob au lieu de N noyaux
+        # DIAGNOSTIC VISUEL CONFIRME (sample_00000.npz):
+        #   - HV magnitude=1.235 ✅ (excellent, pas de saturation)
+        #   - MAIS: 1 pic unique au lieu de N pics distincts
+        #   - Gradients LISSES (minimisent MSE) au lieu de STRIÉS (créent pics)
+        #   - Watershed voit 1 montagne → 1 instance détectée
+        # Solution: lambda_hv=10.0 force variations nettes → N pics → N instances
         # AJI avant: 0.0524 (5.53% rappel), cible: >0.60 avec lambda_hv=10.0
         hv_gradient = self.gradient_loss(hv_pred, hv_target, mask=mask)
         hv_loss = hv_l1 + 10.0 * hv_gradient
