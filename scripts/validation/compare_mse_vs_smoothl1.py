@@ -17,6 +17,9 @@ import torch.nn.functional as F
 from pathlib import Path
 import matplotlib.pyplot as plt
 
+# Import module centralisé pour preprocessing
+from src.data.preprocessing import load_targets
+
 
 def compare_losses(hv_pred: torch.Tensor, hv_target: torch.Tensor, np_mask: torch.Tensor):
     """
@@ -91,22 +94,17 @@ def load_real_batch(data_file: Path, n_samples: int = 100):
     if not data_file.exists():
         raise FileNotFoundError(f"Fichier introuvable: {data_file}")
 
-    data = np.load(data_file)
+    # Utilisation du module centralisé pour chargement + validation
+    np_targets, hv_targets, _ = load_targets(
+        data_file,
+        validate=True,          # Valide automatiquement
+        auto_convert_hv=True    # Convertit int8 → float32 si nécessaire
+    )
 
-    print(f"   Clés: {list(data.keys())}")
-
-    hv_targets = data['hv_targets']
-    np_targets = data['np_targets']
-
-    # Vérifier format HV
     print(f"\n📊 Format HV Targets:")
     print(f"   Dtype: {hv_targets.dtype}")
     print(f"   Shape: {hv_targets.shape}")
     print(f"   Range: [{hv_targets.min():.4f}, {hv_targets.max():.4f}]")
-
-    if hv_targets.dtype == np.int8:
-        print(f"   ⚠️  Conversion int8 → float32")
-        hv_targets = hv_targets.astype(np.float32) / 127.0
 
     # Prendre n_samples aléatoires
     n_available = len(hv_targets)
