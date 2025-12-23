@@ -11,11 +11,16 @@ Usage:
 """
 
 import argparse
+import sys
 import numpy as np
 import torch
 import torch.nn.functional as F
 from pathlib import Path
 import matplotlib.pyplot as plt
+
+# Ajouter le projet au path AVANT les imports src.*
+PROJECT_ROOT = Path(__file__).parent.parent.parent
+sys.path.insert(0, str(PROJECT_ROOT))
 
 # Import module centralisé pour preprocessing
 from src.data.preprocessing import load_targets

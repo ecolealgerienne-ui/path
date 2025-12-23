@@ -28,18 +28,17 @@ from pathlib import Path
 import numpy as np
 import torch
 import torch.nn.functional as F
-
-# Import module centralisé pour preprocessing
-from src.data.preprocessing import load_targets, resize_targets
 from torch.utils.data import Dataset, DataLoader
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import CosineAnnealingLR
 from tqdm import tqdm
 
-# Ajouter le projet au path
+# Ajouter le projet au path AVANT les imports src.*
 PROJECT_ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
+# Import modules du projet
+from src.data.preprocessing import load_targets, resize_targets
 from src.models.hovernet_decoder import HoVerNetDecoder, HoVerNetLoss
 from src.models.organ_families import FAMILIES, FAMILY_TO_ORGANS, FAMILY_DESCRIPTIONS, get_organs
 
