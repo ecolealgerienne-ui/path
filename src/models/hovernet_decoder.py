@@ -243,41 +243,60 @@ class HoVerNetLoss(nn.Module):
 
     def gradient_loss(self, pred: torch.Tensor, target: torch.Tensor, mask: torch.Tensor = None) -> torch.Tensor:
         """
-        MSGE (Mean Squared Gradient Error) - Force des gradients HV nets aux frontières.
+        MSGE (Mean Squared Gradient Error) avec opérateur Sobel pour signal amplifié.
 
-        CRITIQUE: Graham et al. recommande MSE (pas SmoothL1) pour MSGE car:
-        - SmoothL1 plafonne les gradients à ±1 pour grandes erreurs
-        - MSE produit des gradients 2-4× plus forts aux frontières cellulaires
-        → Watershed fonctionne mieux → AJI augmente
+        PROBLÈME IDENTIFIÉ (Expert externe):
+        - Différences finies simples (pixel[i+1] - pixel[i]) donnent signal trop faible
+        - Dans HV maps [-1, 1], différences typiques ~0.01 → gradient loss négligeable
+        → Modèle n'a pas de pression pour créer frontières nettes
+
+        SOLUTION:
+        - Utiliser noyau Sobel (3×3) qui amplifie naturellement les gradients
+        - Sobel = convolution avec poids [-1, 0, 1] → signal 2-3× plus fort
+        → Force le modèle à créer contours nets autour des noyaux
 
         Args:
             pred: Prédictions HV (B, 2, H, W)
             target: Targets HV (B, 2, H, W)
             mask: Masque des noyaux (B, 1, H, W) - optionnel
         """
-        # Gradient horizontal
-        pred_h = pred[:, :, :, 1:] - pred[:, :, :, :-1]
-        target_h = target[:, :, :, 1:] - target[:, :, :, :-1]
+        # Noyaux Sobel pour gradients horizontal et vertical
+        sobel_h = torch.tensor([[-1, 0, 1], [-2, 0, 2], [-1, 0, 1]], dtype=pred.dtype, device=pred.device).view(1, 1, 3, 3)
+        sobel_v = torch.tensor([[-1, -2, -1], [0, 0, 0], [1, 2, 1]], dtype=pred.dtype, device=pred.device).view(1, 1, 3, 3)
 
-        # Gradient vertical
-        pred_v = pred[:, :, 1:, :] - pred[:, :, :-1, :]
-        target_v = target[:, :, 1:, :] - target[:, :, :-1, :]
+        # Appliquer Sobel séparément sur chaque canal (H et V)
+        B, C, H, W = pred.shape
+
+        # Reshape pour convolution: (B*C, 1, H, W)
+        pred_reshaped = pred.view(B * C, 1, H, W)
+        target_reshaped = target.view(B * C, 1, H, W)
+
+        # Gradients Sobel avec padding pour garder la taille
+        pred_grad_h = F.conv2d(pred_reshaped, sobel_h, padding=1)
+        pred_grad_v = F.conv2d(pred_reshaped, sobel_v, padding=1)
+
+        target_grad_h = F.conv2d(target_reshaped, sobel_h, padding=1)
+        target_grad_v = F.conv2d(target_reshaped, sobel_v, padding=1)
+
+        # Reshape back: (B, C, H, W)
+        pred_grad_h = pred_grad_h.view(B, C, H, W)
+        pred_grad_v = pred_grad_v.view(B, C, H, W)
+        target_grad_h = target_grad_h.view(B, C, H, W)
+        target_grad_v = target_grad_v.view(B, C, H, W)
 
         if mask is not None:
-            # Masquer les gradients aussi
-            mask_h = mask[:, :, :, 1:]  # Même shape que pred_h
-            mask_v = mask[:, :, 1:, :]  # Même shape que pred_v
-
-            # MSE (pas SmoothL1!) pour gradients forts aux frontières
-            grad_loss_h = F.mse_loss(pred_h * mask_h, target_h * mask_h, reduction='sum')
-            grad_loss_v = F.mse_loss(pred_v * mask_v, target_v * mask_v, reduction='sum')
+            # Masquer les gradients (uniquement sur les noyaux)
+            grad_loss_h = F.mse_loss(pred_grad_h * mask, target_grad_h * mask, reduction='sum')
+            grad_loss_v = F.mse_loss(pred_grad_v * mask, target_grad_v * mask, reduction='sum')
 
             # Normaliser par le nombre de pixels masqués
-            grad_loss = (grad_loss_h + grad_loss_v) / (mask_h.sum() + mask_v.sum() + 1e-8)
-            return grad_loss
+            n_pixels = mask.sum() * C  # Multiply by C car 2 canaux (H, V)
+            grad_loss = (grad_loss_h + grad_loss_v) / (n_pixels + 1e-8)
         else:
-            # Fallback sans masque: MSE aussi
-            return F.mse_loss(pred_h, target_h) + F.mse_loss(pred_v, target_v)
+            # Sans masque
+            grad_loss = F.mse_loss(pred_grad_h, target_grad_h) + F.mse_loss(pred_grad_v, target_grad_v)
+
+        return grad_loss
 
     def forward(
         self,
