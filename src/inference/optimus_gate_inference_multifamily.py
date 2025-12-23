@@ -63,7 +63,7 @@ class OptimusGateInferenceMultiFamily:
         self,
         checkpoint_dir: str = "models/checkpoints",
         device: str = "cuda" if torch.cuda.is_available() else "cpu",
-        np_threshold: float = 0.5,
+        np_threshold: float = 0.3,  # Abaissé de 0.5 → 0.3 pour meilleure détection
     ):
         self.device = device
         self.img_size = 224
