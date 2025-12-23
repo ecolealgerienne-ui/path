@@ -98,7 +98,6 @@ def main():
     args = parser.parse_args()
 
     PROJECT_ROOT = Path(__file__).parent.parent.parent
-    cache_dir = PROJECT_ROOT / "data" / "cache" / "family_data"
 
     print(f"\n{'='*70}")
     print(f"VÉRIFICATION EXTRACTION GT - Famille {args.family.upper()}")
@@ -110,45 +109,79 @@ def main():
 
     print("📥 Chargement données training (.npz)...")
 
+    # Essayer FIXED format en priorité (contient fold_ids/image_ids)
+    fixed_dir = PROJECT_ROOT / "data" / "family_FIXED"
+    fixed_file = fixed_dir / f"{args.family}_data_FIXED.npz"
+
+    cache_dir = PROJECT_ROOT / "data" / "cache" / "family_data"
     features_file = cache_dir / f"{args.family}_features.npz"
     targets_file = cache_dir / f"{args.family}_targets.npz"
 
-    if not features_file.exists():
-        raise FileNotFoundError(f"Features non trouvées: {features_file}")
-    if not targets_file.exists():
-        raise FileNotFoundError(f"Targets non trouvés: {targets_file}")
+    # Déterminer quel format utiliser
+    if fixed_file.exists():
+        print(f"   Format: FIXED (single file with fold_ids/image_ids)")
+        print(f"   File: {fixed_file}")
 
-    features_data = np.load(features_file)
-    targets_data = np.load(targets_file)
+        data = np.load(fixed_file)
 
-    # Debug: afficher les clés disponibles
-    print(f"   Features keys: {list(features_data.keys())}")
-    print(f"   Targets keys: {list(targets_data.keys())}")
+        print(f"   Keys: {list(data.keys())}")
 
-    np_target = targets_data['np_targets'][args.sample_idx]  # (256, 256)
+        np_target = data['np_targets'][args.sample_idx]
+        fold_id = int(data['fold_ids'][args.sample_idx])
+        image_id = int(data['image_ids'][args.sample_idx])
 
-    # Essayer de récupérer fold_id et image_id s'ils existent
-    if 'fold_ids' in features_data:
-        fold_id = features_data['fold_ids'][args.sample_idx]
-        image_id = features_data['image_ids'][args.sample_idx]
         print(f"   Sample: idx={args.sample_idx}, fold={fold_id}, image_id={image_id}")
-    elif 'fold_ids' in targets_data:
-        fold_id = targets_data['fold_ids'][args.sample_idx]
-        image_id = targets_data['image_ids'][args.sample_idx]
-        print(f"   Sample: idx={args.sample_idx}, fold={fold_id}, image_id={image_id}")
+
+    elif features_file.exists() and targets_file.exists():
+        print(f"   Format: OLD (separate features/targets files)")
+        print(f"   Features: {features_file}")
+        print(f"   Targets: {targets_file}")
+
+        features_data = np.load(features_file)
+        targets_data = np.load(targets_file)
+
+        # Debug: afficher les clés disponibles
+        print(f"   Features keys: {list(features_data.keys())}")
+        print(f"   Targets keys: {list(targets_data.keys())}")
+
+        np_target = targets_data['np_targets'][args.sample_idx]
+
+        # Essayer de récupérer fold_id et image_id s'ils existent
+        if 'fold_ids' in features_data:
+            fold_id = int(features_data['fold_ids'][args.sample_idx])
+            image_id = int(features_data['image_ids'][args.sample_idx])
+            print(f"   Sample: idx={args.sample_idx}, fold={fold_id}, image_id={image_id}")
+        elif 'fold_ids' in targets_data:
+            fold_id = int(targets_data['fold_ids'][args.sample_idx])
+            image_id = int(targets_data['image_ids'][args.sample_idx])
+            print(f"   Sample: idx={args.sample_idx}, fold={fold_id}, image_id={image_id}")
+        else:
+            print(f"   ⚠️ Warning: fold_ids/image_ids not found in OLD format files")
+            print(f"   Skipping PanNuke native comparison (needs fold/image mapping)")
+            print(f"   Showing connectedComponents result only...")
+
+            # Extraction GT méthode connectedComponents
+            inst_gt_cc = extract_gt_connectedcomponents(np_target)
+            n_instances_cc = len(np.unique(inst_gt_cc)) - 1
+
+            print(f"\n   Méthode connectedComponents:")
+            print(f"      → {n_instances_cc} instances détectées")
+            print(f"\n❌ Cannot proceed: need fold_ids/image_ids to load PanNuke raw data")
+            print(f"\n💡 Solution: Generate FIXED data using:")
+            print(f"   python scripts/preprocessing/prepare_family_data_FIXED.py \\")
+            print(f"       --data_dir {args.data_dir} \\")
+            print(f"       --family {args.family}")
+            return
     else:
-        print(f"   ⚠️ Warning: fold_ids/image_ids not found in .npz files")
-        print(f"   Skipping PanNuke native comparison (needs fold/image mapping)")
-        print(f"   Showing connectedComponents result only...")
-
-        # Extraction GT méthode connectedComponents
-        inst_gt_cc = extract_gt_connectedcomponents(np_target)
-        n_instances_cc = len(np.unique(inst_gt_cc)) - 1
-
-        print(f"\n   Méthode connectedComponents:")
-        print(f"      → {n_instances_cc} instances détectées")
-        print(f"\n❌ Cannot proceed: need fold_ids/image_ids to load PanNuke raw data")
-        return
+        raise FileNotFoundError(
+            f"No data found for family '{args.family}'.\n"
+            f"  FIXED file: {fixed_file}\n"
+            f"  OLD files: {features_file}, {targets_file}\n"
+            f"\nGenerate FIXED data using:\n"
+            f"  python scripts/preprocessing/prepare_family_data_FIXED.py \\\n"
+            f"      --data_dir {args.data_dir} \\\n"
+            f"      --family {args.family}"
+        )
 
     # Extraction GT méthode connectedComponents
     inst_gt_cc = extract_gt_connectedcomponents(np_target)
