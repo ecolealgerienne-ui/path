@@ -148,7 +148,7 @@ def load_pannuke_samples(data_dir: Path, family: str, fold: int = 2, n_samples: 
     Returns:
         List of dicts avec 'image', 'mask', 'organ'
     """
-    from src.models.organ_head import ORGAN_TO_FAMILY
+    from src.models.organ_families import ORGAN_TO_FAMILY
 
     # Mapping inverse famille → organes
     family_organs = [organ for organ, fam in ORGAN_TO_FAMILY.items() if fam == family]
