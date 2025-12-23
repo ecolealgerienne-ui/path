@@ -33,13 +33,17 @@ from src.preprocessing import create_hoptimus_transform
 def extract_instances_hv_magnitude(
     np_pred: np.ndarray,
     hv_pred: np.ndarray,
-    min_size: int = 10,
-    dist_threshold: int = 2
+    min_size: int = 20,
+    dist_threshold: int = 4
 ) -> np.ndarray:
     """
     Extrait instances avec HV MAGNITUDE (PAS Sobel).
 
     Méthode: HoVer-Net original (Graham et al. 2019)
+
+    FIX #3 (Expert 2025-12-23): Paramètres ajustés pour réduire sur-segmentation
+    - min_size: 10 → 20 pixels (supprimer petits faux positifs)
+    - dist_threshold: 2 → 4 (espacer marqueurs watershed)
     """
     # 1. Binariser NP
     binary_mask = (np_pred > 0.5).astype(np.uint8)
