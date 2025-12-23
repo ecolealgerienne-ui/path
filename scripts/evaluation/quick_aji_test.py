@@ -59,6 +59,11 @@ def get_gradient_hv(hv_map: np.ndarray) -> np.ndarray:
 def remove_small_objects(binary_mask: np.ndarray, min_size: int = 10) -> np.ndarray:
     """Supprime les objets plus petits que min_size pixels."""
     labeled, num = ndimage.label(binary_mask)
+
+    # Si aucun objet détecté, retourner masque vide
+    if num == 0:
+        return np.zeros_like(binary_mask, dtype=np.uint8)
+
     sizes = ndimage.sum(binary_mask, labeled, range(1, num + 1))
 
     mask_size = sizes >= min_size
