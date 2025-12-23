@@ -190,7 +190,7 @@ def main():
                 val_result = validate_features(features)
                 print(f"\n🔍 VALIDATION FEATURES (first sample):")
                 print(f"  CLS std: {val_result['cls_std']:.4f} (attendu: 0.70-0.90)")
-                print(f"  Status: {val_result['status']}")
+                print(f"  Valid: {val_result['valid']}")
 
             patch_tokens = features[:, 1:257, :]  # (1, 256, 1536)
 
