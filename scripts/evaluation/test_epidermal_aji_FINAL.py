@@ -152,7 +152,13 @@ def main():
 
     data = np.load(data_file)
     images = data['images']
-    masks = np.load("data/PanNuke/fold0/masks.npy", mmap_mode='r')  # GT complet
+
+    # PanNuke base directory
+    pannuke_dir = Path("/home/amar/data/PanNuke")
+    if not pannuke_dir.exists():
+        pannuke_dir = Path("data/PanNuke")  # Fallback
+
+    masks = np.load(pannuke_dir / "fold0" / "masks.npy", mmap_mode='r')  # GT complet
 
     # Use fold IDs to get correct GT masks
     fold_ids = data.get('fold_ids', np.zeros(len(images), dtype=np.int32))
@@ -181,7 +187,7 @@ def main():
                 gt_mask = masks[img_id]
             else:
                 # If fold 1 or 2, load from correct fold
-                fold_masks = np.load(f"data/PanNuke/fold{fold_id}/masks.npy", mmap_mode='r')
+                fold_masks = np.load(pannuke_dir / f"fold{fold_id}" / "masks.npy", mmap_mode='r')
                 gt_mask = fold_masks[img_id]
 
             # Preprocess
