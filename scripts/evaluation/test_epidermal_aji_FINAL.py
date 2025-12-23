@@ -203,24 +203,45 @@ def main():
             # Predict
             np_out, hv_out, nt_out = hovernet(patch_tokens)
 
-            # Convert to numpy
-            np_pred = torch.sigmoid(np_out).cpu().numpy()[0, 0]  # (224, 224)
+            # Convert to numpy with sigmoid
+            np_pred_sigmoid = torch.sigmoid(np_out).cpu().numpy()[0]  # (2, 224, 224)
             hv_pred = hv_out.cpu().numpy()[0]  # (2, 224, 224)
 
-            # Resize to 256×256 for comparison with GT
-            np_pred = cv2.resize(np_pred, (256, 256), interpolation=cv2.INTER_LINEAR)
-            hv_pred_resized = np.stack([
-                cv2.resize(hv_pred[0], (256, 256), interpolation=cv2.INTER_LINEAR),
-                cv2.resize(hv_pred[1], (256, 256), interpolation=cv2.INTER_LINEAR)
-            ], axis=0)
+            # DEBUG: Check which channel has nuclei
+            if idx == test_indices[0]:  # Print once
+                print(f"\n🔍 DEBUG (first sample):")
+                print(f"  NP channel 0 max: {np_pred_sigmoid[0].max():.4f}")
+                print(f"  NP channel 1 max: {np_pred_sigmoid[1].max():.4f}")
+                print(f"  HV max: {hv_pred.max():.4f}")
+                print(f"  Using channel: 1 (nuclei)")
 
-            # Extract instances (HV MAGNITUDE)
-            pred_inst = extract_instances_hv_magnitude(np_pred, hv_pred_resized)
+            # Take channel 1 (nuclei) - channel 0 is background
+            np_pred_native = np_pred_sigmoid[1]  # (224, 224)
+
+            # CRITICAL FIX: Extract instances at NATIVE resolution (224×224)
+            # BEFORE resizing (resize smooths HV gradients → kills peaks)
+            pred_inst_native = extract_instances_hv_magnitude(np_pred_native, hv_pred)
+
+            # Resize instance map to 256×256 with NEAREST (preserves instance IDs)
+            pred_inst = cv2.resize(pred_inst_native.astype(np.float32), (256, 256),
+                                  interpolation=cv2.INTER_NEAREST).astype(np.int32)
+
+            # Compute GT instances
             gt_inst = compute_gt_instances(gt_mask)
+
+            # DEBUG: Print instance counts
+            if idx == test_indices[0]:  # Print once
+                n_pred = len(np.unique(pred_inst)) - 1  # -1 for background
+                n_gt = len(np.unique(gt_inst)) - 1
+                print(f"  Instances Pred: {n_pred} | GT: {n_gt}")
 
             # Compute metrics
             aji = compute_aji(pred_inst, gt_inst)
-            dice = compute_dice((np_pred > 0.5).astype(np.uint8), (gt_inst > 0).astype(np.uint8))
+
+            # Resize NP pred to 256×256 for Dice calculation
+            np_pred_256 = cv2.resize(np_pred_native, (256, 256), interpolation=cv2.INTER_LINEAR)
+            dice = compute_dice((np_pred_256 > 0.5).astype(np.uint8), (gt_inst > 0).astype(np.uint8))
+
             pq, dq, sq, _ = compute_panoptic_quality(pred_inst, gt_inst)
 
             all_aji.append(aji)
