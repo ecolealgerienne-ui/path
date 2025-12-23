@@ -55,7 +55,7 @@ def watershed_from_hv(np_pred: np.ndarray, hv_pred: np.ndarray) -> np.ndarray:
 
         if markers.max() == 0:
             # Fallback: connected components
-            inst_map, _ = cv2.connectedComponents(np_binary)
+            _, inst_map = cv2.connectedComponents(np_binary)
             return inst_map.astype(np.int32)
 
         # Watershed
@@ -72,7 +72,7 @@ def watershed_from_hv(np_pred: np.ndarray, hv_pred: np.ndarray) -> np.ndarray:
         return inst_map
     else:
         # Fallback
-        inst_map, _ = cv2.connectedComponents(np_binary)
+        _, inst_map = cv2.connectedComponents(np_binary)
         return inst_map.astype(np.int32)
 
 
@@ -92,7 +92,7 @@ def extract_gt_instances(np_target: np.ndarray, nt_target: np.ndarray) -> np.nda
     # Pour l'instant, utiliser connected components sur NP binaire
     # TODO: Si les targets contiennent déjà les instance IDs, les utiliser directement
     np_binary = (np_target > 0.5).astype(np.uint8)
-    inst_map, _ = cv2.connectedComponents(np_binary)
+    _, inst_map = cv2.connectedComponents(np_binary)
 
     return inst_map.astype(np.int32)
 
