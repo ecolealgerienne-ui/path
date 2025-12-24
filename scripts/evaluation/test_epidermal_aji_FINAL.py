@@ -229,10 +229,23 @@ def main():
                 print(f"  NP channel 1 max: {np_pred[:, :, 1].max():.4f}")
                 print(f"  HV max: {hv_pred.max():.4f}")
 
-            # 2. Resize vers 256×256 (taille PanNuke GT)
-            #    CRITIQUE: Resize AVANT extraction d'instances pour alignement spatial exact
-            np_pred_256 = cv2.resize(np_pred, (256, 256), interpolation=cv2.INTER_LINEAR)  # (256, 256, 2)
-            hv_pred_256 = cv2.resize(hv_pred, (256, 256), interpolation=cv2.INTER_LINEAR)  # (256, 256, 2)
+            # 2. CENTER PADDING 224→256 (au lieu de resize qui déforme)
+            #    ===================================================================
+            #    FIX EXPERT #2 (2025-12-24): PADDING au lieu de RESIZE
+            #    ===================================================================
+            #    CAUSE: H-optimus extrait crops centraux 224×224 d'images 256×256
+            #    AVANT: cv2.resize() étirait → décalage spatial → PQ=0.00
+            #    APRÈS: Center padding préserve positions exactes
+            h, w = np_pred.shape[:2]  # 224, 224
+            diff = (256 - 224) // 2  # 16 pixels de padding de chaque côté
+
+            # Créer images vides 256×256
+            np_pred_256 = np.zeros((256, 256, 2), dtype=np_pred.dtype)
+            hv_pred_256 = np.zeros((256, 256, 2), dtype=hv_pred.dtype)
+
+            # Placer prédictions au CENTRE (positions exactes préservées)
+            np_pred_256[diff:diff+h, diff:diff+w, :] = np_pred
+            hv_pred_256[diff:diff+h, diff:diff+w, :] = hv_pred
 
             # 3. Extraction du canal Noyaux (canal 1)
             prob_map = np_pred_256[:, :, 1]  # (256, 256)
