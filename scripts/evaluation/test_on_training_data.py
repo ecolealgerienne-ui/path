@@ -46,7 +46,7 @@ def compute_accuracy(pred: np.ndarray, target: np.ndarray, mask: np.ndarray) -> 
 def test_on_training_data(
     family: str,
     checkpoint_path: str,
-    data_dir: str = "data/cache/family_data_FIXED",
+    data_dir: str = DEFAULT_FAMILY_FIXED_DIR,  # ⚠️ FIX: Source de vérité unique
     n_samples: int = 100,
     device: str = "cuda"
 ):
@@ -284,7 +284,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Test modèle sur données d'entraînement")
     parser.add_argument("--family", type=str, required=True, choices=["glandular", "digestive", "urologic", "respiratory", "epidermal"])
     parser.add_argument("--checkpoint", type=str, required=True, help="Chemin vers hovernet_*_best.pth")
-    parser.add_argument("--data_dir", type=str, default="data/cache/family_data_FIXED")
+    parser.add_argument("--data_dir", type=str, default=DEFAULT_FAMILY_FIXED_DIR,
+                        help="Répertoire des données (source de vérité unique)")
     parser.add_argument("--n_samples", type=int, default=100, help="Nombre d'échantillons à tester")
     parser.add_argument("--device", type=str, default="cuda")
 

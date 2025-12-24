@@ -20,11 +20,12 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from src.preprocessing import create_hoptimus_transform, validate_features
 from src.models.loader import ModelLoader
+from src.constants import DEFAULT_FAMILY_DATA_DIR
 
 def main():
     parser = argparse.ArgumentParser(description="Extraire features H-optimus-0 depuis FIXED data")
     parser.add_argument("--family", required=True, choices=["glandular", "digestive", "urologic", "epidermal", "respiratory"])
-    parser.add_argument("--data_dir", default="data/cache/family_data", help="Répertoire des données FIXED")
+    parser.add_argument("--data_dir", default=DEFAULT_FAMILY_DATA_DIR, help="Répertoire des données FIXED")
     parser.add_argument("--output_dir", default=None, help="Répertoire de sortie (défaut: même que data_dir)")
     parser.add_argument("--batch_size", type=int, default=8, help="Batch size pour extraction")
     parser.add_argument("--device", default="cuda", choices=["cuda", "cpu"])
@@ -55,11 +56,13 @@ def main():
     np_targets = data['np_targets']  # (N, 256, 256) float32
     hv_targets = data['hv_targets']  # (N, 2, 256, 256) float32
     nt_targets = data['nt_targets']  # (N, 256, 256) int64
+    inst_maps = data['inst_maps']  # (N, 256, 256) int32 - ✅ INSTANCES NATIVES
 
     n_samples = len(images)
     print(f"  → {n_samples} samples")
     print(f"  → Images: {images.shape} ({images.dtype})")
     print(f"  → HV targets: {hv_targets.shape} ({hv_targets.dtype})")
+    print(f"  → Inst maps: {inst_maps.shape} ({inst_maps.dtype})")
 
     # Conversion uint8 si nécessaire (économie 8× espace + évite Bug #1)
     if images.dtype != np.uint8:
@@ -126,15 +129,31 @@ def main():
     print(f"  → {features_file.stat().st_size / 1e9:.2f} GB")
     print("")
 
-    # Sauvegarder targets
-    print(f"Sauvegarde targets: {targets_file.name}")
+    # Vérifier et corriger NT targets (doit être 0-4, pas 0-5)
+    nt_unique = np.unique(nt_targets)
+    print(f"\nVérification NT targets:")
+    print(f"  Valeurs uniques: {sorted(nt_unique)}")
+
+    if nt_targets.max() == 5:
+        print(f"  ⚠️  Conversion NT: [0-5] → [0-4] (shift -1 pour non-background)")
+        # Shift -1 pour tous les pixels non-background
+        nt_targets_corrected = nt_targets.copy()
+        mask = nt_targets > 0
+        nt_targets_corrected[mask] = nt_targets[mask] - 1
+        nt_targets = nt_targets_corrected
+        print(f"  ✅ Après correction: {sorted(np.unique(nt_targets))}")
+
+    # Sauvegarder targets (✅ INCLUT inst_maps maintenant - Solution B)
+    print(f"\nSauvegarde targets: {targets_file.name}")
     np.savez_compressed(
         targets_file,
         np_targets=np_targets,
         hv_targets=hv_targets,
-        nt_targets=nt_targets
+        nt_targets=nt_targets,
+        inst_maps=inst_maps  # ✅ Instances natives PanNuke (0=bg, 1..N=instances)
     )
     print(f"  → {targets_file.stat().st_size / 1e9:.2f} GB")
+    print(f"  → inst_maps sauvegardés ({len(np.unique(inst_maps[0])) - 1} instances moyenne dans 1er échantillon)")
     print("")
 
     print("=" * 80)

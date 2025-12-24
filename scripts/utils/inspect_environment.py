@@ -190,7 +190,7 @@ def inspect_environment():
 
     cache_dirs = [
         ("data/cache/pannuke_features", "Features H-optimus-0 (folds 0,1,2)"),
-        ("data/cache/family_data", "Targets par famille (FIXED/OLD)"),
+        (DEFAULT_FAMILY_DATA_DIR, "Targets par famille (FIXED/OLD)"),
         ("data/cache/family_data_FIXED", "Targets FIXED (float32)"),
         ("data/cache/family_data_OLD_int8_20251222_163212", "Targets OLD (int8, corrompu)"),
         ("data/cache/pannuke_features_OLD_CORRUPTED_20251223", "Features corrompues (Bug #4)")
@@ -370,5 +370,6 @@ if __name__ == "__main__":
     except Exception as e:
         print(f"\n\n❌ ERREUR CRITIQUE: {str(e)}")
         import traceback
+from src.constants import DEFAULT_FAMILY_DATA_DIR
         traceback.print_exc()
         sys.exit(1)

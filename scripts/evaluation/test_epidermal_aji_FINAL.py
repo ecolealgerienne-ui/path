@@ -148,10 +148,13 @@ def main():
 
     # Load epidermal test data
     print("\n📦 Chargement données epidermal...")
-    data_file = Path("data/cache/family_data/epidermal_data_FIXED.npz")
+    # ⚠️ FIX GHOST PATH BUG: Chercher UN SEUL endroit (source de vérité)
+    # AVANT: Cherchait dans data/cache/family_data/ (ancien cache, peut être corrompu)
+    # APRÈS: Cherche UNIQUEMENT dans data/family_FIXED/ (dernière version v4)
+    data_file = Path("data/family_FIXED/epidermal_data_FIXED.npz")
     if not data_file.exists():
         print(f"❌ Fichier non trouvé: {data_file}")
-        print("Exécutez d'abord: python scripts/preprocessing/prepare_family_data_FIXED.py --family epidermal")
+        print("Exécutez d'abord: python scripts/preprocessing/prepare_family_data_FIXED_v4.py --family epidermal")
         return
 
     data = np.load(data_file)

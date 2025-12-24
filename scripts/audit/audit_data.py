@@ -12,6 +12,7 @@ from pathlib import Path
 from collections import defaultdict
 from typing import Dict, List, Tuple
 import subprocess
+from src.constants import DEFAULT_FAMILY_DATA_DIR, DEFAULT_FAMILY_FIXED_DIR
 
 def get_directory_size(path: Path) -> int:
     """Calcule la taille totale d'un répertoire en bytes."""
@@ -120,8 +121,8 @@ def audit_data_structure() -> Dict:
         'data_root': Path('data'),
         'cache': Path('data/cache'),
         'pannuke_features': Path('data/cache/pannuke_features'),
-        'family_data': Path('data/family_data'),
-        'family_data_FIXED': Path('data/family_FIXED'),
+        'family_data': Path(DEFAULT_FAMILY_DATA_DIR),
+        'family_data_FIXED': Path(DEFAULT_FAMILY_FIXED_DIR),
         'evaluation': Path('data/evaluation'),
         'samples': Path('data/samples'),
         'snapshots': Path('data/snapshots'),

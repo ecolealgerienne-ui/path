@@ -2,14 +2,16 @@
 """
 Prépare les données d'entraînement par famille d'organes.
 
-VERSION FIXÉE: Utilise les IDs d'instances NATIFS de PanNuke au lieu de connectedComponents.
+VERSION FIXÉE v2:
+- Utilise les IDs d'instances NATIFS de PanNuke au lieu de connectedComponents
+- AUTO-DÉTECTION format HWC vs CHW pour éviter index mismatch (Bug #4)
 
-BUG CORRIGÉ:
-- Avant: connectedComponents fusionnait les cellules qui se touchent → 75% perdues
-- Après: Utilise les IDs natifs PanNuke (canaux 1-4) → vraies instances séparées
+BUGS CORRIGÉS:
+- Bug #3: connectedComponents fusionnait les cellules qui se touchent → 75% perdues
+- Bug #4: Format mismatch HWC vs CHW causait désalignement 96px
 
 Usage:
-    python scripts/preprocessing/prepare_family_data_FIXED.py --data_dir /home/amar/data/PanNuke
+    python scripts/preprocessing/prepare_family_data_FIXED_v2.py --data_dir /home/amar/data/PanNuke
 """
 
 import argparse
@@ -77,20 +79,64 @@ def compute_hv_maps(inst_map: np.ndarray) -> np.ndarray:
     return hv_map
 
 
+def normalize_mask_format(mask: np.ndarray) -> np.ndarray:
+    """
+    Normalise le format du mask vers HWC (256, 256, 6).
+
+    AUTO-DÉTECTION et conversion si nécessaire.
+
+    Args:
+        mask: PanNuke mask, peut être:
+            - HWC: (256, 256, 6) ✅ Attendu
+            - CHW: (6, 256, 256) ⚠️ Nécessite conversion
+
+    Returns:
+        mask_hwc: (256, 256, 6) HWC format
+
+    Raises:
+        ValueError: Si le format ne peut pas être détecté
+    """
+    if mask.ndim != 3:
+        raise ValueError(
+            f"Expected 3D mask, got {mask.ndim}D with shape {mask.shape}"
+        )
+
+    # DÉTECTION FORMAT
+    # Cas 1: HWC (256, 256, 6)
+    if mask.shape == (256, 256, 6):
+        print("      ✅ Format détecté: HWC (256, 256, 6) - OK")
+        return mask
+
+    # Cas 2: CHW (6, 256, 256)
+    elif mask.shape == (6, 256, 256):
+        print("      ⚠️ Format détecté: CHW (6, 256, 256) - Conversion vers HWC...")
+        mask_hwc = np.transpose(mask, (1, 2, 0))  # (6, 256, 256) → (256, 256, 6)
+        print(f"      ✅ Converti: {mask.shape} → {mask_hwc.shape}")
+        return mask_hwc
+
+    # Cas 3: Format inconnu
+    else:
+        raise ValueError(
+            f"Unexpected mask shape: {mask.shape}. "
+            f"Expected (256, 256, 6) or (6, 256, 256)"
+        )
+
+
 def extract_pannuke_instances(mask: np.ndarray) -> np.ndarray:
     """
-    Extrait les vraies instances de PanNuke (FIXÉ).
+    Extrait les vraies instances de PanNuke (FIXÉ v2).
 
     AVANT (BUGGY):
         np_mask = mask[:, :, 1:].sum(axis=-1) > 0
         _, inst_map = cv2.connectedComponents(np_mask.astype(np.uint8))
         → Fusionne les cellules qui se touchent ❌
 
-    APRÈS (FIXÉ):
-        Utilise les IDs natifs PanNuke dans canaux 1-4 ✅
+    APRÈS (FIXÉ v2):
+        1. Normalise format HWC vs CHW ✅
+        2. Utilise IDs natifs PanNuke canaux 1-4 ✅
 
     Args:
-        mask: (256, 256, 6) PanNuke mask
+        mask: (256, 256, 6) ou (6, 256, 256) PanNuke mask
             - Canal 0: Background
             - Canal 1: Neoplastic instance IDs
             - Canal 2: Inflammatory instance IDs
@@ -101,12 +147,15 @@ def extract_pannuke_instances(mask: np.ndarray) -> np.ndarray:
     Returns:
         inst_map: (256, 256) avec IDs d'instances uniques [0, 1, 2, ...]
     """
+    # ✅ FIXÉ v2: Auto-détection et normalisation format
+    mask = normalize_mask_format(mask)
+
     inst_map = np.zeros((256, 256), dtype=np.int32)
     instance_counter = 1
 
     # Canaux 1-4: IDs d'instances natifs PanNuke
     for c in range(1, 5):
-        channel_mask = mask[:, :, c]
+        channel_mask = mask[:, :, c]  # Maintenant garanti HWC
         inst_ids = np.unique(channel_mask)
         inst_ids = inst_ids[inst_ids > 0]  # Exclude 0 = background
 
@@ -135,7 +184,10 @@ def prepare_family_data(data_dir: Path, output_dir: Path, family: str, chunk_siz
     """
     Prépare les données d'entraînement pour une famille d'organes.
 
-    VERSION FIXÉE avec vraies instances PanNuke + OPTIMISATION RAM (chunking).
+    VERSION FIXÉE v2 avec:
+    - Vraies instances PanNuke (Bug #3)
+    - Auto-détection format HWC/CHW (Bug #4)
+    - Optimisation RAM (chunking)
 
     Args:
         chunk_size: Nombre d'images à traiter par lot (défaut: 500)
@@ -199,6 +251,7 @@ def prepare_family_data(data_dir: Path, output_dir: Path, family: str, chunk_siz
     }
 
     global_idx = 0
+    format_detected = None  # Pour afficher une seule fois
 
     for fold, indices in fold_indices.items():
         fold_dir = data_dir / f"fold{fold}"
@@ -208,6 +261,21 @@ def prepare_family_data(data_dir: Path, output_dir: Path, family: str, chunk_siz
         # Charger avec mmap (pas en RAM)
         images = np.load(images_path, mmap_mode='r')
         masks = np.load(masks_path, mmap_mode='r')
+
+        # ✅ NOUVEAU: Afficher format détecté pour ce fold
+        if format_detected is None:
+            sample_mask = np.array(masks[0])
+            print(f"\n  🔍 Détection format fold {fold}:")
+            print(f"     Masks shape: {masks.shape}")
+            print(f"     Sample mask shape: {sample_mask.shape}")
+            if sample_mask.shape == (256, 256, 6):
+                format_detected = "HWC"
+                print(f"     ✅ Format: HWC (256, 256, 6) - Pas de conversion nécessaire")
+            elif sample_mask.shape == (6, 256, 256):
+                format_detected = "CHW"
+                print(f"     ⚠️ Format: CHW (6, 256, 256) - Conversion automatique vers HWC")
+            else:
+                raise ValueError(f"Format inattendu: {sample_mask.shape}")
 
         print(f"\n  Processing fold {fold} ({len(indices)} images)...")
 
@@ -230,7 +298,7 @@ def prepare_family_data(data_dir: Path, output_dir: Path, family: str, chunk_siz
                 image = np.array(images[idx], dtype=np.uint8)  # Force uint8 (économie 8×)
                 mask = np.array(masks[idx])
 
-                # ✅ FIXÉ: Utiliser vraies instances PanNuke
+                # ✅ FIXÉ v2: Normalisation format + vraies instances PanNuke
                 inst_map = extract_pannuke_instances(mask)
 
                 # NP target
@@ -239,8 +307,9 @@ def prepare_family_data(data_dir: Path, output_dir: Path, family: str, chunk_siz
                 # ✅ FIXÉ: HV targets avec vraies instances
                 hv_target = compute_hv_maps(inst_map)
 
-                # NT target
-                nt_target = np.argmax(mask[:, :, 1:], axis=-1).astype(np.int64)
+                # NT target (mask garanti HWC après extract_pannuke_instances)
+                mask_normalized = normalize_mask_format(mask)
+                nt_target = np.argmax(mask_normalized[:, :, 1:], axis=-1).astype(np.int64)
 
                 chunk_images.append(image)
                 chunk_np_targets.append(np_target)
@@ -291,10 +360,13 @@ def prepare_family_data(data_dir: Path, output_dir: Path, family: str, chunk_siz
     print(f"     NP coverage: {np_targets_array.mean() * 100:.2f}%")
     print(f"     HV range: [{hv_targets_array.min():.3f}, {hv_targets_array.max():.3f}]")
     print(f"     NT classes: {np.unique(nt_targets_array)}")
+    print(f"\n  🔍 Format final:")
+    print(f"     Mask format processed: {format_detected} → HWC")
+    print(f"     All data saved in HWC format (256, 256, 6)")
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Prépare données par famille (VERSION FIXÉE + RAM-OPTIMIZED)")
+    parser = argparse.ArgumentParser(description="Prépare données par famille (VERSION FIXÉE v2 + AUTO-DETECT FORMAT)")
     parser.add_argument("--data_dir", type=Path, default=Path("/home/amar/data/PanNuke"))
     parser.add_argument("--output_dir", type=Path, default=Path(DEFAULT_FAMILY_FIXED_DIR))
     parser.add_argument("--family", type=str, choices=FAMILIES, help="Famille spécifique (optionnel)")
@@ -306,9 +378,13 @@ def main():
     args = parser.parse_args()
 
     print("=" * 70)
-    print("PRÉPARATION DONNÉES PAR FAMILLE (VERSION FIXÉE + RAM-OPTIMIZED)")
+    print("PRÉPARATION DONNÉES PAR FAMILLE (VERSION FIXÉE v2)")
     print("=" * 70)
-    print(f"\nChangements:")
+    print(f"\nNouveautés v2:")
+    print(f"  ✅ Auto-détection format HWC (256,256,6) vs CHW (6,256,256)")
+    print(f"  ✅ Conversion automatique vers HWC si nécessaire")
+    print(f"  ✅ Évite index mismatch (Bug #4: désalignement 96px)")
+    print(f"\nChangements précédents:")
     print(f"  ❌ AVANT: connectedComponents fusionnait cellules touchantes")
     print(f"  ✅ APRÈS: IDs natifs PanNuke (vraies instances séparées)")
     print(f"\nOptimisations:")
@@ -318,6 +394,7 @@ def main():
     print(f"\nImpact:")
     print(f"  - HV maps avec frontières RÉELLES entre cellules")
     print(f"  - Gradients HV FORTS aux bordures")
+    print(f"  - Alignement pixel-perfect images ↔ masks")
     print(f"  - Modèle apprendra à séparer correctement")
 
     if args.family:
@@ -330,9 +407,11 @@ def main():
     print("✅ PRÉPARATION TERMINÉE")
     print("=" * 70)
     print(f"\nProchaines étapes:")
-    print(f"  1. Vérifier les nouvelles données dans {args.output_dir}")
-    print(f"  2. Comparer HV maps BEFORE vs AFTER")
-    print(f"  3. Ré-entraîner HoVer-Net avec nouvelles données (~10h pour 5 familles)")
+    print(f"  1. Vérifier alignement spatial:")
+    print(f"     python scripts/validation/verify_spatial_alignment.py \\")
+    print(f"         --family <famille> --n_samples 5")
+    print(f"     Attendu: distance < 2 pixels")
+    print(f"  2. Si alignement OK → Ré-entraîner HoVer-Net (~40 min)")
 
 
 if __name__ == "__main__":

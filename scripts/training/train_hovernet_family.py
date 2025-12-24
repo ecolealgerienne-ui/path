@@ -41,6 +41,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from src.data.preprocessing import load_targets, resize_targets
 from src.models.hovernet_decoder import HoVerNetDecoder, HoVerNetLoss
 from src.models.organ_families import FAMILIES, FAMILY_TO_ORGANS, FAMILY_DESCRIPTIONS, get_organs
+from src.constants import DEFAULT_FAMILY_DATA_DIR
 
 
 class FeatureAugmentation:
@@ -111,7 +112,9 @@ class FamilyHoVerDataset(Dataset):
 
         # Répertoire des données pré-préparées
         if cache_dir is None:
-            cache_dir = PROJECT_ROOT / "data" / "cache" / "family_data"
+            # ✅ Bug #6 fix: Use centralized constant instead of hardcoded path
+            from src.constants import DEFAULT_FAMILY_DATA_DIR
+            cache_dir = PROJECT_ROOT / DEFAULT_FAMILY_DATA_DIR
         else:
             cache_dir = Path(cache_dir)
 
@@ -328,8 +331,8 @@ def main():
                        help='Répertoire PanNuke')
     parser.add_argument('--family', type=str, required=True, choices=FAMILIES,
                        help=f'Famille à entraîner: {FAMILIES}')
-    parser.add_argument('--cache_dir', type=str, default='data/cache/family_data',
-                       help='Répertoire des données pré-préparées')
+    parser.add_argument('--cache_dir', type=str, default=DEFAULT_FAMILY_DATA_DIR,
+                       help='Répertoire des données pré-préparées (source de vérité unique)')
     parser.add_argument('--epochs', type=int, default=50)
     parser.add_argument('--batch_size', type=int, default=16)
     parser.add_argument('--lr', type=float, default=1e-4)

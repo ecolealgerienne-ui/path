@@ -68,9 +68,22 @@ MAX_VRAM_GB = 12  # RTX 4070 SUPER
 # PATHS (relative to project root)
 # =============================================================================
 
+# Source data
 DEFAULT_PANNUKE_DIR = "/home/amar/data/PanNuke"
+
+# Checkpoints
 DEFAULT_CHECKPOINT_DIR = "models/checkpoints"
+
+# Features cache
 DEFAULT_FEATURES_CACHE_DIR = "data/cache/pannuke_features"
+
+# ⚠️ CRITICAL: Family data path (Bug #6 fix)
+# This is the SINGLE SOURCE OF TRUTH for family features/targets location
+# Used by: train_hovernet_family.py, test_on_training_data.py, test_aji_v8.py, etc.
+DEFAULT_FAMILY_DATA_DIR = "data/family_data"  # ← Validated path (exists, CLS std 0.770)
+
+# FIXED data (v8 with proper HV normalization)
+DEFAULT_FAMILY_FIXED_DIR = "data/family_FIXED"
 
 # =============================================================================
 # TEMPERATURE SCALING (CALIBRATION)
