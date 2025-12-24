@@ -330,7 +330,7 @@ def main():
                        help='Répertoire PanNuke')
     parser.add_argument('--family', type=str, required=True, choices=FAMILIES,
                        help=f'Famille à entraîner: {FAMILIES}')
-    parser.add_argument('--cache_dir', type=str, default=DEFAULT_FAMILY_FIXED_DIR,
+    parser.add_argument('--cache_dir', type=str, default=DEFAULT_FAMILY_DATA_DIR,
                        help='Répertoire des données pré-préparées (source de vérité unique)')
     parser.add_argument('--epochs', type=int, default=50)
     parser.add_argument('--batch_size', type=int, default=16)
