@@ -63,7 +63,7 @@ class OptimusGateInferenceMultiFamily:
         self,
         checkpoint_dir: str = "models/checkpoints",
         device: str = "cuda" if torch.cuda.is_available() else "cpu",
-        np_threshold: float = 0.5,
+        np_threshold: float = 0.3,  # Abaissé de 0.5 → 0.3 pour meilleure détection
     ):
         self.device = device
         self.img_size = 224
@@ -157,17 +157,15 @@ class OptimusGateInferenceMultiFamily:
         if not binary_mask.any():
             return np.zeros_like(np_pred, dtype=np.int32)
 
-        # 1. Compute gradient magnitude from HV maps
-        h_grad = cv2.Sobel(hv_pred[0], cv2.CV_64F, 1, 0, ksize=3)
-        v_grad = cv2.Sobel(hv_pred[1], cv2.CV_64F, 0, 1, ksize=3)
-        gradient = np.sqrt(h_grad**2 + v_grad**2)
+        # 1. Compute HV energy (magnitude) - Original HoVer-Net (Graham et al. 2019)
+        # FIXED 2025-12-23: Use HV magnitude directly instead of Sobel(HV)
+        # Expert recommendation: energy = sqrt(HV_h² + HV_v²) for watershed markers
+        energy = np.sqrt(hv_pred[0]**2 + hv_pred[1]**2)
 
-        # 2. Threshold to get edges (GLOBALLY OPTIMAL - batch diagnostic)
-        edge_threshold = 0.3  # CONSERVATIVE: 76% error reduction vs edge=0.2
-        edges = gradient > edge_threshold
-
-        # 3. Distance transform on INVERTED edges
-        dist = ndimage.distance_transform_edt(~edges)
+        # 2. Use energy peaks as markers (inverted for watershed)
+        # High energy = cell centers, Low energy = cell boundaries
+        # Watershed on -energy will find boundaries
+        dist = energy  # Use energy directly for peak finding
 
         # 4. Find local maxima as markers (GLOBALLY OPTIMAL - batch diagnostic)
         dist_threshold = 2  # CONSERVATIVE: prevents over-segmentation

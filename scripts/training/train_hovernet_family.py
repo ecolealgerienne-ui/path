@@ -33,10 +33,12 @@ from torch.optim import AdamW
 from torch.optim.lr_scheduler import CosineAnnealingLR
 from tqdm import tqdm
 
-# Ajouter le projet au path
+# Ajouter le projet au path AVANT les imports src.*
 PROJECT_ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
+# Import modules du projet
+from src.data.preprocessing import load_targets, resize_targets
 from src.models.hovernet_decoder import HoVerNetDecoder, HoVerNetLoss
 from src.models.organ_families import FAMILIES, FAMILY_TO_ORGANS, FAMILY_DESCRIPTIONS, get_organs
 
@@ -140,21 +142,13 @@ class FamilyHoVerDataset(Dataset):
         self.n_samples = len(self.features)
         print(f"  → {self.n_samples} samples, {self.features.nbytes / 1e9:.2f} GB")
 
+        # Utilisation du module centralisé pour chargement + validation
         print(f"Chargement {targets_path.name}...")
-        targets_data = np.load(targets_path)
-        self.np_targets = targets_data['np_targets']
-
-        # HV: Gérer à la fois OLD (int8) et NEW (float32) formats
-        hv_raw = targets_data['hv_targets']
-        if hv_raw.dtype == np.int8:
-            # OLD format: int8 [-127, 127] → convertir en float32 [-1, 1]
-            self.hv_targets = hv_raw.astype(np.float32) / 127.0
-            print(f"  ⚠️  HV format OLD détecté (int8) - conversion en float32")
-        else:
-            # NEW format FIXED: déjà en float32 [-1, 1]
-            self.hv_targets = hv_raw
-
-        self.nt_targets = targets_data['nt_targets']
+        self.np_targets, self.hv_targets, self.nt_targets = load_targets(
+            targets_path,
+            validate=True,          # Valide automatiquement les targets
+            auto_convert_hv=True    # Convertit int8 → float32 si nécessaire
+        )
         total_targets_gb = (self.np_targets.nbytes + self.hv_targets.nbytes + self.nt_targets.nbytes) / 1e9
         print(f"  → Targets: {total_targets_gb:.2f} GB")
 
@@ -169,22 +163,12 @@ class FamilyHoVerDataset(Dataset):
         hv_target = self.hv_targets[idx].copy()
         nt_target = self.nt_targets[idx].copy()
 
-        # Resize targets de 256 à 224
-        np_target_t = torch.from_numpy(np_target)
-        hv_target_t = torch.from_numpy(hv_target)
-        nt_target_t = torch.from_numpy(nt_target)
-
-        np_target_t = F.interpolate(np_target_t.unsqueeze(0).unsqueeze(0),
-                                    size=(224, 224), mode='nearest').squeeze()
-        hv_target_t = F.interpolate(hv_target_t.unsqueeze(0),
-                                    size=(224, 224), mode='bilinear',
-                                    align_corners=False).squeeze(0)
-        nt_target_t = F.interpolate(nt_target_t.float().unsqueeze(0).unsqueeze(0),
-                                    size=(224, 224), mode='nearest').squeeze().long()
-
-        np_target = np_target_t.numpy()
-        hv_target = hv_target_t.numpy()
-        nt_target = nt_target_t.numpy()
+        # Utilisation du module centralisé pour resize 256 → 224
+        np_target, hv_target, nt_target = resize_targets(
+            np_target, hv_target, nt_target,
+            target_size=224,
+            mode="training"
+        )
 
         if self.augmenter is not None:
             features, np_target, hv_target, nt_target = self.augmenter(

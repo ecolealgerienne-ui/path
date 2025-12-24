@@ -4202,3 +4202,264 @@ D'après `COMMANDES_ENTRAINEMENT.md`, le workflow complet devient:
 
 **Statut:** ✅ Décision documentée — Cleanup recommandé avant Phase 2
 
+
+### 2025-12-23 — Résolution Data Mismatch Temporel: Features Régénérées ✅ VICTOIRE
+
+**Contexte:** Après test lambda_hv=10.0 catastrophique (Dice 0.95→0.69, AJI 0.05→0.03), diagnostic révèle cause racine: **Data Mismatch temporel** entre features training (OLD, corrompues) et features inference (NEW, correctes).
+
+**Problème identifié:**
+```
+Timeline du Bug:
+├─ AVANT 2025-12-20: Features training générées
+│  ├─ Bug #1 actif: ToPILImage float64 → overflow couleurs  
+│  ├─ Bug #2 actif: blocks[23] au lieu de forward_features()
+│  └─ CLS std résultant: ~0.82 (par hasard dans plage)
+│
+├─ 2025-12-22: Phase 1 Refactoring  
+│  ├─ Fix Bug #1 et Bug #2
+│  ├─ Preprocessing centralisé (src.preprocessing)
+│  └─ Normalisation H-optimus-0 correcte
+│
+└─ 2025-12-23 (avant fix): Inférence avec preprocessing CORRECT
+   ├─ CLS std résultant: 0.661 (trop bas)
+   ├─ MISMATCH 20%: 0.82 (training) vs 0.66 (inference)
+   └─ Décodeur "voit flou" → AJI catastrophique
+```
+
+**Test de stress lambda_hv=10.0 (révélateur):**
+- Dice: 0.9489 → 0.6916 (-27%) 🔴
+- AJI: 0.0524 → 0.0357 (-32%) 🔴  
+- Classification Acc: 0.00% (complètement cassé) 🔴
+- **A RÉVÉLÉ:** Modèle se bat contre features incohérentes
+
+**Citation expert:**
+> "En entraînant sur des features bruyantes (std 0.82 par accident de bug) et en évaluant sur des features propres (std 0.66), le décodeur se retrouve comme un traducteur à qui on a appris une langue avec le mauvais dictionnaire."
+
+**Solution appliquée:**
+
+1. **Régénération complète features fold 0** avec preprocessing correct
+2. **Fix post-processing:** Sobel(HV) → HV magnitude (original HoVer-Net)
+3. **Fix lambda_hv:** 10.0 → 2.0 (équilibré)
+
+**Résultat régénération (2025-12-23):**
+```bash
+python scripts/preprocessing/extract_features.py \
+    --data_dir /home/amar/data/PanNuke \
+    --fold 0 --batch_size 8 --chunk_size 300
+
+✅ CLS std: 0.7680 (PARFAIT dans plage [0.70, 0.90])
+```
+
+**Comparaison historique:**
+
+| Source | CLS std | Statut | Note |
+|--------|---------|--------|------|
+| OLD training (corrompu) | ~0.82 | ❌ Bugs #1/#2 | Artefacts overflow + LayerNorm |
+| Inference alerte | 0.66 | ⚠️ Trop bas | Mismatch révélé |
+| **NEW training (correct)** | **0.77** | ✅ **OPTIMAL** | **Preprocessing unifié** |
+
+**Écart résiduel:** 0.82 vs 0.77 = **6% seulement** (au lieu de 20%)
+
+**Validation expert à 100%:**
+> "Ton plan est validé à 100%. Tu as arrêté de boucler en comprendant que le problème n'était pas le code actuel, mais l'historique de tes données de cache."
+
+**Prochaines étapes:**
+- ✅ Features régénérées et validées (CLS std=0.77)
+- ✅ Post-processing fixé (HV magnitude)
+- ✅ Lambda_hv fixé (2.0)
+- 🔜 Ré-entraînement epidermal avec features cohérentes
+- 🔜 Évaluation Ground Truth finale (AJI cible >0.60)
+
+**Métriques attendues après ré-entraînement:**
+
+| Métrique | Avant (échec) | Cible | Gain |
+|----------|--------------|-------|------|
+| AJI | 0.0357 | >0.60 | **+1581%** 🎯 |
+| Dice | 0.6916 | ~0.95 | +37% (restauré) |
+| Classification Acc | 0.00% | >85% | Restauré ∞ |
+
+**Lessons Learned:**
+
+1. **Data Mismatch temporel** = problème vicieux en Deep Learning
+   - Refactoring preprocessing → TOUJOURS régénérer features
+   - Ne JAMAIS réutiliser cache après changements fondamentaux
+
+2. **Lambda_hv=10.0 test de stress** = diagnostic brillant
+   - A forcé modèle à révéler incompatibilité features
+   - Paradoxalement "échec" qui a révélé vraie cause racine
+
+3. **CLS std = indicateur santé pipeline critique**
+   - <0.40: LayerNorm manquant
+   - [0.70-0.90]: ✅ Optimal
+   - Écart 20% suffit à casser système
+
+4. **Expert + Vérification code** = meilleure approche
+   - Expert a identifié cause racine (Data Mismatch)
+   - Vérification code a clarifié détails (H-optimus-0 vs ImageNet)
+   - Ne pas appliquer aveuglément, valider empiriquement
+
+**Fichiers créés/modifiés:**
+- `docs/DIAGNOSTIC_LAMBDA_HV_10_ANALYSIS.md` — Post-mortem complet
+- `scripts/validation/test_normalization_impact.py` — Test H-optimus-0 vs ImageNet
+- `src/inference/optimus_gate_inference_multifamily.py` — Fix post-processing (Sobel → magnitude)
+- `src/models/hovernet_decoder.py` — Fix lambda_hv (10.0 → 2.0)
+
+**Commits:**
+- `9e47bf0` — "fix: Replace Sobel(HV) with HV magnitude + lambda_hv 10.0→2.0"
+- `4bb59e8` — "docs: Add post-mortem analysis lambda_hv=10.0"
+- `92af840` — "feat: Add normalization test script"
+
+**Statut:** ✅ Cause racine résolue — Prêt pour ré-entraînement final
+
+---
+
+### 2025-12-23 (Soir) — Test de Vérité Géométrique: Verdict MODÈLE CORROMPU ❌ CRITIQUE
+
+**Contexte:** Après régénération features fold 0 et re-training epidermal (Dice 0.9511, HV MSE 0.0475), tests d'évaluation montrent AJI catastrophique malgré bon Dice. Expert demande Test de Vérité Géométrique pour diagnostic définitif.
+
+**Tests effectués:**
+
+**Test 1: Post-processing min_size=20, dist_threshold=4**
+```
+Résultats:
+- Dice: 0.8365 (bon)
+- AJI:  0.0679 (catastrophique, objectif >0.60)
+- PQ:   0.0005 (catastrophique, objectif >0.65)
+- Instances: 7 pred vs 15 GT (sous-segmentation)
+
+Conclusion: Le problème N'EST PAS le post-processing
+```
+
+**Test 2: Test de Vérité Géométrique (Crop 224×224)**
+
+**Méthode:** Inférence sur crop central 224×224 (sans resize) pour éliminer tout artefact géométrique
+
+```python
+# Script créé: test_crop_truth.py
+img_224 = center_crop(img_256, 224)  # Pas de resize
+gt_224 = center_crop(gt_256, 224)
+pred_inst_224 = model(img_224)
+aji = compute_aji(pred_inst_224, gt_224)  # Comparaison directe
+```
+
+**Résultats (50 échantillons):**
+```
+✅ CLS std:  0.7226 (valide, dans plage 0.70-0.90)
+✅ Dice:     0.9707 ± 0.1420 (EXCELLENT - proche objectif 0.90)
+❌ AJI:      0.0634 ± 0.0420 (CATASTROPHIQUE - objectif 0.60)
+❌ PQ:       0.0005 ± 0.0022 (CATASTROPHIQUE - objectif 0.65)
+
+Instances: 9 pred vs 32 GT (sous-segmentation massive)
+```
+
+**Diagnostic Expert: "Segmentation Fantôme"**
+
+**Paradoxe:** Dice 0.97 avec AJI 0.06 → Cas rare en segmentation
+
+**Explication:**
+- Le modèle prédit correctement la **masse globale** des noyaux (Dice élevé)
+- Mais les place systématiquement **à côté** des vrais noyaux (décalage 4-5 pixels)
+- En AJI, si le centre prédit n'est pas dans le noyau réel, score → 0
+
+**Cause Racine Confirmée: Data Mismatch Temporel (Bug #4)**
+
+```
+Timeline Corrompue:
+├─ AVANT 2025-12-20: Features NPZ générées
+│  ├─ Bug #1 actif: ToPILImage float64 → overflow couleurs
+│  ├─ Bug #2 actif: blocks[23] → CLS std ~0.82
+│  └─ Résultat: Features avec décalage spatial
+│
+├─ 2025-12-22: Phase 1 Refactoring
+│  ├─ Fix Bug #1 et Bug #2
+│  └─ Targets GT régénérés (propres, alignés)
+│
+└─ 2025-12-23: Training avec MISMATCH ❌
+   ├─ Features OLD: std 0.82 (corrompues, décalées)
+   ├─ Targets NEW: propres (alignés)
+   └─ Modèle apprend un DÉCALAGE spatial systématique
+```
+
+**Impact:**
+- Durant training: Modèle force-fit features décalées → targets propres
+- Le décodeur apprend: "Appliquer décalage de 5px vers la droite"
+- Durant inference: Features propres → Modèle applique décalage appris → Prédictions à côté des vrais noyaux
+
+**Preuve du diagnostic:**
+- Dice 0.97 prouve que le décodeur **fonctionne parfaitement**
+- AJI 0.06 prouve un **décalage géométrique systématique** (pas aléatoire)
+- Test sur crop natif 224×224 élimine hypothèse "artefact resize"
+
+**Verdict Final: MODÈLE CORROMPU — Re-training OBLIGATOIRE**
+
+**Plan de Sauvetage (Option B):**
+
+1. **Purge cache features** (5 min)
+   ```bash
+   mv data/cache/pannuke_features data/cache/pannuke_features_OLD_CORRUPTED_20251223
+   mkdir -p data/cache/pannuke_features
+   ```
+
+2. **Régénération features fold 0** (20 min)
+   ```bash
+   python scripts/preprocessing/extract_features.py \
+       --data_dir /home/amar/data/PanNuke \
+       --fold 0 --batch_size 8 --chunk_size 300
+   ```
+
+3. **Vérification pixel-perfect** (CRITIQUE - 5 min)
+   - Superposer image + HV targets
+   - Vecteurs HV doivent pointer EXACTEMENT vers centres noyaux
+   - Si décalage > 2 pixels → NE PAS lancer training
+
+4. **Re-training epidermal** (40 min)
+   ```bash
+   python scripts/training/train_hovernet_family.py \
+       --family epidermal --epochs 50 --augment \
+       --lambda_hv 2.0
+   ```
+
+5. **Test de vérité final**
+   - AJI attendu: 0.06 → **0.60+** (gain +900%)
+
+**Prédiction Expert:**
+> "Ton Dice à 0.97 sur le crop 224 montre que ton décodeur est hyper-puissant. Il a juste besoin d'apprendre sur un terrain où les cibles ne bougent pas. Une fois le re-training terminé avec des features synchronisées, ton AJI va passer de 0.06 à 0.65 en une seule session."
+
+**Fichiers créés:**
+- `docs/ETAT_DES_LIEUX_2025-12-23.md` — Rapport complet d'état + plan détaillé pour demain
+- `scripts/evaluation/test_crop_truth.py` — Test de vérité géométrique (crop 224×224)
+
+**Commits:**
+- `ea2ca46` — "fix: Adjust post-processing parameters to reduce over-segmentation"
+- `308dae6` — "feat: Add geometric truth test (crop 224×224) to diagnose spatial mismatch"
+- `f6e9fb8` — "fix: Use 'valid' instead of 'status' in validate_features result"
+- `c8474b9` — "docs: Add comprehensive state report (2025-12-23)"
+
+**Leçons apprises:**
+
+1. **Data Mismatch Temporel = Bug le plus vicieux en Deep Learning**
+   - Métriques training bonnes (Dice 0.95) masquent le problème
+   - Bug n'apparaît qu'en évaluation GT (AJI 0.06)
+   - TOUJOURS régénérer cache après changement preprocessing
+
+2. **Méthode de diagnostic correcte:**
+   - Test de stress (lambda_hv=10) révèle incohérences
+   - Test de vérité (crop 224) isole problème géométrique
+   - Analyse timeline identifie cause racine temporelle
+
+3. **Dice élevé ≠ Modèle correct:**
+   - Dice mesure chevauchement global (masse)
+   - AJI mesure alignement spatial (précision géométrique)
+   - Dice 0.97 + AJI 0.06 = "Segmentation fantôme"
+
+**Timeline estimée demain:**
+- Purge + régénération + vérification: 30 min
+- **Point de décision GO/NO-GO:** Vérification pixel-perfect
+- Re-training: 40 min
+- Test final: 5 min
+- **Total:** 1h15
+
+**Statut:** ❌ MODÈLE CORROMPU CONFIRMÉ — Plan de sauvetage documenté dans `docs/ETAT_DES_LIEUX_2025-12-23.md`
+
+---
+

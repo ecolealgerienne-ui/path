@@ -243,38 +243,61 @@ class HoVerNetLoss(nn.Module):
 
     def gradient_loss(self, pred: torch.Tensor, target: torch.Tensor, mask: torch.Tensor = None) -> torch.Tensor:
         """
-        SmoothL1 sur les gradients (pour HV maps) - moins sensible aux outliers.
+        MSGE (Mean Squared Gradient Error) avec opérateur Sobel pour signal amplifié.
 
-        IMPORTANT: Littérature (Graham et al.) recommande de calculer les gradients
-        pour forcer le modèle à apprendre les variations spatiales (MSGE).
+        PROBLÈME IDENTIFIÉ (Expert externe):
+        - Différences finies simples (pixel[i+1] - pixel[i]) donnent signal trop faible
+        - Dans HV maps [-1, 1], différences typiques ~0.01 → gradient loss négligeable
+        → Modèle n'a pas de pression pour créer frontières nettes
+
+        SOLUTION:
+        - Utiliser noyau Sobel (3×3) qui amplifie naturellement les gradients
+        - Sobel = convolution avec poids [-1, 0, 1] → signal 2-3× plus fort
+        → Force le modèle à créer contours nets autour des noyaux
 
         Args:
             pred: Prédictions HV (B, 2, H, W)
             target: Targets HV (B, 2, H, W)
             mask: Masque des noyaux (B, 1, H, W) - optionnel
         """
-        # Gradient horizontal
-        pred_h = pred[:, :, :, 1:] - pred[:, :, :, :-1]
-        target_h = target[:, :, :, 1:] - target[:, :, :, :-1]
+        # Noyaux Sobel pour gradients horizontal et vertical
+        sobel_h = torch.tensor([[-1, 0, 1], [-2, 0, 2], [-1, 0, 1]], dtype=pred.dtype, device=pred.device).view(1, 1, 3, 3)
+        sobel_v = torch.tensor([[-1, -2, -1], [0, 0, 0], [1, 2, 1]], dtype=pred.dtype, device=pred.device).view(1, 1, 3, 3)
 
-        # Gradient vertical
-        pred_v = pred[:, :, 1:, :] - pred[:, :, :-1, :]
-        target_v = target[:, :, 1:, :] - target[:, :, :-1, :]
+        # Appliquer Sobel séparément sur chaque canal (H et V)
+        B, C, H, W = pred.shape
+
+        # Reshape pour convolution: (B*C, 1, H, W)
+        # Utiliser reshape() au lieu de view() pour gérer tensors non-contigus
+        pred_reshaped = pred.reshape(B * C, 1, H, W)
+        target_reshaped = target.reshape(B * C, 1, H, W)
+
+        # Gradients Sobel avec padding pour garder la taille
+        pred_grad_h = F.conv2d(pred_reshaped, sobel_h, padding=1)
+        pred_grad_v = F.conv2d(pred_reshaped, sobel_v, padding=1)
+
+        target_grad_h = F.conv2d(target_reshaped, sobel_h, padding=1)
+        target_grad_v = F.conv2d(target_reshaped, sobel_v, padding=1)
+
+        # Reshape back: (B, C, H, W)
+        pred_grad_h = pred_grad_h.reshape(B, C, H, W)
+        pred_grad_v = pred_grad_v.reshape(B, C, H, W)
+        target_grad_h = target_grad_h.reshape(B, C, H, W)
+        target_grad_v = target_grad_v.reshape(B, C, H, W)
 
         if mask is not None:
-            # Masquer les gradients aussi (cohérence avec masked SmoothL1)
-            mask_h = mask[:, :, :, 1:]  # Même shape que pred_h
-            mask_v = mask[:, :, 1:, :]  # Même shape que pred_v
-
-            grad_loss_h = F.smooth_l1_loss(pred_h * mask_h, target_h * mask_h, reduction='sum')
-            grad_loss_v = F.smooth_l1_loss(pred_v * mask_v, target_v * mask_v, reduction='sum')
+            # Masquer les gradients (uniquement sur les noyaux)
+            grad_loss_h = F.mse_loss(pred_grad_h * mask, target_grad_h * mask, reduction='sum')
+            grad_loss_v = F.mse_loss(pred_grad_v * mask, target_grad_v * mask, reduction='sum')
 
             # Normaliser par le nombre de pixels masqués
-            grad_loss = (grad_loss_h + grad_loss_v) / (mask_h.sum() + mask_v.sum() + 1e-8)
-            return grad_loss
+            n_pixels = mask.sum() * C  # Multiply by C car 2 canaux (H, V)
+            grad_loss = (grad_loss_h + grad_loss_v) / (n_pixels + 1e-8)
         else:
-            # Fallback sans masque (backward compatibility)
-            return self.smooth_l1(pred_h, target_h) + self.smooth_l1(pred_v, target_v)
+            # Sans masque
+            grad_loss = F.mse_loss(pred_grad_h, target_grad_h) + F.mse_loss(pred_grad_v, target_grad_v)
+
+        return grad_loss
 
     def forward(
         self,
@@ -314,10 +337,15 @@ class HoVerNetLoss(nn.Module):
             hv_l1 = torch.tensor(0.0, device=hv_pred.device)
 
         # Gradient loss (MSGE - Graham et al.): force le modèle à apprendre les variations spatiales
-        # Poids 0.5× recommandé pour ne pas dominer la loss HV principale
-        # VALIDÉ: HV MSE 0.25 → 0.0549 avec masquage + gradient_loss
+        # EXPERT FIX FINAL (2025-12-23): Lambda_hv=2.0 (équilibré)
+        # POST-MORTEM lambda_hv=10.0:
+        #   - Test de stress réussi: a révélé cause racine (features corrompues)
+        #   - Mais trop élevé: Dice 0.95→0.69 (over-regularization)
+        #   - Vrai problème: CLS std mismatch (0.82 training vs 0.66 inference)
+        # Solution: Régénérer features + lambda_hv équilibré (2.0 au lieu de 10.0)
+        # Objectif: AJI >0.60 avec features cohérentes + post-processing HoVer-Net original
         hv_gradient = self.gradient_loss(hv_pred, hv_target, mask=mask)
-        hv_loss = hv_l1 + 0.5 * hv_gradient
+        hv_loss = hv_l1 + 2.0 * hv_gradient  # Équilibré: MSE + 2× gradient
 
         # NT loss: CE (sur tous les pixels)
         nt_loss = self.bce(nt_pred, nt_target.long())
