@@ -7,7 +7,7 @@ import numpy as np
 from pathlib import Path
 import sys
 
-def diagnose_targets(family: str, data_dir: str = "data/cache/family_data_FIXED"):
+def diagnose_targets(family: str, data_dir: str = "data/family_FIXED"):  # ⚠️ FIX: Source de vérité unique
     """Inspecte les targets pré-calculés."""
 
     data_dir = Path(data_dir)
@@ -175,7 +175,8 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(description="Diagnostic des targets pré-calculés")
     parser.add_argument("--family", type=str, required=True, choices=["glandular", "digestive", "urologic", "respiratory", "epidermal"])
-    parser.add_argument("--data_dir", type=str, default="data/cache/family_data_FIXED")
+    parser.add_argument("--data_dir", type=str, default="data/family_FIXED",
+                        help="Répertoire des données (source de vérité unique)")
 
     args = parser.parse_args()
 

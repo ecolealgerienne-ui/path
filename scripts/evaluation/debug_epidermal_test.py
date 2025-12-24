@@ -10,7 +10,10 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 # Load data
-data_file = Path("data/cache/family_data/epidermal_data_FIXED.npz")
+# ⚠️ FIX GHOST PATH BUG: Chercher UN SEUL endroit (source de vérité)
+# AVANT: Cherchait dans data/cache/family_data/ (ancien cache, peut être corrompu)
+# APRÈS: Cherche UNIQUEMENT dans data/family_FIXED/ (dernière version v4)
+data_file = Path("data/family_FIXED/epidermal_data_FIXED.npz")
 data = np.load(data_file)
 
 print("=" * 80)
