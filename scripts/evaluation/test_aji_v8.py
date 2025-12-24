@@ -14,7 +14,61 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from src.models.loader import ModelLoader
 from src.metrics.ground_truth_metrics import compute_aji, compute_panoptic_quality
-from src.inference.optimus_gate_inference_multifamily import post_process_hovernet
+from scipy import ndimage
+from skimage.feature import peak_local_max
+from skimage.segmentation import watershed
+
+def post_process_hv(np_pred: np.ndarray, hv_pred: np.ndarray, np_threshold: float = 0.5) -> np.ndarray:
+    """
+    Watershed sur HV maps pour séparer instances (v8 compatible).
+
+    Args:
+        np_pred: Nuclear presence mask (H, W) float [0, 1]
+        hv_pred: HV maps (2, H, W) float [-1, 1]
+        np_threshold: Seuil binarisation NP (défaut: 0.5)
+
+    Returns:
+        instance_map: (H, W) int32 avec IDs instances
+    """
+    # Binary mask
+    binary_mask = (np_pred > np_threshold).astype(np.uint8)
+
+    if not binary_mask.any():
+        return np.zeros_like(np_pred, dtype=np.int32)
+
+    # HV energy (magnitude) - Original HoVer-Net
+    energy = np.sqrt(hv_pred[0]**2 + hv_pred[1]**2)
+
+    # Find local maxima as markers
+    dist_threshold = 2  # CONSERVATIVE
+    local_max = peak_local_max(
+        energy,
+        min_distance=dist_threshold,
+        labels=binary_mask.astype(int),
+        exclude_border=False,
+    )
+
+    # Create markers
+    markers = np.zeros_like(binary_mask, dtype=int)
+    if len(local_max) > 0:
+        markers[tuple(local_max.T)] = np.arange(1, len(local_max) + 1)
+
+    # Watershed
+    if markers.max() > 0:
+        instance_map = watershed(-energy, markers, mask=binary_mask)
+    else:
+        instance_map = ndimage.label(binary_mask)[0]
+
+    # Remove small instances
+    min_size = 10
+    for inst_id in range(1, instance_map.max() + 1):
+        if (instance_map == inst_id).sum() < min_size:
+            instance_map[instance_map == inst_id] = 0
+
+    # Re-label
+    instance_map, _ = ndimage.label(instance_map > 0)
+
+    return instance_map
 
 def main():
     parser = argparse.ArgumentParser(description="Test AJI sur données v8")
@@ -89,7 +143,7 @@ def main():
 
         # Post-processing pour instances
         try:
-            inst_pred = post_process_hovernet(np_pred, hv_pred)
+            inst_pred = post_process_hv(np_pred, hv_pred)
 
             # GT instances (connectedComponents sur NP mask)
             import cv2
