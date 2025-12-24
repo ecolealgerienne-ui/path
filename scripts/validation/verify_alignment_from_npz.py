@@ -32,10 +32,16 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 def extract_centers_from_hv(hv_map: np.ndarray, inst_map: np.ndarray) -> np.ndarray:
     """
-    Extrait les centroïdes depuis HV maps en cherchant minimum de gradient.
+    Extrait les centroïdes depuis HV maps v8 (centripètes).
+
+    MÉTHODE v8 (CENTRIPÈTE):
+    - Les vecteurs HV pointent VERS le centroïde
+    - Au centre: y_dist = center_y - y = 0 → v_dist = 0 → HV magnitude = 0
+    - Aux bords: y_dist ≠ 0 → v_dist ≠ 0 → HV magnitude > 0
+    - Donc: Chercher MINIMUM de MAGNITUDE HV (pas gradient!)
 
     Args:
-        hv_map: HV maps (2, H, W) - CHARGÉ DEPUIS NPZ
+        hv_map: HV maps (2, H, W) - CHARGÉ DEPUIS NPZ v8
         inst_map: Instance map (H, W) - Pour délimiter instances
 
     Returns:
@@ -46,6 +52,9 @@ def extract_centers_from_hv(hv_map: np.ndarray, inst_map: np.ndarray) -> np.ndar
 
     centers = []
 
+    # ✅ FIX v8: Calculer MAGNITUDE HV (pas gradient!)
+    hv_magnitude = np.sqrt(hv_map[0]**2 + hv_map[1]**2)
+
     for inst_id in inst_ids:
         inst_mask = inst_map == inst_id
         y_coords, x_coords = np.where(inst_mask)
@@ -53,15 +62,8 @@ def extract_centers_from_hv(hv_map: np.ndarray, inst_map: np.ndarray) -> np.ndar
         if len(y_coords) == 0:
             continue
 
-        # Calculer gradient de HV
-        grad_v = np.gradient(hv_map[0])  # [grad_y, grad_x]
-        grad_h = np.gradient(hv_map[1])  # [grad_y, grad_x]
-
-        # Magnitude du gradient
-        mag = np.sqrt(grad_v[0]**2 + grad_v[1]**2 + grad_h[0]**2 + grad_h[1]**2)
-
-        # Trouver minimum dans l'instance
-        mags_in_inst = mag[y_coords, x_coords]
+        # ✅ FIX v8: Trouver minimum de MAGNITUDE HV dans l'instance
+        mags_in_inst = hv_magnitude[y_coords, x_coords]
         min_idx = np.argmin(mags_in_inst)
 
         center_y = y_coords[min_idx]
