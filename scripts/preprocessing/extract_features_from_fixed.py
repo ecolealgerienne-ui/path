@@ -55,11 +55,13 @@ def main():
     np_targets = data['np_targets']  # (N, 256, 256) float32
     hv_targets = data['hv_targets']  # (N, 2, 256, 256) float32
     nt_targets = data['nt_targets']  # (N, 256, 256) int64
+    inst_maps = data['inst_maps']  # (N, 256, 256) int32 - ✅ INSTANCES NATIVES
 
     n_samples = len(images)
     print(f"  → {n_samples} samples")
     print(f"  → Images: {images.shape} ({images.dtype})")
     print(f"  → HV targets: {hv_targets.shape} ({hv_targets.dtype})")
+    print(f"  → Inst maps: {inst_maps.shape} ({inst_maps.dtype})")
 
     # Conversion uint8 si nécessaire (économie 8× espace + évite Bug #1)
     if images.dtype != np.uint8:
@@ -140,15 +142,17 @@ def main():
         nt_targets = nt_targets_corrected
         print(f"  ✅ Après correction: {sorted(np.unique(nt_targets))}")
 
-    # Sauvegarder targets
+    # Sauvegarder targets (✅ INCLUT inst_maps maintenant - Solution B)
     print(f"\nSauvegarde targets: {targets_file.name}")
     np.savez_compressed(
         targets_file,
         np_targets=np_targets,
         hv_targets=hv_targets,
-        nt_targets=nt_targets
+        nt_targets=nt_targets,
+        inst_maps=inst_maps  # ✅ Instances natives PanNuke (0=bg, 1..N=instances)
     )
     print(f"  → {targets_file.stat().st_size / 1e9:.2f} GB")
+    print(f"  → inst_maps sauvegardés ({len(np.unique(inst_maps[0])) - 1} instances moyenne dans 1er échantillon)")
     print("")
 
     print("=" * 80)

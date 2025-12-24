@@ -1,7 +1,19 @@
 #!/usr/bin/env python3
 """
-Visualise les prédictions brutes pour UNE image.
-Permet de voir le "blob géant" au lieu des noyaux séparés.
+Visualisation diagnostic pour comprendre pourquoi AJI est à 0.0002.
+
+Affiche pour un échantillon:
+1. Image H&E originale  
+2. GT instances (colorisé)
+3. Prédiction NP (binaire)
+4. Prédiction HV magnitude
+5. Prédiction instances (après watershed)
+6. Statistiques détaillées
+
+Permet de diagnostiquer:
+- Watershed échoue à séparer les instances?
+- HV magnitude trop faible?
+- Resize détruit les instances?
 """
 
 import argparse
@@ -12,106 +24,197 @@ import torch
 import matplotlib.pyplot as plt
 from matplotlib.colors import ListedColormap
 
-PROJECT_ROOT = Path(__file__).parent.parent.parent
-sys.path.insert(0, str(PROJECT_ROOT))
+sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from src.models.loader import ModelLoader
-from src.models.hovernet_decoder import HoVerNetDecoder
-from src.preprocessing import create_hoptimus_transform
+from src.metrics.ground_truth_metrics import compute_aji
+from scipy import ndimage
+from skimage.feature import peak_local_max
+from skimage.segmentation import watershed
+from cv2 import resize, INTER_NEAREST
 
+def post_process_hv(np_pred: np.ndarray, hv_pred: np.ndarray, np_threshold: float = 0.5) -> tuple:
+    """
+    Watershed sur HV maps avec retour de tous les intermédiaires.
+    
+    Returns:
+        (instance_map, energy, markers, n_instances)
+    """
+    # Binary mask
+    binary_mask = (np_pred > np_threshold).astype(np.uint8)
+    
+    if not binary_mask.any():
+        return np.zeros_like(np_pred, dtype=np.int32), np.zeros_like(np_pred), np.zeros_like(np_pred), 0
+    
+    # HV energy (magnitude)
+    energy = np.sqrt(hv_pred[0]**2 + hv_pred[1]**2)
+    
+    # Find local maxima as markers
+    dist_threshold = 2  # CONSERVATIVE
+    local_max = peak_local_max(
+        energy,
+        min_distance=dist_threshold,
+        labels=binary_mask.astype(int),
+        exclude_border=False,
+    )
+    
+    # Create markers
+    markers = np.zeros_like(binary_mask, dtype=int)
+    if len(local_max) > 0:
+        markers[tuple(local_max.T)] = np.arange(1, len(local_max) + 1)
+    
+    # Watershed
+    if markers.max() > 0:
+        instance_map = watershed(-energy, markers, mask=binary_mask)
+    else:
+        instance_map = ndimage.label(binary_mask)[0]
+    
+    # Remove small instances
+    min_size = 10
+    for inst_id in range(1, instance_map.max() + 1):
+        if (instance_map == inst_id).sum() < min_size:
+            instance_map[instance_map == inst_id] = 0
+    
+    # Re-label
+    instance_map, n_instances = ndimage.label(instance_map > 0)
+    
+    return instance_map, energy, markers, n_instances
+
+def colorize_instances(inst_map: np.ndarray) -> np.ndarray:
+    """Colorise instance map avec couleurs aléatoires."""
+    if inst_map.max() == 0:
+        return np.zeros((*inst_map.shape, 3), dtype=np.uint8)
+    
+    np.random.seed(42)
+    colors = np.random.randint(0, 255, (inst_map.max() + 1, 3), dtype=np.uint8)
+    colors[0] = [0, 0, 0]  # Background noir
+    
+    colored = colors[inst_map]
+    return colored
 
 def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--checkpoint", required=True)
-    parser.add_argument("--image_npz", required=True)
-    parser.add_argument("--output", default="raw_predictions.png")
-    parser.add_argument("--device", default="cuda")
+    parser = argparse.ArgumentParser(description="Diagnostic visuel AJI")
+    parser.add_argument("--family", required=True, choices=["glandular", "digestive", "urologic", "epidermal", "respiratory"])
+    parser.add_argument("--checkpoint", required=True, help="Chemin checkpoint HoVer-Net")
+    parser.add_argument("--data_dir", default="data/family_data", help="Répertoire données features")
+    parser.add_argument("--sample_idx", type=int, default=0, help="Index échantillon à visualiser")
+    parser.add_argument("--output", default="results/diagnostic_visual.png", help="Fichier de sortie")
+    parser.add_argument("--device", default="cuda", choices=["cuda", "cpu"])
     args = parser.parse_args()
-
-    # Load models
-    backbone = ModelLoader.load_hoptimus0(device=args.device)
-    hovernet = HoVerNetDecoder(embed_dim=1536, n_classes=5).to(args.device)
-    checkpoint = torch.load(args.checkpoint, map_location=args.device)
-    hovernet.load_state_dict(checkpoint['model_state_dict'])
+    
+    data_dir = Path(args.data_dir)
+    
+    # Charger données
+    print("Chargement données...")
+    features_data = np.load(data_dir / f"{args.family}_features.npz")
+    targets_data = np.load(data_dir / f"{args.family}_targets.npz")
+    fixed_data = np.load(Path("data/family_FIXED") / f"{args.family}_data_FIXED.npz")
+    
+    features = features_data['features']
+    np_targets = targets_data['np_targets']
+    hv_targets = targets_data['hv_targets']
+    inst_maps = targets_data.get('inst_maps', fixed_data['inst_maps'])
+    images = fixed_data['images']
+    
+    idx = args.sample_idx
+    
+    print(f"\nÉchantillon {idx}/{len(features)}")
+    print("=" * 80)
+    
+    # Charger modèle
+    print("Chargement modèle...")
+    hovernet = ModelLoader.load_hovernet(args.checkpoint, device=args.device)
     hovernet.eval()
-
-    # Load image
-    data = np.load(args.image_npz)
-    image = data['image']
-    mask = data['mask'] if 'mask' in data else None
-
-    # Preprocess
-    transform = create_hoptimus_transform()
-    if image.dtype != np.uint8:
-        image = (image * 255).clip(0, 255).astype(np.uint8)
-    tensor = transform(image).unsqueeze(0).to(args.device)
-
-    # Inference
+    
+    # Prédiction
+    feat = torch.from_numpy(features[idx:idx+1]).to(args.device).float()
+    
     with torch.no_grad():
-        features = backbone.forward_features(tensor)
-        patch_tokens = features[:, 1:257, :]
-        np_out, hv_out, nt_out = hovernet(patch_tokens)
-
-        # To numpy
-        np_logits = np_out.cpu().numpy()[0]
-        hv_pred = hv_out.cpu().numpy()[0]
-        nt_logits = nt_out.cpu().numpy()[0]
-
-        # Activations
-        np_probs = 1 / (1 + np.exp(-np_logits))
-        np_binary = np_probs[1]
-        nt_probs = np.exp(nt_logits) / np.exp(nt_logits).sum(axis=0, keepdims=True)
-
-    # Visualize
+        np_out, hv_out, nt_out = hovernet(feat)
+    
+    np_pred = torch.sigmoid(np_out).cpu().numpy()[0, 0]  # (224, 224)
+    hv_pred = hv_out.cpu().numpy()[0]  # (2, 224, 224)
+    
+    # Post-processing
+    inst_pred, energy, markers, n_pred = post_process_hv(np_pred, hv_pred)
+    
+    # GT (resize 256 → 224)
+    inst_gt = resize(inst_maps[idx], (224, 224), interpolation=INTER_NEAREST)
+    image = resize(images[idx], (224, 224))
+    
+    # Statistiques
+    n_gt = len(np.unique(inst_gt)) - 1  # Hors background
+    aji = compute_aji(inst_pred, inst_gt)
+    
+    print(f"\nSTATISTIQUES:")
+    print(f"  GT instances:   {n_gt}")
+    print(f"  Pred instances: {n_pred}")
+    print(f"  AJI:            {aji:.4f}")
+    print(f"  NP Dice:        {2 * ((np_pred > 0.5) & (np_targets[idx] > 0.5)).sum() / ((np_pred > 0.5).sum() + (np_targets[idx] > 0.5).sum()):.4f}")
+    print(f"  HV energy:      min={energy.min():.3f}, max={energy.max():.3f}, mean={energy.mean():.3f}")
+    print(f"  Markers trouvés: {markers.max()}")
+    print("")
+    
+    # Visualisation
     fig, axes = plt.subplots(2, 3, figsize=(15, 10))
-
-    # Row 1: Input + NP + HV magnitude
+    
+    # Row 1
     axes[0, 0].imshow(image)
-    axes[0, 0].set_title("Image H&E")
+    axes[0, 0].set_title(f"Image H&E originale\n(Sample {idx})")
     axes[0, 0].axis('off')
-
-    axes[0, 1].imshow(np_binary, cmap='hot', vmin=0, vmax=1)
-    axes[0, 1].set_title(f"NP Prediction\nMax={np_binary.max():.3f}")
+    
+    axes[0, 1].imshow(colorize_instances(inst_gt))
+    axes[0, 1].set_title(f"GT Instances\n({n_gt} instances)")
     axes[0, 1].axis('off')
-
-    hv_magnitude = np.sqrt(hv_pred[0]**2 + hv_pred[1]**2)
-    axes[0, 2].imshow(hv_magnitude, cmap='viridis', vmin=0, vmax=1)
-    axes[0, 2].set_title(f"HV Magnitude\nMax={hv_magnitude.max():.3f}")
+    
+    axes[0, 2].imshow(np_pred, cmap='gray')
+    axes[0, 2].set_title(f"Prédiction NP\n(Dice={2 * ((np_pred > 0.5) & (np_targets[idx] > 0.5)).sum() / ((np_pred > 0.5).sum() + (np_targets[idx] > 0.5).sum()):.3f})")
     axes[0, 2].axis('off')
-
-    # Row 2: HV H + HV V + NT
-    axes[1, 0].imshow(hv_pred[0], cmap='RdBu_r', vmin=-1, vmax=1)
-    axes[1, 0].set_title(f"HV Horizontal\nRange=[{hv_pred[0].min():.2f}, {hv_pred[0].max():.2f}]")
+    
+    # Row 2
+    axes[1, 0].imshow(energy, cmap='hot')
+    axes[1, 0].set_title(f"HV Magnitude (Energy)\nRange: [{energy.min():.2f}, {energy.max():.2f}]")
     axes[1, 0].axis('off')
-
-    axes[1, 1].imshow(hv_pred[1], cmap='RdBu_r', vmin=-1, vmax=1)
-    axes[1, 1].set_title(f"HV Vertical\nRange=[{hv_pred[1].min():.2f}, {hv_pred[1].max():.2f}]")
+    
+    axes[1, 1].imshow(markers > 0, cmap='gray')
+    axes[1, 1].set_title(f"Watershed Markers\n({markers.max()} markers)")
     axes[1, 1].axis('off')
-
-    nt_argmax = nt_probs.argmax(axis=0)
-    cmap = ListedColormap(['black', 'red', 'green', 'blue', 'yellow', 'cyan'])
-    axes[1, 2].imshow(nt_argmax, cmap=cmap, vmin=0, vmax=5)
-    axes[1, 2].set_title("NT Classification")
+    
+    axes[1, 2].imshow(colorize_instances(inst_pred))
+    axes[1, 2].set_title(f"Prédiction Instances\n({n_pred} instances, AJI={aji:.3f})")
     axes[1, 2].axis('off')
-
+    
     plt.tight_layout()
-    plt.savefig(args.output, dpi=150, bbox_inches='tight')
-    print(f"\n✅ Saved: {args.output}")
-
-    # Print stats
-    print(f"\n📊 STATISTIQUES:")
-    print(f"  NP max:  {np_binary.max():.4f}")
-    print(f"  NP mean: {np_binary.mean():.4f}")
-    print(f"  HV max:  {np.abs(hv_pred).max():.4f}")
-    print(f"  HV mean: {np.abs(hv_pred).mean():.4f}")
-    print(f"  HV magnitude max: {hv_magnitude.max():.4f}")
-
-    if np.abs(hv_pred).max() < 0.3:
-        print(f"\n  🔴 TANH SATURE: HV max = {np.abs(hv_pred).max():.3f} < 0.3")
-    elif hv_magnitude.max() < 0.2:
-        print(f"\n  ⚠️  HV MAGNITUDE FAIBLE: {hv_magnitude.max():.3f} < 0.2")
-        print(f"     → Watershed ne verra pas de contours nets")
-
+    
+    output_path = Path(args.output)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    plt.savefig(output_path, dpi=150, bbox_inches='tight')
+    print(f"✅ Sauvegardé: {output_path}")
+    
+    # Diagnostic
+    print("\nDIAGNOSTIC:")
+    if n_pred == 0:
+        print("  ❌ PROBLÈME: Aucune instance prédite!")
+        print("     → Watershed n'a trouvé aucun marqueur")
+        print("     → Vérifier: HV magnitude trop faible?")
+    elif n_pred == 1 and n_gt > 1:
+        print("  ❌ PROBLÈME: 1 instance géante prédite!")
+        print("     → Watershed n'a pas séparé les cellules")
+        print("     → Vérifier: dist_threshold trop élevé? (actuel: 2)")
+    elif n_pred < 0.5 * n_gt:
+        print("  ⚠️  SOUS-SEGMENTATION sévère!")
+        print(f"     → Pred {n_pred} vs GT {n_gt} (ratio {n_pred/n_gt:.2f})")
+        print("     → Essayer: dist_threshold=1, min_size=5")
+    elif n_pred > 2 * n_gt:
+        print("  ⚠️  SUR-SEGMENTATION sévère!")
+        print(f"     → Pred {n_pred} vs GT {n_gt} (ratio {n_pred/n_gt:.2f})")
+        print("     → Essayer: dist_threshold=3, min_size=20")
+    else:
+        print(f"  ✅ Nombre instances OK (ratio {n_pred/n_gt:.2f})")
+        print(f"     → Mais AJI faible ({aji:.4f}) indique mauvais alignement")
+        print("     → Vérifier: resize détruit les instances?")
+    
+    return 0
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

@@ -80,19 +80,13 @@ def main():
     args = parser.parse_args()
 
     data_dir = Path(args.data_dir)
-    fixed_dir = Path("data/family_FIXED")
 
     # Charger features et targets
     features_file = data_dir / f"{args.family}_features.npz"
     targets_file = data_dir / f"{args.family}_targets.npz"
-    fixed_file = fixed_dir / f"{args.family}_data_FIXED.npz"
 
     if not features_file.exists() or not targets_file.exists():
         print(f"❌ ERREUR: Fichiers manquants dans {data_dir}")
-        return 1
-
-    if not fixed_file.exists():
-        print(f"❌ ERREUR: Fichier FIXED manquant: {fixed_file}")
         return 1
 
     print("=" * 80)
@@ -104,12 +98,18 @@ def main():
     print(f"Chargement données...")
     features_data = np.load(features_file)
     targets_data = np.load(targets_file)
-    fixed_data = np.load(fixed_file)
 
     features = features_data['features']
     np_targets = targets_data['np_targets']
     hv_targets = targets_data['hv_targets']
-    inst_maps = fixed_data['inst_maps']  # ✅ Instances NATIVES PanNuke
+
+    # ✅ inst_maps DOIVENT être dans targets.npz (Solution B)
+    if 'inst_maps' not in targets_data:
+        print(f"❌ ERREUR: inst_maps manquants dans targets.npz!")
+        print(f"   Ré-exécutez: python scripts/preprocessing/extract_features_from_fixed.py --family {args.family}")
+        return 1
+
+    inst_maps = targets_data['inst_maps']  # ✅ Instances NATIVES PanNuke
 
     n_total = len(features)
     n_test = min(args.n_samples, n_total)
