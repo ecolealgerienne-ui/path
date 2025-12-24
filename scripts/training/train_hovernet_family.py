@@ -349,6 +349,8 @@ def main():
                        help='Poids loss HV (séparation instances)')
     parser.add_argument('--lambda_nt', type=float, default=1.0,
                        help='Poids loss NT (classification)')
+    parser.add_argument('--lambda_magnitude', type=float, default=5.0,
+                       help='Poids magnitude loss (Expert: 5.0 pour forcer gradients forts)')
     parser.add_argument('--adaptive_loss', action='store_true',
                        help='Utiliser Uncertainty Weighting (poids appris)')
 
@@ -409,15 +411,17 @@ def main():
         lambda_np=args.lambda_np,
         lambda_hv=args.lambda_hv,
         lambda_nt=args.lambda_nt,
+        lambda_magnitude=args.lambda_magnitude,
         adaptive=args.adaptive_loss,
     )
 
     # Afficher configuration loss
     if args.adaptive_loss:
         print(f"  Loss: Uncertainty Weighting (poids appris)")
+        print(f"        Magnitude weight: {args.lambda_magnitude} (fixed)")
         criterion.to(device)  # Les paramètres log_var sont sur le device
     else:
-        print(f"  Loss: Poids fixes (NP={args.lambda_np}, HV={args.lambda_hv}, NT={args.lambda_nt})")
+        print(f"  Loss: Poids fixes (NP={args.lambda_np}, HV={args.lambda_hv}, NT={args.lambda_nt}, Magnitude={args.lambda_magnitude})")
 
     # Optimizer inclut les paramètres de loss si adaptive
     if args.adaptive_loss:
