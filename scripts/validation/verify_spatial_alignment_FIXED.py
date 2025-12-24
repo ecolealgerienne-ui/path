@@ -109,9 +109,12 @@ def predict_centroids_from_hv(hv_map: np.ndarray, np_mask: np.ndarray) -> list:
         return []
 
     # 2. Calculer magnitude du GRADIENT HV (pas des valeurs!)
-    grad_v = np.gradient(hv_map[0])  # Gradient vertical
-    grad_h = np.gradient(hv_map[1])  # Gradient horizontal
-    mag = np.sqrt(grad_v**2 + grad_h**2)
+    # np.gradient retourne [grad_y, grad_x] pour un array 2D
+    grad_v = np.gradient(hv_map[0])  # [dV/dy, dV/dx]
+    grad_h = np.gradient(hv_map[1])  # [dH/dy, dH/dx]
+
+    # Magnitude combinée (gradient spatial total)
+    mag = np.sqrt(grad_v[0]**2 + grad_v[1]**2 + grad_h[0]**2 + grad_h[1]**2)
 
     # 3. Pour chaque instance, trouver pixel de magnitude MINIMALE
     centroids = []
