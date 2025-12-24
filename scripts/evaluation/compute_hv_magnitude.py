@@ -79,19 +79,13 @@ def compute_hv_magnitude(
     magnitudes = []
 
     for i in range(n_samples):
-        # Extraire features sample
+        # Extraire features sample (B, 261, 1536) - CLS + 256 patches + 4 registers
         sample_features = torch.from_numpy(features[i:i+1]).float().to(device)
 
-        # Extraire patch tokens (256 patches, 1536-dim)
-        patch_tokens = sample_features[:, 1:257, :]  # Skip CLS token
-
-        # Reshape pour HoVer-Net: (B, 256, 1536) → (B, 1536, 16, 16)
-        B = patch_tokens.shape[0]
-        patch_tokens_reshaped = patch_tokens.view(B, 16, 16, 1536).permute(0, 3, 1, 2)
-
-        # Inférence
+        # Le modèle HoVerNet attend (B, N, D) et fait le reshape lui-même
+        # Pas besoin de reshaper manuellement
         with torch.no_grad():
-            np_out, hv_out, nt_out = model(patch_tokens_reshaped)
+            np_out, hv_out, nt_out = model(sample_features)
 
         # Extraire HV predictions
         hv_pred = hv_out.cpu().numpy()[0]  # (2, 224, 224)
