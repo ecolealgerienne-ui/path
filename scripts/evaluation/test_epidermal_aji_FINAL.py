@@ -209,6 +209,7 @@ def main():
     all_aji = []
     all_dice = []
     all_pq = []
+    n_skipped = 0  # Track empty GT samples
 
     with torch.no_grad():
         for idx in tqdm(test_indices, desc="Testing"):
@@ -293,11 +294,30 @@ def main():
             # Compute GT instances
             gt_inst = compute_gt_instances(gt_mask)
 
-            # DEBUG: Print instance counts
+            # Count instances (needed for skip logic)
+            n_pred = len(np.unique(pred_inst)) - 1  # -1 for background
+            n_gt = len(np.unique(gt_inst)) - 1
+
+            # DEBUG: Print instance counts + GT validation
             if idx == test_indices[0]:  # Print once
-                n_pred = len(np.unique(pred_inst)) - 1  # -1 for background
-                n_gt = len(np.unique(gt_inst)) - 1
                 print(f"  Instances Pred: {n_pred} | GT: {n_gt}")
+
+                # DEBUG GT MASK
+                print(f"\n🔍 DEBUG GT MASK:")
+                print(f"  gt_mask shape: {gt_mask.shape}")
+                print(f"  gt_mask dtype: {gt_mask.dtype}")
+                for c in range(gt_mask.shape[2]):
+                    channel_max = gt_mask[:, :, c].max()
+                    channel_nonzero = (gt_mask[:, :, c] > 0).sum()
+                    print(f"  Channel {c}: max={channel_max}, nonzero_pixels={channel_nonzero}")
+                print(f"  gt_inst unique IDs: {np.unique(gt_inst)}")
+
+            # ⚠️ CRITICAL: Skip empty GT (évite division par zéro dans AJI)
+            if n_gt == 0:
+                n_skipped += 1
+                if idx == test_indices[0]:
+                    print(f"  ⚠️  SKIPPING: GT vide (pas de cellules)")
+                continue
 
             # Compute metrics
             aji = compute_aji(pred_inst, gt_inst)
@@ -315,6 +335,10 @@ def main():
     print("\n" + "=" * 80)
     print("📊 RÉSULTATS FINAUX")
     print("=" * 80)
+    print(f"\n📈 Échantillons:")
+    print(f"  Total testé: {len(test_indices)}")
+    print(f"  Valides (GT non-vide): {len(all_aji)}")
+    print(f"  Skippés (GT vide): {n_skipped}")
     print(f"\n✅ Dice:  {np.mean(all_dice):.4f} ± {np.std(all_dice):.4f}")
     print(f"✅ AJI:   {np.mean(all_aji):.4f} ± {np.std(all_aji):.4f}")
     print(f"✅ PQ:    {np.mean(all_pq):.4f} ± {np.std(all_pq):.4f}")
