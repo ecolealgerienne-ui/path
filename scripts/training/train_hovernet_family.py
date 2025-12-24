@@ -41,6 +41,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from src.data.preprocessing import load_targets, resize_targets
 from src.models.hovernet_decoder import HoVerNetDecoder, HoVerNetLoss
 from src.models.organ_families import FAMILIES, FAMILY_TO_ORGANS, FAMILY_DESCRIPTIONS, get_organs
+from src.constants import DEFAULT_FAMILY_DATA_DIR
 
 
 class FeatureAugmentation:
