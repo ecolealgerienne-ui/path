@@ -17,6 +17,7 @@ import numpy as np
 import torch
 from scipy import ndimage
 from skimage.feature import peak_local_max
+from skimage.morphology import remove_small_objects
 from skimage.segmentation import watershed
 from tqdm import tqdm
 
@@ -33,39 +34,48 @@ from src.preprocessing import create_hoptimus_transform
 def extract_instances_hv_magnitude(
     np_pred: np.ndarray,
     hv_pred: np.ndarray,
-    min_size: int = 20,
-    dist_threshold: int = 4
+    min_size: int = 50,
+    dist_threshold: int = 8
 ) -> np.ndarray:
     """
     Extrait instances avec HV MAGNITUDE (PAS Sobel).
 
     Méthode: HoVer-Net original (Graham et al. 2019)
 
-    FIX #3 (Expert 2025-12-23): Paramètres ajustés pour réduire sur-segmentation
-    - min_size: 10 → 20 pixels (supprimer petits faux positifs)
-    - dist_threshold: 2 → 4 (espacer marqueurs watershed)
+    ===================================================================
+    FIX ANTI-CONFETTIS (Expert 2025-12-24):
+    ===================================================================
+    PROBLÈME IDENTIFIÉ (IoU 0.71 mais AJI 0.15):
+    - Sur-segmentation: 28 instances prédites vs 13 GT
+    - Le modèle voit les bonnes formes mais les découpe en morceaux
+    - Cause: Gradients HV bruités → trop de pics → watershed fracasse
+
+    SOLUTION APPLIQUÉE:
+    1. Lissage gaussien (sigma=1.0) sur HV gradients
+       → Élimine micro-oscillations qui créent faux pics
+    2. dist_threshold: 4 → 8 pixels
+       → Force distance minimale entre centres (évite découpe)
+    3. min_size: 20 → 50 pixels
+       → Noyaux PanNuke font 50-200 pixels, élimine débris
+
+    ATTENDU: Instances 28 → ~13, AJI 0.15 → >0.60 (+300%)
+    ===================================================================
     """
-    # 1. Binariser NP
+    # 1. Binariser NP avec seuil strict
     binary_mask = (np_pred > 0.5).astype(np.uint8)
 
-    # 2. Remove small noise
-    labeled, num = ndimage.label(binary_mask)
-    if num == 0:
-        return np.zeros_like(binary_mask, dtype=np.int32)
-
-    sizes = ndimage.sum(binary_mask, labeled, range(1, num + 1))
-    mask_size = sizes >= min_size
-    remove_small = mask_size[labeled - 1]
-    remove_small[labeled == 0] = 0
-    binary_mask = remove_small.astype(np.uint8)
-
-    # 3. HV MAGNITUDE (direct, pas Sobel)
+    # 2. HV MAGNITUDE
     energy = np.sqrt(hv_pred[0]**2 + hv_pred[1]**2)
 
-    # 4. Find peaks
+    # 3. ⭐ LISSAGE CRITIQUE: Supprimer bruit dans gradients
+    #    Sans ceci, chaque micro-oscillation = nouveau pic = sur-segmentation
+    energy = ndimage.gaussian_filter(energy, sigma=1.0)
+
+    # 4. Find peaks avec dist_threshold ÉLARGI
+    #    Plus il est haut, moins il y a de sur-segmentation
     local_max = peak_local_max(
         energy,
-        min_distance=dist_threshold,
+        min_distance=dist_threshold,  # 8 pixels au lieu de 4
         labels=binary_mask.astype(int),
         exclude_border=False,
     )
@@ -81,7 +91,25 @@ def extract_instances_hv_magnitude(
     else:
         inst_map = ndimage.label(binary_mask)[0]
 
-    return inst_map.astype(np.int32)
+    # 7. ⭐ NETTOYAGE FINAL: Supprimer petits objets
+    #    Noyaux PanNuke font 50-200 pixels
+    #    À min_size=50, on garde seulement vrais noyaux
+    inst_map_labeled = inst_map.astype(np.int32)
+    for region_id in np.unique(inst_map_labeled):
+        if region_id == 0:  # Skip background
+            continue
+        region_size = (inst_map_labeled == region_id).sum()
+        if region_size < min_size:
+            inst_map_labeled[inst_map_labeled == region_id] = 0
+
+    # Re-label pour combler les trous d'ID
+    inst_map_clean = np.zeros_like(inst_map_labeled)
+    unique_ids = np.unique(inst_map_labeled)
+    unique_ids = unique_ids[unique_ids > 0]
+    for new_id, old_id in enumerate(unique_ids, start=1):
+        inst_map_clean[inst_map_labeled == old_id] = new_id
+
+    return inst_map_clean.astype(np.int32)
 
 
 def compute_gt_instances(mask: np.ndarray) -> np.ndarray:
@@ -259,7 +287,8 @@ def main():
 
             # 5. Extract instances à 256×256 (résolution GT)
             #    Plus besoin de resize après → alignement spatial parfait
-            pred_inst = extract_instances_hv_magnitude(prob_map, hv_map, min_size=30)
+            #    ⭐ FIX ANTI-CONFETTIS: Utilise nouveaux params (min_size=50, dist_threshold=8)
+            pred_inst = extract_instances_hv_magnitude(prob_map, hv_map)
 
             # Compute GT instances
             gt_inst = compute_gt_instances(gt_mask)
