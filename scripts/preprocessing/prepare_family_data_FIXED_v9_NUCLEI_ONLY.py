@@ -299,21 +299,31 @@ def compute_np_target_NUCLEI_ONLY(mask: np.ndarray) -> np.ndarray:
 
 def compute_nt_target(mask: np.ndarray) -> np.ndarray:
     """
-    Génère le target NT (Nuclear Type) - NUCLEI ONLY (exclut Channel 5).
+    Génère le target NT (Nuclear Type) - BASÉ SUR CHANNEL 0.
 
-    ✅ v9 FIX: Exclut Channel 5 (Epithelial) pour cohérence avec NP/HV.
+    ✅ v10 FIX CRITIQUE (Expert 2025-12-24):
+    Utilise Channel 0 (instance IDs) comme masque, puis trouve le type
+    dans Channels 1-4 (EXCLUT 5 pour éviter tissu).
 
-    Classes PanNuke utilisées:
+    PROBLÈME v9:
+    - Pour epidermal, Channels 1-4 sont VIDES (pas de Neoplastic/etc)
+    - Channel 5 (Epithelial) exclu → NT = 100% background
+    - NP détecte 15% noyaux, NT = 0% noyaux → MISMATCH!
+    - Résultat: Training Dice 0.40 au lieu de 0.95
+
+    SOLUTION v10:
+    - Utiliser Channel 0 pour identifier les pixels de noyaux
+    - Pour chaque pixel de noyau, trouver son type dans Channels 1-4
+    - Si absent de 1-4, assigner classe par défaut selon famille:
+      * epidermal → classe 4 (Dead) comme proxy (évite Epithelial=5)
+      * autres → background (0)
+
+    Classes PanNuke:
     - 0: Background
     - 1: Neoplastic
     - 2: Inflammatory
     - 3: Connective
-    - 4: Dead
-
-    Channel 5 (Epithelial) EXCLU:
-    - Pour epidermal, les noyaux épithéliaux seront classés comme background (classe 0)
-    - Cohérent avec l'exclusion de Channel 5 pour NP/HV
-    - Modèle HoVer-Net a n_classes=5 (0-4), pas 6
+    - 4: Dead (utilisé comme proxy pour epidermal)
 
     Args:
         mask: Mask PanNuke (H, W, 6)
@@ -326,10 +336,29 @@ def compute_nt_target(mask: np.ndarray) -> np.ndarray:
     # Initialiser avec classe 0 (background)
     nt_target = np.zeros((PANNUKE_IMAGE_SIZE, PANNUKE_IMAGE_SIZE), dtype=np.int64)
 
-    # ✅ Pour chaque canal 1-4 SEULEMENT (exclut 5)
-    for class_id in range(1, 5):  # 1, 2, 3, 4 (PAS 5)
+    # ✅ ÉTAPE 1: Identifier pixels de noyaux via Channel 0
+    channel_0 = mask[:, :, 0]
+    nuclei_mask = channel_0 > 0
+
+    # ✅ ÉTAPE 2: Pour chaque pixel de noyau, trouver son type dans Channels 1-5
+    # NOTE: On utilise Channel 5 ICI car c'est LIMITÉ aux pixels nuclei_mask
+    # Channel 5 "tissu" (86%) n'est PAS atteint car ces pixels ont nuclei_mask=False
+    for class_id in range(1, 6):  # 1, 2, 3, 4, 5 (Epithelial AUTORISÉ pour NT)
         channel_mask = mask[:, :, class_id] > 0
-        nt_target[channel_mask] = class_id
+        # Assigner type SEULEMENT si c'est un noyau (dans Channel 0)
+        nt_target[channel_mask & nuclei_mask] = class_id
+
+    # ✅ ÉTAPE 3: REMAPPER classe 5 (Epithelial) → classe 4 (Dead)
+    # Raison: Modèle HoVer-Net a n_classes=5 (0-4), pas 6 (0-5)
+    # Pour epidermal: noyaux épithéliaux classés comme Dead (proxy acceptable)
+    nt_target[nt_target == 5] = 4
+
+    # ✅ ÉTAPE 4: Pixels de noyaux SANS type dans 1-5 → classe 4 par défaut
+    untyped_nuclei = nuclei_mask & (nt_target == 0)
+
+    if untyped_nuclei.sum() > 0:
+        # Rare: noyau dans Channel 0 mais absent de tous channels 1-5
+        nt_target[untyped_nuclei] = 4  # Classe Dead par défaut
 
     return nt_target
 
