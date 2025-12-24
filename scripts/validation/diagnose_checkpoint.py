@@ -50,8 +50,13 @@ def main():
             tensor = state_dict[key]
             print(f"  {i+1}. {key}")
             print(f"      Shape: {tensor.shape}")
-            print(f"      Mean: {tensor.mean().item():.6f}, Std: {tensor.std().item():.6f}")
-            print(f"      Min: {tensor.min().item():.6f}, Max: {tensor.max().item():.6f}")
+
+            # Skip stats pour tensors non-float (ex: num_batches_tracked)
+            if tensor.dtype in [torch.float32, torch.float64, torch.float16]:
+                print(f"      Mean: {tensor.mean().item():.6f}, Std: {tensor.std().item():.6f}")
+                print(f"      Min: {tensor.min().item():.6f}, Max: {tensor.max().item():.6f}")
+            else:
+                print(f"      Dtype: {tensor.dtype} (skipping stats)")
 
         # Vérifier préfixes
         has_module = any(k.startswith("module.") for k in state_dict.keys())
