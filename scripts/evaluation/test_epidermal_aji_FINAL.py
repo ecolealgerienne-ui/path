@@ -17,6 +17,7 @@ import numpy as np
 import torch
 from scipy import ndimage
 from skimage.feature import peak_local_max
+from skimage.morphology import remove_small_objects
 from skimage.segmentation import watershed
 from tqdm import tqdm
 
@@ -33,39 +34,48 @@ from src.preprocessing import create_hoptimus_transform
 def extract_instances_hv_magnitude(
     np_pred: np.ndarray,
     hv_pred: np.ndarray,
-    min_size: int = 20,
-    dist_threshold: int = 4
+    min_size: int = 50,
+    dist_threshold: int = 8
 ) -> np.ndarray:
     """
     Extrait instances avec HV MAGNITUDE (PAS Sobel).
 
     Méthode: HoVer-Net original (Graham et al. 2019)
 
-    FIX #3 (Expert 2025-12-23): Paramètres ajustés pour réduire sur-segmentation
-    - min_size: 10 → 20 pixels (supprimer petits faux positifs)
-    - dist_threshold: 2 → 4 (espacer marqueurs watershed)
+    ===================================================================
+    FIX ANTI-CONFETTIS (Expert 2025-12-24):
+    ===================================================================
+    PROBLÈME IDENTIFIÉ (IoU 0.71 mais AJI 0.15):
+    - Sur-segmentation: 28 instances prédites vs 13 GT
+    - Le modèle voit les bonnes formes mais les découpe en morceaux
+    - Cause: Gradients HV bruités → trop de pics → watershed fracasse
+
+    SOLUTION APPLIQUÉE:
+    1. Lissage gaussien (sigma=1.0) sur HV gradients
+       → Élimine micro-oscillations qui créent faux pics
+    2. dist_threshold: 4 → 8 pixels
+       → Force distance minimale entre centres (évite découpe)
+    3. min_size: 20 → 50 pixels
+       → Noyaux PanNuke font 50-200 pixels, élimine débris
+
+    ATTENDU: Instances 28 → ~13, AJI 0.15 → >0.60 (+300%)
+    ===================================================================
     """
-    # 1. Binariser NP
+    # 1. Binariser NP avec seuil strict
     binary_mask = (np_pred > 0.5).astype(np.uint8)
 
-    # 2. Remove small noise
-    labeled, num = ndimage.label(binary_mask)
-    if num == 0:
-        return np.zeros_like(binary_mask, dtype=np.int32)
-
-    sizes = ndimage.sum(binary_mask, labeled, range(1, num + 1))
-    mask_size = sizes >= min_size
-    remove_small = mask_size[labeled - 1]
-    remove_small[labeled == 0] = 0
-    binary_mask = remove_small.astype(np.uint8)
-
-    # 3. HV MAGNITUDE (direct, pas Sobel)
+    # 2. HV MAGNITUDE
     energy = np.sqrt(hv_pred[0]**2 + hv_pred[1]**2)
 
-    # 4. Find peaks
+    # 3. ⭐ LISSAGE CRITIQUE: Supprimer bruit dans gradients
+    #    Sans ceci, chaque micro-oscillation = nouveau pic = sur-segmentation
+    energy = ndimage.gaussian_filter(energy, sigma=1.0)
+
+    # 4. Find peaks avec dist_threshold ÉLARGI
+    #    Plus il est haut, moins il y a de sur-segmentation
     local_max = peak_local_max(
         energy,
-        min_distance=dist_threshold,
+        min_distance=dist_threshold,  # 8 pixels au lieu de 4
         labels=binary_mask.astype(int),
         exclude_border=False,
     )
@@ -81,41 +91,81 @@ def extract_instances_hv_magnitude(
     else:
         inst_map = ndimage.label(binary_mask)[0]
 
-    return inst_map.astype(np.int32)
+    # 7. ⭐ NETTOYAGE FINAL: Supprimer petits objets
+    #    Noyaux PanNuke font 50-200 pixels
+    #    À min_size=50, on garde seulement vrais noyaux
+    inst_map_labeled = inst_map.astype(np.int32)
+    for region_id in np.unique(inst_map_labeled):
+        if region_id == 0:  # Skip background
+            continue
+        region_size = (inst_map_labeled == region_id).sum()
+        if region_size < min_size:
+            inst_map_labeled[inst_map_labeled == region_id] = 0
+
+    # Re-label pour combler les trous d'ID
+    inst_map_clean = np.zeros_like(inst_map_labeled)
+    unique_ids = np.unique(inst_map_labeled)
+    unique_ids = unique_ids[unique_ids > 0]
+    for new_id, old_id in enumerate(unique_ids, start=1):
+        inst_map_clean[inst_map_labeled == old_id] = new_id
+
+    return inst_map_clean.astype(np.int32)
 
 
-def compute_gt_instances(mask: np.ndarray) -> np.ndarray:
+def get_correct_gt_instances(gt_mask: np.ndarray) -> np.ndarray:
     """
-    Compute GT instances depuis masque PanNuke.
+    FIX DÉFINITIF (Expert 2025-12-24): Utilise CANAL 0 de PanNuke.
 
-    IMPORTANT: Utilise vraies instances PanNuke (canaux 1-4),
-    PAS connectedComponents qui fusionne les cellules touchantes.
+    ===================================================================
+    PROBLÈME IDENTIFIÉ (Diagnostic inspect_gt_instances.py):
+    ===================================================================
+    - Canal 0: 15 instances avec IDs [3, 4, 12, 16...68] ✅ VRAIES INSTANCES
+    - Canaux 1-4: VIDES (pour epidermal) ❌
+    - Canal 5: Masque binaire géant (56k pixels) ❌
+    - compute_gt_instances() ne trouvait que 3 instances au lieu de 15+
+
+    CAUSE RACINE:
+    - Canal 0 contient les instances multi-types PanNuke (GOLD STANDARD)
+    - compute_gt_instances() ignorait canal 0 et ne traitait que 1-5
+    - Canal 5 binaire → connectedComponents → 2-3 grosses taches
+    - Résultat: 28 instances prédites vs 3 GT → AJI 0.08 ❌
+
+    SOLUTION:
+    - Utiliser CANAL 0 directement (contient vraies instances)
+    - Ajouter instances canaux 1-4 si non vides (rare pour epidermal)
+    - Canal 5: Seulement si canal 0 quasi vide (fallback)
+
+    ATTENDU: GT 3 → 15+, AJI 0.08 → >0.60 (+650%)
+    ===================================================================
     """
-    inst_map = np.zeros((256, 256), dtype=np.int32)
-    instance_counter = 1
+    # 1. ⭐ CANAL 0: Les vraies instances PanNuke (IDs multi-types)
+    inst_map = gt_mask[:, :, 0].astype(np.int32)
 
-    # Canaux 1-4: vraies instances annotées
+    # 2. Ajouter instances des canaux 1-4 (si non vides)
+    #    En s'assurant que les IDs ne se chevauchent pas
+    current_max_id = inst_map.max()
     for c in range(1, 5):
-        class_instances = mask[:, :, c]
-        inst_ids = np.unique(class_instances)
-        inst_ids = inst_ids[inst_ids > 0]
+        channel_map = gt_mask[:, :, c].astype(np.int32)
+        if channel_map.max() > 0:
+            # Prendre seulement pixels non encore assignés
+            mask = (inst_map == 0) & (channel_map > 0)
+            # Renommer IDs pour éviter conflits
+            unique_ids = np.unique(channel_map[mask])
+            unique_ids = unique_ids[unique_ids > 0]
+            for new_id, old_id in enumerate(unique_ids, start=current_max_id + 1):
+                inst_map[(inst_map == 0) & (channel_map == old_id)] = new_id
+            current_max_id = inst_map.max()
 
-        for inst_id in inst_ids:
-            inst_mask = class_instances == inst_id
-            inst_map[inst_mask] = instance_counter
-            instance_counter += 1
-
-    # Canal 5 (Epithelial): binaire, utiliser connectedComponents
-    epithelial_binary = mask[:, :, 5] > 0
-    if epithelial_binary.any():
-        _, epithelial_labels = cv2.connectedComponents(epithelial_binary.astype(np.uint8))
-        epithelial_ids = np.unique(epithelial_labels)
-        epithelial_ids = epithelial_ids[epithelial_ids > 0]
-
-        for epi_id in epithelial_ids:
-            epi_mask = epithelial_labels == epi_id
-            inst_map[epi_mask] = instance_counter
-            instance_counter += 1
+    # 3. Fallback: Canal 5 (Epithelial) SEULEMENT si quasi rien dans 0-4
+    if inst_map.max() < 5:  # Si on a presque rien
+        epi_mask = (gt_mask[:, :, 5] > 0).astype(np.uint8)
+        epi_inst, n = ndimage.label(epi_mask)
+        # Fusionner avec précaution (seulement pixels vides)
+        mask = (inst_map == 0) & (epi_inst > 0)
+        unique_epi_ids = np.unique(epi_inst[mask])
+        unique_epi_ids = unique_epi_ids[unique_epi_ids > 0]
+        for new_id, old_id in enumerate(unique_epi_ids, start=current_max_id + 1):
+            inst_map[(inst_map == 0) & (epi_inst == old_id)] = new_id
 
     return inst_map
 
@@ -181,6 +231,7 @@ def main():
     all_aji = []
     all_dice = []
     all_pq = []
+    n_skipped = 0  # Track empty GT samples
 
     with torch.no_grad():
         for idx in tqdm(test_indices, desc="Testing"):
@@ -210,44 +261,92 @@ def main():
             # Predict
             np_out, hv_out, nt_out = hovernet(patch_tokens)
 
-            # Convert to numpy with sigmoid
-            np_pred_sigmoid = torch.sigmoid(np_out).cpu().numpy()[0]  # (2, 224, 224)
-            hv_pred = hv_out.cpu().numpy()[0]  # (2, 224, 224)
+            # ===================================================================
+            # FIX EXPERT (2025-12-24): Correction des axes pour cv2.resize
+            # ===================================================================
+            # 1. Conversion Numpy ET correction des axes
+            #    PyTorch: [B, C, H, W] → Enlever batch → [C, H, W]
+            #    OpenCV resize attend: [H, W, C]
+            #    Donc: transpose(1, 2, 0) pour passer de [C, H, W] à [H, W, C]
+            np_pred = torch.softmax(np_out, dim=1)[0].cpu().numpy().transpose(1, 2, 0)  # (224, 224, 2)
+            hv_pred = hv_out[0].cpu().numpy().transpose(1, 2, 0)  # (224, 224, 2)
 
             # DEBUG: Check which channel has nuclei
             if idx == test_indices[0]:  # Print once
                 print(f"\n🔍 DEBUG (first sample):")
-                print(f"  NP channel 0 max: {np_pred_sigmoid[0].max():.4f}")
-                print(f"  NP channel 1 max: {np_pred_sigmoid[1].max():.4f}")
+                print(f"  NP shape after transpose: {np_pred.shape}")
+                print(f"  HV shape after transpose: {hv_pred.shape}")
+                print(f"  NP channel 0 max: {np_pred[:, :, 0].max():.4f}")
+                print(f"  NP channel 1 max: {np_pred[:, :, 1].max():.4f}")
                 print(f"  HV max: {hv_pred.max():.4f}")
-                print(f"  Using channel: 1 (nuclei)")
 
-            # Take channel 1 (nuclei) - channel 0 is background
-            np_pred_native = np_pred_sigmoid[1]  # (224, 224)
+            # 2. CENTER PADDING 224→256 (au lieu de resize qui déforme)
+            #    ===================================================================
+            #    FIX EXPERT #2 (2025-12-24): PADDING au lieu de RESIZE
+            #    ===================================================================
+            #    CAUSE: H-optimus extrait crops centraux 224×224 d'images 256×256
+            #    AVANT: cv2.resize() étirait → décalage spatial → PQ=0.00
+            #    APRÈS: Center padding préserve positions exactes
+            h, w = np_pred.shape[:2]  # 224, 224
+            diff = (256 - 224) // 2  # 16 pixels de padding de chaque côté
 
-            # CRITICAL FIX: Extract instances at NATIVE resolution (224×224)
-            # BEFORE resizing (resize smooths HV gradients → kills peaks)
-            pred_inst_native = extract_instances_hv_magnitude(np_pred_native, hv_pred)
+            # Créer images vides 256×256
+            np_pred_256 = np.zeros((256, 256, 2), dtype=np_pred.dtype)
+            hv_pred_256 = np.zeros((256, 256, 2), dtype=hv_pred.dtype)
 
-            # Resize instance map to 256×256 with NEAREST (preserves instance IDs)
-            pred_inst = cv2.resize(pred_inst_native.astype(np.float32), (256, 256),
-                                  interpolation=cv2.INTER_NEAREST).astype(np.int32)
+            # Placer prédictions au CENTRE (positions exactes préservées)
+            np_pred_256[diff:diff+h, diff:diff+w, :] = np_pred
+            hv_pred_256[diff:diff+h, diff:diff+w, :] = hv_pred
+
+            # 3. Extraction du canal Noyaux (canal 1)
+            prob_map = np_pred_256[:, :, 1]  # (256, 256)
+
+            # 4. Repasser HV en [C, H, W] pour extract_instances_hv_magnitude
+            hv_map = hv_pred_256.transpose(2, 0, 1)  # (2, 256, 256)
+
+            if idx == test_indices[0]:  # Print once
+                print(f"  prob_map shape: {prob_map.shape}, max: {prob_map.max():.4f}")
+                print(f"  hv_map shape: {hv_map.shape}, max: {hv_map.max():.4f}")
+
+            # 5. Extract instances à 256×256 (résolution GT)
+            #    Plus besoin de resize après → alignement spatial parfait
+            #    ⭐ FIX ANTI-CONFETTIS: Utilise nouveaux params (min_size=50, dist_threshold=8)
+            pred_inst = extract_instances_hv_magnitude(prob_map, hv_map)
 
             # Compute GT instances
-            gt_inst = compute_gt_instances(gt_mask)
+            # ⭐ FIX DÉFINITIF: Utilise canal 0 PanNuke (vraies instances)
+            gt_inst = get_correct_gt_instances(gt_mask)
 
-            # DEBUG: Print instance counts
+            # Count instances (needed for skip logic)
+            n_pred = len(np.unique(pred_inst)) - 1  # -1 for background
+            n_gt = len(np.unique(gt_inst)) - 1
+
+            # DEBUG: Print instance counts + GT validation
             if idx == test_indices[0]:  # Print once
-                n_pred = len(np.unique(pred_inst)) - 1  # -1 for background
-                n_gt = len(np.unique(gt_inst)) - 1
                 print(f"  Instances Pred: {n_pred} | GT: {n_gt}")
+
+                # DEBUG GT MASK
+                print(f"\n🔍 DEBUG GT MASK:")
+                print(f"  gt_mask shape: {gt_mask.shape}")
+                print(f"  gt_mask dtype: {gt_mask.dtype}")
+                for c in range(gt_mask.shape[2]):
+                    channel_max = gt_mask[:, :, c].max()
+                    channel_nonzero = (gt_mask[:, :, c] > 0).sum()
+                    print(f"  Channel {c}: max={channel_max}, nonzero_pixels={channel_nonzero}")
+                print(f"  gt_inst unique IDs: {np.unique(gt_inst)}")
+
+            # ⚠️ CRITICAL: Skip empty GT (évite division par zéro dans AJI)
+            if n_gt == 0:
+                n_skipped += 1
+                if idx == test_indices[0]:
+                    print(f"  ⚠️  SKIPPING: GT vide (pas de cellules)")
+                continue
 
             # Compute metrics
             aji = compute_aji(pred_inst, gt_inst)
 
-            # Resize NP pred to 256×256 for Dice calculation
-            np_pred_256 = cv2.resize(np_pred_native, (256, 256), interpolation=cv2.INTER_LINEAR)
-            dice = compute_dice((np_pred_256 > 0.5).astype(np.uint8), (gt_inst > 0).astype(np.uint8))
+            # Dice calculation (prob_map déjà à 256×256)
+            dice = compute_dice((prob_map > 0.5).astype(np.uint8), (gt_inst > 0).astype(np.uint8))
 
             pq, dq, sq, _ = compute_panoptic_quality(pred_inst, gt_inst)
 
@@ -259,6 +358,10 @@ def main():
     print("\n" + "=" * 80)
     print("📊 RÉSULTATS FINAUX")
     print("=" * 80)
+    print(f"\n📈 Échantillons:")
+    print(f"  Total testé: {len(test_indices)}")
+    print(f"  Valides (GT non-vide): {len(all_aji)}")
+    print(f"  Skippés (GT vide): {n_skipped}")
     print(f"\n✅ Dice:  {np.mean(all_dice):.4f} ± {np.std(all_dice):.4f}")
     print(f"✅ AJI:   {np.mean(all_aji):.4f} ± {np.std(all_aji):.4f}")
     print(f"✅ PQ:    {np.mean(all_pq):.4f} ± {np.std(all_pq):.4f}")

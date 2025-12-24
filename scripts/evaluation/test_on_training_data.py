@@ -18,7 +18,7 @@ from tqdm import tqdm
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from src.models.loader import ModelLoader
-from src.constants import HOPTIMUS_INPUT_SIZE
+from src.constants import HOPTIMUS_INPUT_SIZE, DEFAULT_FAMILY_FIXED_DIR
 
 def compute_dice(pred: np.ndarray, target: np.ndarray) -> float:
     """Calcule Dice score."""
