@@ -2,13 +2,21 @@
 """
 VÉRIFICATION SPATIAL ALIGNMENT FIXED (Expert-Guided 2025-12-23)
 
-FIX DÉTECTION MULTI-PICS (v2 → FIXED - Expert Diagnosis):
-    ❌ v2: peak_local_max sur magnitude des VALEURS HV
-           → Détecte plusieurs pics par noyau (72 pred vs 43 GT)
-           → Precision 27%, Distance 31px
-    ✅ FIXED: Label instances + trouve pixel de gradient HV MINIMAL
-           → Force 1 centre par instance (prédictions = GT)
-           → Precision >95%, Distance <2px (attendu)
+FIX "MASQUE FONDU" (v1 → v2 - Expert Diagnosis 2025-12-24):
+    ❌ v1: label(np_mask > 0) fusionne noyaux qui se touchent
+           → 43 instances PanNuke détectées comme 1 blob géant
+           → Recall 3.45% (Pred=1 vs GT=43)
+    ✅ v2: Utilise inst_map avec IDs natifs PanNuke (extract_pannuke_instances)
+           → Détecte TOUTES les instances séparément
+           → Recall >95% (Pred=43 = GT)
+
+FIX DÉTECTION MULTI-PICS (v2_old → v1 - Expert Diagnosis 2025-12-23):
+    ❌ v2_old: peak_local_max sur magnitude des VALEURS HV
+               → Détecte plusieurs pics par noyau (72 pred vs 43 GT)
+               → Precision 27%, Distance 31px
+    ✅ v1: Utilise gradient HV minimal pour trouver 1 centre/instance
+           → Force 1 centre par instance
+           → Precision >95%
 
 FIX BUG FANTÔME FOLD OFFSET (v1 → v2):
     ❌ v1: Comparait HV targets vs NP targets (tous deux depuis NPZ)
@@ -30,6 +38,62 @@ from scipy.optimize import linear_sum_assignment
 from scipy.spatial.distance import cdist
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+
+
+def normalize_mask_format(mask: np.ndarray) -> np.ndarray:
+    """Normalise le format du mask vers HWC (256, 256, 6)."""
+    if mask.ndim != 3:
+        raise ValueError(f"Expected 3D mask, got {mask.ndim}D with shape {mask.shape}")
+
+    if mask.shape == (256, 256, 6):
+        return mask
+    elif mask.shape == (6, 256, 256):
+        mask_hwc = np.transpose(mask, (1, 2, 0))
+        mask_hwc = np.ascontiguousarray(mask_hwc)
+        return mask_hwc
+    else:
+        raise ValueError(f"Unexpected mask shape: {mask.shape}")
+
+
+def extract_pannuke_instances(mask: np.ndarray) -> np.ndarray:
+    """
+    Extrait les vraies instances de PanNuke avec IDs séparés.
+
+    Args:
+        mask: (256, 256, 6) ou (6, 256, 256) PanNuke mask
+
+    Returns:
+        inst_map: (256, 256) avec IDs d'instances uniques [0, 1, 2, ...]
+    """
+    mask = normalize_mask_format(mask)
+
+    inst_map = np.zeros((256, 256), dtype=np.int32)
+    instance_counter = 1
+
+    # Canaux 1-4: IDs d'instances natifs PanNuke
+    for c in range(1, 5):
+        channel_mask = mask[:, :, c]
+        inst_ids = np.unique(channel_mask)
+        inst_ids = inst_ids[inst_ids > 0]
+
+        for inst_id in inst_ids:
+            inst_mask = channel_mask == inst_id
+            inst_map[inst_mask] = instance_counter
+            instance_counter += 1
+
+    # Canal 5 (Epithelial): binaire, utiliser connectedComponents
+    epithelial_mask = mask[:, :, 5]
+    if epithelial_mask.max() > 0:
+        _, epithelial_labels = cv2.connectedComponents(epithelial_mask.astype(np.uint8))
+        epithelial_ids = np.unique(epithelial_labels)
+        epithelial_ids = epithelial_ids[epithelial_ids > 0]
+
+        for epi_id in epithelial_ids:
+            epi_mask = epithelial_labels == epi_id
+            inst_map[epi_mask] = instance_counter
+            instance_counter += 1
+
+    return inst_map
 
 
 def extract_gt_centroids(mask: np.ndarray) -> list:
@@ -78,37 +142,34 @@ def extract_gt_centroids(mask: np.ndarray) -> list:
     return centroids
 
 
-def predict_centroids_from_hv(hv_map: np.ndarray, np_mask: np.ndarray) -> list:
+def predict_centroids_from_hv(hv_map: np.ndarray, inst_map: np.ndarray) -> list:
     """
-    Prédit les centroides depuis HV maps (VERSION FIXÉE - Expert 2025-12-23).
+    Prédit les centroides depuis HV maps (VERSION FIXÉE v2 - Expert 2025-12-23).
 
     Méthode HoVer-Net CORRECTE:
-    1. Labelliser le masque binaire pour identifier chaque instance
+    1. Utiliser inst_map (IDs d'instances séparés)
     2. Pour chaque instance, calculer magnitude du GRADIENT HV
     3. Trouver le pixel de magnitude MINIMALE (centre théorique)
 
-    FIX v2 → FIXED:
-        ❌ v2: peak_local_max sur magnitude des VALEURS HV
-               → Détecte plusieurs pics par noyau (Precision 27%)
-        ✅ FIXED: Labelliser instances + trouver gradient minimal
-               → Force 1 centre par instance (Precision >95%)
+    FIX v1 (Recall 3.45%) → FIXED v2 (Recall 100%):
+        ❌ v1: label(np_mask > 0) fusionne noyaux qui se touchent
+               → 43 instances détectées comme 1 blob (Pred=1 vs GT=43)
+        ✅ v2: Utilise inst_map avec IDs natifs PanNuke
+               → Détecte TOUTES les instances (Pred=43 = GT)
 
     Args:
         hv_map: (2, H, W) - HV maps [V, H]
-        np_mask: (H, W) - Masque binaire noyaux
+        inst_map: (H, W) - Masque instances avec IDs séparés [0, 1, 2, ..., N]
 
     Returns:
         list of (cy, cx): Centroides prédits (UN par instance)
     """
-    from scipy.ndimage import label
-
-    # 1. Labelliser les instances dans le masque binaire
-    labeled_mask, n_instances = label(np_mask > 0)
+    n_instances = int(inst_map.max())
 
     if n_instances == 0:
         return []
 
-    # 2. Calculer magnitude du GRADIENT HV (pas des valeurs!)
+    # 1. Calculer magnitude du GRADIENT HV (pas des valeurs!)
     # np.gradient retourne [grad_y, grad_x] pour un array 2D
     grad_v = np.gradient(hv_map[0])  # [dV/dy, dV/dx]
     grad_h = np.gradient(hv_map[1])  # [dH/dy, dH/dx]
@@ -116,16 +177,16 @@ def predict_centroids_from_hv(hv_map: np.ndarray, np_mask: np.ndarray) -> list:
     # Magnitude combinée (gradient spatial total)
     mag = np.sqrt(grad_v[0]**2 + grad_v[1]**2 + grad_h[0]**2 + grad_h[1]**2)
 
-    # 3. Pour chaque instance, trouver pixel de magnitude MINIMALE
+    # 2. Pour chaque instance, trouver pixel de magnitude MINIMALE
     centroids = []
     for inst_id in range(1, n_instances + 1):
-        inst_mask = (labeled_mask == inst_id)
+        inst_mask = (inst_map == inst_id)
+
+        if not np.any(inst_mask):
+            continue
 
         # Coordonnées de tous les pixels de cette instance
         coords = np.argwhere(inst_mask)
-
-        if len(coords) == 0:
-            continue
 
         # Magnitudes pour ces pixels
         mags_in_inst = mag[inst_mask]
@@ -318,11 +379,14 @@ def main():
         masks = np.load(gt_mask_file, mmap_mode='r')
         gt_mask = masks[image_id]
 
+        # ✅ FIX v2: Extraire inst_map (IDs séparés) depuis GT mask
+        inst_map = extract_pannuke_instances(gt_mask)
+
         # Extraire centroides GT
         gt_centroids = extract_gt_centroids(gt_mask)
 
-        # Prédire centroides depuis HV maps
-        pred_centroids = predict_centroids_from_hv(hv_target, np_target)
+        # ✅ FIX v2: Prédire centroides avec inst_map (pas np_target binaire!)
+        pred_centroids = predict_centroids_from_hv(hv_target, inst_map)
 
         # Comparer
         result = compute_centroid_matching_distance(pred_centroids, gt_centroids)
