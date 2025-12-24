@@ -126,8 +126,22 @@ def main():
     print(f"  → {features_file.stat().st_size / 1e9:.2f} GB")
     print("")
 
+    # Vérifier et corriger NT targets (doit être 0-4, pas 0-5)
+    nt_unique = np.unique(nt_targets)
+    print(f"\nVérification NT targets:")
+    print(f"  Valeurs uniques: {sorted(nt_unique)}")
+
+    if nt_targets.max() == 5:
+        print(f"  ⚠️  Conversion NT: [0-5] → [0-4] (shift -1 pour non-background)")
+        # Shift -1 pour tous les pixels non-background
+        nt_targets_corrected = nt_targets.copy()
+        mask = nt_targets > 0
+        nt_targets_corrected[mask] = nt_targets[mask] - 1
+        nt_targets = nt_targets_corrected
+        print(f"  ✅ Après correction: {sorted(np.unique(nt_targets))}")
+
     # Sauvegarder targets
-    print(f"Sauvegarde targets: {targets_file.name}")
+    print(f"\nSauvegarde targets: {targets_file.name}")
     np.savez_compressed(
         targets_file,
         np_targets=np_targets,
