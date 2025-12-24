@@ -52,12 +52,12 @@ def main():
     # Répertoires à GARDER
     keep_dirs = {
         'PanNuke Original': Path('/home/amar/data/PanNuke'),
-        'Family Data FIXED v4': Path('data/family_FIXED'),
         'Pretrained Models': Path('models/pretrained'),
     }
 
     # Répertoires à SUPPRIMER
     delete_dirs = {
+        'Family Data FIXED': Path('data/family_FIXED'),  # CORROMPU (96px bug)
         'Checkpoints OLD': Path('models/checkpoints'),
         'Checkpoints FIXED': Path('models/checkpoints_FIXED'),
         'Features Cache': Path('data/cache/pannuke_features'),
@@ -115,11 +115,11 @@ def main():
     for name, directory, size_mb in existing_deletes:
         print(f"   {directory} ({size_mb:.2f} MB)")
 
-    print("\nRAISON: Repartir de zéro avec données corrigées")
+    print("\nRAISON: data/family_FIXED corrompu (bug 96px non résolu)")
+    print("         Repartir de zéro après résolution du bug")
     print("\n✅ GARDÉS:")
-    print("   - PanNuke original (/home/amar/data/PanNuke)")
-    print("   - Family Data FIXED v4 (data/family_FIXED/)")
-    print("   - Pretrained models (models/pretrained/)")
+    print("   - PanNuke original (/home/amar/data/PanNuke) - Source de données")
+    print("   - Pretrained models (models/pretrained/) - H-optimus-0")
 
     response = input("\nContinuer ? (tapez 'OUI'): ")
 
@@ -148,10 +148,12 @@ def main():
     print(f"📍 Espace restant: {total_keep:.2f} MB")
 
     print("\n📝 PROCHAINES ÉTAPES:")
-    print("   1. Vérifier alignement spatial (data/family_FIXED/)")
-    print("   2. SI OK: Régénérer features fold 0 (20 min)")
-    print("   3. Re-training epidermal (40 min)")
-    print("   4. Test AJI final (attendu: 0.06 → 0.60+)")
+    print("   1. Résoudre le bug 96px (Ghost Path + HV inversion)")
+    print("   2. Régénérer family_data depuis PanNuke avec fix v5")
+    print("   3. Vérifier alignement spatial (<2px)")
+    print("   4. Régénérer features fold 0 (20 min)")
+    print("   5. Re-training epidermal (40 min)")
+    print("   6. Test AJI final (attendu: 0.06 → 0.60+)")
 
     print("\n" + "=" * 80)
 
