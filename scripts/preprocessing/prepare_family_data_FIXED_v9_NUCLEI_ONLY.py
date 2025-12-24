@@ -299,29 +299,35 @@ def compute_np_target_NUCLEI_ONLY(mask: np.ndarray) -> np.ndarray:
 
 def compute_nt_target(mask: np.ndarray) -> np.ndarray:
     """
-    Génère le target NT (Nuclear Type).
+    Génère le target NT (Nuclear Type) - NUCLEI ONLY (exclut Channel 5).
 
-    Classes PanNuke:
+    ✅ v9 FIX: Exclut Channel 5 (Epithelial) pour cohérence avec NP/HV.
+
+    Classes PanNuke utilisées:
     - 0: Background
     - 1: Neoplastic
     - 2: Inflammatory
     - 3: Connective
     - 4: Dead
-    - 5: Epithelial (pour famille epidermal uniquement)
+
+    Channel 5 (Epithelial) EXCLU:
+    - Pour epidermal, les noyaux épithéliaux seront classés comme background (classe 0)
+    - Cohérent avec l'exclusion de Channel 5 pour NP/HV
+    - Modèle HoVer-Net a n_classes=5 (0-4), pas 6
 
     Args:
         mask: Mask PanNuke (H, W, 6)
 
     Returns:
-        nt_target: Class map (H, W) en int64 [0-5]
+        nt_target: Class map (H, W) en int64 [0-4]
     """
     mask = normalize_mask_format(mask)
 
     # Initialiser avec classe 0 (background)
     nt_target = np.zeros((PANNUKE_IMAGE_SIZE, PANNUKE_IMAGE_SIZE), dtype=np.int64)
 
-    # Pour chaque canal 1-5, assigner la classe correspondante
-    for class_id in range(1, 6):
+    # ✅ Pour chaque canal 1-4 SEULEMENT (exclut 5)
+    for class_id in range(1, 5):  # 1, 2, 3, 4 (PAS 5)
         channel_mask = mask[:, :, class_id] > 0
         nt_target[channel_mask] = class_id
 
