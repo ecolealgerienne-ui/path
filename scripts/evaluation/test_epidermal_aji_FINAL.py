@@ -112,38 +112,60 @@ def extract_instances_hv_magnitude(
     return inst_map_clean.astype(np.int32)
 
 
-def compute_gt_instances(mask: np.ndarray) -> np.ndarray:
+def get_correct_gt_instances(gt_mask: np.ndarray) -> np.ndarray:
     """
-    Compute GT instances depuis masque PanNuke.
+    FIX DÉFINITIF (Expert 2025-12-24): Utilise CANAL 0 de PanNuke.
 
-    IMPORTANT: Utilise vraies instances PanNuke (canaux 1-4),
-    PAS connectedComponents qui fusionne les cellules touchantes.
+    ===================================================================
+    PROBLÈME IDENTIFIÉ (Diagnostic inspect_gt_instances.py):
+    ===================================================================
+    - Canal 0: 15 instances avec IDs [3, 4, 12, 16...68] ✅ VRAIES INSTANCES
+    - Canaux 1-4: VIDES (pour epidermal) ❌
+    - Canal 5: Masque binaire géant (56k pixels) ❌
+    - compute_gt_instances() ne trouvait que 3 instances au lieu de 15+
+
+    CAUSE RACINE:
+    - Canal 0 contient les instances multi-types PanNuke (GOLD STANDARD)
+    - compute_gt_instances() ignorait canal 0 et ne traitait que 1-5
+    - Canal 5 binaire → connectedComponents → 2-3 grosses taches
+    - Résultat: 28 instances prédites vs 3 GT → AJI 0.08 ❌
+
+    SOLUTION:
+    - Utiliser CANAL 0 directement (contient vraies instances)
+    - Ajouter instances canaux 1-4 si non vides (rare pour epidermal)
+    - Canal 5: Seulement si canal 0 quasi vide (fallback)
+
+    ATTENDU: GT 3 → 15+, AJI 0.08 → >0.60 (+650%)
+    ===================================================================
     """
-    inst_map = np.zeros((256, 256), dtype=np.int32)
-    instance_counter = 1
+    # 1. ⭐ CANAL 0: Les vraies instances PanNuke (IDs multi-types)
+    inst_map = gt_mask[:, :, 0].astype(np.int32)
 
-    # Canaux 1-4: vraies instances annotées
+    # 2. Ajouter instances des canaux 1-4 (si non vides)
+    #    En s'assurant que les IDs ne se chevauchent pas
+    current_max_id = inst_map.max()
     for c in range(1, 5):
-        class_instances = mask[:, :, c]
-        inst_ids = np.unique(class_instances)
-        inst_ids = inst_ids[inst_ids > 0]
+        channel_map = gt_mask[:, :, c].astype(np.int32)
+        if channel_map.max() > 0:
+            # Prendre seulement pixels non encore assignés
+            mask = (inst_map == 0) & (channel_map > 0)
+            # Renommer IDs pour éviter conflits
+            unique_ids = np.unique(channel_map[mask])
+            unique_ids = unique_ids[unique_ids > 0]
+            for new_id, old_id in enumerate(unique_ids, start=current_max_id + 1):
+                inst_map[(inst_map == 0) & (channel_map == old_id)] = new_id
+            current_max_id = inst_map.max()
 
-        for inst_id in inst_ids:
-            inst_mask = class_instances == inst_id
-            inst_map[inst_mask] = instance_counter
-            instance_counter += 1
-
-    # Canal 5 (Epithelial): binaire, utiliser connectedComponents
-    epithelial_binary = mask[:, :, 5] > 0
-    if epithelial_binary.any():
-        _, epithelial_labels = cv2.connectedComponents(epithelial_binary.astype(np.uint8))
-        epithelial_ids = np.unique(epithelial_labels)
-        epithelial_ids = epithelial_ids[epithelial_ids > 0]
-
-        for epi_id in epithelial_ids:
-            epi_mask = epithelial_labels == epi_id
-            inst_map[epi_mask] = instance_counter
-            instance_counter += 1
+    # 3. Fallback: Canal 5 (Epithelial) SEULEMENT si quasi rien dans 0-4
+    if inst_map.max() < 5:  # Si on a presque rien
+        epi_mask = (gt_mask[:, :, 5] > 0).astype(np.uint8)
+        epi_inst, n = ndimage.label(epi_mask)
+        # Fusionner avec précaution (seulement pixels vides)
+        mask = (inst_map == 0) & (epi_inst > 0)
+        unique_epi_ids = np.unique(epi_inst[mask])
+        unique_epi_ids = unique_epi_ids[unique_epi_ids > 0]
+        for new_id, old_id in enumerate(unique_epi_ids, start=current_max_id + 1):
+            inst_map[(inst_map == 0) & (epi_inst == old_id)] = new_id
 
     return inst_map
 
@@ -292,7 +314,8 @@ def main():
             pred_inst = extract_instances_hv_magnitude(prob_map, hv_map)
 
             # Compute GT instances
-            gt_inst = compute_gt_instances(gt_mask)
+            # ⭐ FIX DÉFINITIF: Utilise canal 0 PanNuke (vraies instances)
+            gt_inst = get_correct_gt_instances(gt_mask)
 
             # Count instances (needed for skip logic)
             n_pred = len(np.unique(pred_inst)) - 1  # -1 for background
