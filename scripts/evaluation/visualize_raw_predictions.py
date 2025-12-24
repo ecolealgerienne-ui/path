@@ -141,16 +141,20 @@ def main():
     # GT (resize 256 → 224)
     inst_gt = resize(inst_maps[idx], (224, 224), interpolation=INTER_NEAREST)
     image = resize(images[idx], (224, 224))
-    
+    np_gt_resized = resize(np_targets[idx], (224, 224), interpolation=INTER_NEAREST)
+
     # Statistiques
     n_gt = len(np.unique(inst_gt)) - 1  # Hors background
     aji = compute_aji(inst_pred, inst_gt)
-    
+
+    # Dice NP (resize GT pour compatibilité)
+    dice_np = 2 * ((np_pred > 0.5) & (np_gt_resized > 0.5)).sum() / ((np_pred > 0.5).sum() + (np_gt_resized > 0.5).sum())
+
     print(f"\nSTATISTIQUES:")
     print(f"  GT instances:   {n_gt}")
     print(f"  Pred instances: {n_pred}")
     print(f"  AJI:            {aji:.4f}")
-    print(f"  NP Dice:        {2 * ((np_pred > 0.5) & (np_targets[idx] > 0.5)).sum() / ((np_pred > 0.5).sum() + (np_targets[idx] > 0.5).sum()):.4f}")
+    print(f"  NP Dice:        {dice_np:.4f}")
     print(f"  HV energy:      min={energy.min():.3f}, max={energy.max():.3f}, mean={energy.mean():.3f}")
     print(f"  Markers trouvés: {markers.max()}")
     print("")
@@ -168,7 +172,7 @@ def main():
     axes[0, 1].axis('off')
     
     axes[0, 2].imshow(np_pred, cmap='gray')
-    axes[0, 2].set_title(f"Prédiction NP\n(Dice={2 * ((np_pred > 0.5) & (np_targets[idx] > 0.5)).sum() / ((np_pred > 0.5).sum() + (np_targets[idx] > 0.5).sum()):.3f})")
+    axes[0, 2].set_title(f"Prédiction NP\n(Dice={dice_np:.3f})")
     axes[0, 2].axis('off')
     
     # Row 2
