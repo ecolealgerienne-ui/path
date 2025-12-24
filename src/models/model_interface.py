@@ -21,8 +21,13 @@ class HoVerNetOutput:
 
     Tous les wrappers HoVer-Net DOIVENT retourner ce format,
     quelle que soit l'implémentation interne (tuple, dict, etc.).
+
+    NOTE IMPORTANTE (2025-12-24):
+    - NP produit 2 canaux (background/foreground) avec CrossEntropyLoss
+    - Pour obtenir le masque binaire, utiliser softmax puis canal 1 (foreground)
+    - NE PAS utiliser sigmoid sur 2 canaux!
     """
-    np: torch.Tensor  # (B, 1, H, W) - Nuclear Presence logits
+    np: torch.Tensor  # (B, 2, H, W) - Nuclear Presence logits (bg/fg)
     hv: torch.Tensor  # (B, 2, H, W) - Horizontal/Vertical gradients
     nt: torch.Tensor  # (B, n_classes, H, W) - Nuclear Type logits
 
@@ -31,21 +36,24 @@ class HoVerNetOutput:
         Convertit en numpy avec activations optionnelles.
 
         Args:
-            apply_activations: Si True, applique sigmoid(NP) et softmax(NT)
+            apply_activations: Si True, applique softmax(NP) et softmax(NT)
 
         Returns:
             {
-                "np": (H, W) float32 dans [0, 1] si activations=True
+                "np": (H, W) float32 dans [0, 1] si activations=True (foreground prob)
                 "hv": (2, H, W) float32 dans [-1, 1]
                 "nt": (n_classes, H, W) float32 dans [0, 1] si activations=True
             }
         """
         result = {}
 
-        # NP: (B, 1, H, W) → (H, W)
-        np_out = self.np[0, 0]
+        # NP: (B, 2, H, W) → (H, W)
+        # IMPORTANT: Prendre canal 1 (foreground) après softmax
+        np_out = self.np[0]  # (2, H, W)
         if apply_activations:
-            np_out = torch.sigmoid(np_out)
+            np_out = torch.softmax(np_out, dim=0)[1]  # Canal 1 = foreground
+        else:
+            np_out = np_out[1]  # Logits foreground
         result["np"] = np_out.cpu().numpy()
 
         # HV: (B, 2, H, W) → (2, H, W)
