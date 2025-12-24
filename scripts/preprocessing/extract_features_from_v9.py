@@ -99,8 +99,9 @@ def main():
 
     # Load H-optimus-0
     print(f"\n🔧 Chargement H-optimus-0...")
-    device = torch.device(args.device if torch.cuda.is_available() else 'cpu')
-    backbone = ModelLoader.load_hoptimus0(device=device)
+    device_str = args.device if torch.cuda.is_available() else 'cpu'
+    device = torch.device(device_str)
+    backbone = ModelLoader.load_hoptimus0(device=device_str)  # Pass string, not torch.device
     backbone.eval()
     print(f"  Device: {device}")
 
