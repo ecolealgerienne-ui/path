@@ -80,13 +80,19 @@ def main():
     args = parser.parse_args()
 
     data_dir = Path(args.data_dir)
+    fixed_dir = Path("data/family_FIXED")
 
     # Charger features et targets
     features_file = data_dir / f"{args.family}_features.npz"
     targets_file = data_dir / f"{args.family}_targets.npz"
+    fixed_file = fixed_dir / f"{args.family}_data_FIXED.npz"
 
     if not features_file.exists() or not targets_file.exists():
         print(f"❌ ERREUR: Fichiers manquants dans {data_dir}")
+        return 1
+
+    if not fixed_file.exists():
+        print(f"❌ ERREUR: Fichier FIXED manquant: {fixed_file}")
         return 1
 
     print("=" * 80)
@@ -98,10 +104,12 @@ def main():
     print(f"Chargement données...")
     features_data = np.load(features_file)
     targets_data = np.load(targets_file)
+    fixed_data = np.load(fixed_file)
 
     features = features_data['features']
     np_targets = targets_data['np_targets']
     hv_targets = targets_data['hv_targets']
+    inst_maps = fixed_data['inst_maps']  # ✅ Instances NATIVES PanNuke
 
     n_total = len(features)
     n_test = min(args.n_samples, n_total)
@@ -145,18 +153,17 @@ def main():
         try:
             inst_pred = post_process_hv(np_pred, hv_pred)
 
-            # GT instances (connectedComponents sur NP mask)
-            import cv2
-            np_gt_binary = (np_gt > 0.5).astype(np.uint8)
-            _, inst_gt = cv2.connectedComponents(np_gt_binary)
+            # ✅ GT instances NATIVES PanNuke (pas connectedComponents!)
+            from cv2 import resize, INTER_NEAREST
+            inst_gt = resize(inst_maps[i], (224, 224), interpolation=INTER_NEAREST)
 
             # Calculer AJI
             aji = compute_aji(inst_pred, inst_gt)
             aji_scores.append(aji)
 
-            # Calculer PQ
+            # Calculer PQ (retourne tuple: (PQ, DQ, SQ, PQ_per_class))
             pq_result = compute_panoptic_quality(inst_pred, inst_gt)
-            pq_scores.append(pq_result['pq'])
+            pq_scores.append(pq_result[0])  # PQ est le premier élément
 
         except Exception as e:
             print(f"\n⚠️  Échantillon {i}: {e}")
