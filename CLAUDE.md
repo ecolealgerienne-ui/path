@@ -16,6 +16,40 @@
 
 ---
 
+## ⚠️ CONSIGNES CRITIQUES POUR CLAUDE
+
+> **🚫 INTERDICTION ABSOLUE DE TESTER LOCALEMENT**
+>
+> Claude NE DOIT JAMAIS essayer d'exécuter des commandes de test, d'entraînement, ou d'évaluation dans son environnement.
+>
+> **Raisons :**
+> - ❌ Pas d'environnement Python/Conda configuré
+> - ❌ Pas de données PanNuke (/home/amar/data/)
+> - ❌ Pas de GPU NVIDIA disponible
+> - ❌ Pas de caches features/checkpoints
+>
+> **Actions AUTORISÉES :**
+> - ✅ Lire des fichiers (code, configs, documentation)
+> - ✅ Créer/modifier du code Python
+> - ✅ Créer des scripts que L'UTILISATEUR lancera
+> - ✅ Faire de la review de code
+> - ✅ Créer de la documentation
+>
+> **Actions INTERDITES :**
+> - ❌ `python scripts/training/...` (pas d'env)
+> - ❌ `python scripts/evaluation/...` (pas de données)
+> - ❌ `pytest tests/...` (pas de GPU)
+> - ❌ Toute commande nécessitant GPU/données
+>
+> **Si besoin de tester :**
+> 1. Créer un script d'inspection que l'utilisateur lance
+> 2. L'utilisateur fournit les résultats
+> 3. Claude analyse et propose des corrections
+>
+> **Cette règle est PERMANENTE et s'applique à TOUTES les sessions.**
+
+---
+
 ## Vue d'ensemble
 
 **CellViT-Optimus** est un système d'assistance au triage histopathologique. Il ne remplace pas le pathologiste mais l'aide à :
