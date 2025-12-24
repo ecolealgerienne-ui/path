@@ -325,10 +325,33 @@ class ModelLoader:
             )
 
             # Charger poids
-            if "model_state_dict" in checkpoint:
-                model.load_state_dict(checkpoint["model_state_dict"])
+            state_dict = checkpoint.get("model_state_dict", checkpoint)
+
+            # ✅ NETTOYAGE DES CLÉS (Fix Bug #5: HV energy = 0.000)
+            # Si entraîné avec DDP/Lightning, les clés ont des préfixes 'module.' ou 'model.'
+            # Sans ce nettoyage, load_state_dict charge 0% des poids → modèle aléatoire
+            new_state_dict = {}
+            for k, v in state_dict.items():
+                # Enlever préfixes si présents
+                name = k.replace("module.", "").replace("model.", "")
+                new_state_dict[name] = v
+
+            # Charger avec strict=True pour détecter mismatches
+            missing_keys, unexpected_keys = model.load_state_dict(new_state_dict, strict=False)
+
+            # Log résultat chargement
+            if missing_keys or unexpected_keys:
+                logger.warning(
+                    f"⚠️  Checkpoint mismatch:\n"
+                    f"  Missing keys: {len(missing_keys)}\n"
+                    f"  Unexpected keys: {len(unexpected_keys)}"
+                )
+                if missing_keys:
+                    logger.debug(f"  Missing: {missing_keys[:5]}")  # Premiers 5
+                if unexpected_keys:
+                    logger.debug(f"  Unexpected: {unexpected_keys[:5]}")
             else:
-                model.load_state_dict(checkpoint)
+                logger.info(f"✅ All checkpoint keys matched successfully")
 
             # Transfert + eval
             model = model.to(device)
