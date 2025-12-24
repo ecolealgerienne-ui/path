@@ -20,11 +20,12 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from src.preprocessing import create_hoptimus_transform, validate_features
 from src.models.loader import ModelLoader
+from src.constants import DEFAULT_FAMILY_DATA_DIR
 
 def main():
     parser = argparse.ArgumentParser(description="Extraire features H-optimus-0 depuis FIXED data")
     parser.add_argument("--family", required=True, choices=["glandular", "digestive", "urologic", "epidermal", "respiratory"])
-    parser.add_argument("--data_dir", default="data/cache/family_data", help="Répertoire des données FIXED")
+    parser.add_argument("--data_dir", default=DEFAULT_FAMILY_DATA_DIR, help="Répertoire des données FIXED")
     parser.add_argument("--output_dir", default=None, help="Répertoire de sortie (défaut: même que data_dir)")
     parser.add_argument("--batch_size", type=int, default=8, help="Batch size pour extraction")
     parser.add_argument("--device", default="cuda", choices=["cuda", "cpu"])

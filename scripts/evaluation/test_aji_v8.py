@@ -14,6 +14,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from src.models.loader import ModelLoader
 from src.metrics.ground_truth_metrics import compute_aji, compute_panoptic_quality
+from src.constants import DEFAULT_FAMILY_DATA_DIR
 from scipy import ndimage
 from skimage.feature import peak_local_max
 from skimage.segmentation import watershed
@@ -74,7 +75,7 @@ def main():
     parser = argparse.ArgumentParser(description="Test AJI sur données v8")
     parser.add_argument("--family", required=True, choices=["glandular", "digestive", "urologic", "epidermal", "respiratory"])
     parser.add_argument("--checkpoint", required=True, help="Chemin checkpoint HoVer-Net")
-    parser.add_argument("--data_dir", default="data/family_data", help="Répertoire données features")
+    parser.add_argument("--data_dir", default=DEFAULT_FAMILY_DATA_DIR, help="Répertoire données features")
     parser.add_argument("--n_samples", type=int, default=50, help="Nombre échantillons à tester")
     parser.add_argument("--device", default="cuda", choices=["cuda", "cpu"])
     args = parser.parse_args()

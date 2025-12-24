@@ -24,13 +24,14 @@ import torch
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from src.models.loader import ModelLoader
+from src.constants import DEFAULT_FAMILY_DATA_DIR
 
 def main():
     parser = argparse.ArgumentParser(description="Test modèle sur données training")
     parser.add_argument("--family", required=True)
     parser.add_argument("--checkpoint", required=True)
     parser.add_argument("--n_samples", type=int, default=10, help="Nombre échantillons à tester")
-    parser.add_argument("--data_dir", default="data/family_data")
+    parser.add_argument("--data_dir", default=DEFAULT_FAMILY_DATA_DIR)
     parser.add_argument("--device", default="cuda")
     args = parser.parse_args()
 

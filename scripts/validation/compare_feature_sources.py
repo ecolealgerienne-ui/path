@@ -15,6 +15,7 @@ import numpy as np
 from datetime import datetime
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+from src.constants import DEFAULT_FAMILY_DATA_DIR
 
 def analyze_features(features_path: Path) -> dict:
     """Analyze features file and return diagnostics."""
@@ -65,7 +66,7 @@ def main():
     print("")
 
     # Check test script location
-    test_path = Path("data/family_data") / f"{args.family}_features.npz"
+    test_path = Path(DEFAULT_FAMILY_DATA_DIR) / f"{args.family}_features.npz"
     print(f"1. TEST SCRIPT DEFAULT:")
     print(f"   Path: {test_path}")
     test_info = analyze_features(test_path)
@@ -81,7 +82,7 @@ def main():
     print("")
 
     # Check training script location
-    train_path = Path("data/cache/family_data") / f"{args.family}_features.npz"
+    train_path = Path(DEFAULT_FAMILY_DATA_DIR) / f"{args.family}_features.npz"
     print(f"2. TRAINING SCRIPT DEFAULT:")
     print(f"   Path: {train_path}")
     train_info = analyze_features(train_path)

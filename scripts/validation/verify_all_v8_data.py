@@ -29,6 +29,7 @@ from scipy.ndimage import label
 
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+from src.constants import DEFAULT_FAMILY_FIXED_DIR
 
 # ============================================================================
 # CONSTANTES
@@ -513,7 +514,7 @@ def print_family_report(family: str, npz_result: Dict, alignment_result: Dict, d
 
 def main():
     parser = argparse.ArgumentParser(description="Vérification globale données v8")
-    parser.add_argument('--data_dir', type=str, default='data/family_FIXED',
+    parser.add_argument('--data_dir', type=str, default=DEFAULT_FAMILY_FIXED_DIR,
                         help='Répertoire contenant les NPZ')
     parser.add_argument('--n_samples', type=int, default=10,
                         help='Nombre échantillons à tester par famille')

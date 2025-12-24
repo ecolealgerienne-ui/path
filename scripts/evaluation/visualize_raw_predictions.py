@@ -28,6 +28,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from src.models.loader import ModelLoader
 from src.metrics.ground_truth_metrics import compute_aji
+from src.constants import DEFAULT_FAMILY_DATA_DIR, DEFAULT_FAMILY_FIXED_DIR
 from scipy import ndimage
 from skimage.feature import peak_local_max
 from skimage.segmentation import watershed
@@ -96,7 +97,7 @@ def main():
     parser = argparse.ArgumentParser(description="Diagnostic visuel AJI")
     parser.add_argument("--family", required=True, choices=["glandular", "digestive", "urologic", "epidermal", "respiratory"])
     parser.add_argument("--checkpoint", required=True, help="Chemin checkpoint HoVer-Net")
-    parser.add_argument("--data_dir", default="data/family_data", help="Répertoire données features")
+    parser.add_argument("--data_dir", default=DEFAULT_FAMILY_DATA_DIR, help="Répertoire données features")
     parser.add_argument("--sample_idx", type=int, default=0, help="Index échantillon à visualiser")
     parser.add_argument("--output", default="results/diagnostic_visual.png", help="Fichier de sortie")
     parser.add_argument("--device", default="cuda", choices=["cuda", "cpu"])
@@ -108,7 +109,7 @@ def main():
     print("Chargement données...")
     features_data = np.load(data_dir / f"{args.family}_features.npz")
     targets_data = np.load(data_dir / f"{args.family}_targets.npz")
-    fixed_data = np.load(Path("data/family_FIXED") / f"{args.family}_data_FIXED.npz")
+    fixed_data = np.load(Path(DEFAULT_FAMILY_FIXED_DIR) / f"{args.family}_data_FIXED.npz")
     
     features = features_data['features']
     np_targets = targets_data['np_targets']

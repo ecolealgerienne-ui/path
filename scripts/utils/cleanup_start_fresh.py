@@ -21,6 +21,7 @@ Usage:
 import argparse
 from pathlib import Path
 import shutil
+from src.constants import DEFAULT_FAMILY_FIXED_DIR
 
 
 def get_dir_size(directory: Path) -> float:
@@ -57,7 +58,7 @@ def main():
 
     # Répertoires à SUPPRIMER
     delete_dirs = {
-        'Family Data FIXED': Path('data/family_FIXED'),  # CORROMPU (96px bug)
+        'Family Data FIXED': Path(DEFAULT_FAMILY_FIXED_DIR),  # CORROMPU (96px bug)
         'Checkpoints OLD': Path('models/checkpoints'),
         'Checkpoints FIXED': Path('models/checkpoints_FIXED'),
         'Features Cache': Path('data/cache/pannuke_features'),

@@ -425,7 +425,7 @@ def main():
     parser.add_argument(
         "--output_dir",
         type=str,
-        default="data/family_FIXED",
+        default=DEFAULT_FAMILY_FIXED_DIR,
         help="Répertoire de sortie",
     )
 

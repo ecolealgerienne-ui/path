@@ -90,6 +90,7 @@ def scan_directory(directory: Path, extensions: list = None) -> list:
 
 def main():
     import argparse
+from src.constants import DEFAULT_FAMILY_FIXED_DIR
 
     parser = argparse.ArgumentParser(description="Rapport d'utilisation disque")
     parser.add_argument('--min-size', type=int, default=10,
@@ -106,7 +107,7 @@ def main():
     # Définir les répertoires à scanner (UNIQUEMENT fichiers générés)
     directories = {
         'Features Cache': Path('data/cache/pannuke_features'),
-        'Family Data FIXED': Path('data/family_FIXED'),
+        'Family Data FIXED': Path(DEFAULT_FAMILY_FIXED_DIR),
         'Checkpoints': Path('models/checkpoints'),
         'Checkpoints FIXED': Path('models/checkpoints_FIXED'),
         'Pretrained': Path('models/pretrained'),

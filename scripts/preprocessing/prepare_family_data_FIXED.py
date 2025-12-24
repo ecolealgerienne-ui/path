@@ -24,6 +24,7 @@ PROJECT_ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.models.organ_families import FAMILY_TO_ORGANS, FAMILIES
+from src.constants import DEFAULT_FAMILY_FIXED_DIR
 
 
 def compute_hv_maps(inst_map: np.ndarray) -> np.ndarray:
@@ -295,7 +296,7 @@ def prepare_family_data(data_dir: Path, output_dir: Path, family: str, chunk_siz
 def main():
     parser = argparse.ArgumentParser(description="Prépare données par famille (VERSION FIXÉE + RAM-OPTIMIZED)")
     parser.add_argument("--data_dir", type=Path, default=Path("/home/amar/data/PanNuke"))
-    parser.add_argument("--output_dir", type=Path, default=Path("data/family_FIXED"))
+    parser.add_argument("--output_dir", type=Path, default=Path(DEFAULT_FAMILY_FIXED_DIR))
     parser.add_argument("--family", type=str, choices=FAMILIES, help="Famille spécifique (optionnel)")
     parser.add_argument("--chunk_size", type=int, default=500,
                         help="Nombre d'images par chunk (défaut: 500, réduit RAM)")

@@ -16,6 +16,7 @@ Usage:
 import argparse
 from pathlib import Path
 import shutil
+from src.constants import DEFAULT_FAMILY_DATA_DIR, DEFAULT_FAMILY_FIXED_DIR
 
 
 def get_dir_size(directory: Path) -> float:
@@ -50,9 +51,9 @@ def main():
     print("=" * 80)
 
     # Définir les répertoires
-    source_of_truth = Path("data/family_FIXED")
+    source_of_truth = Path(DEFAULT_FAMILY_FIXED_DIR)
     cache_dirs = [
-        Path("data/cache/family_data"),
+        Path(DEFAULT_FAMILY_DATA_DIR),
         Path("data/cache/family_data_FIXED"),
     ]
 

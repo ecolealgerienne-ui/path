@@ -25,6 +25,7 @@ PROJECT_ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.models.organ_families import FAMILIES, FAMILY_TO_ORGANS, FAMILY_DESCRIPTIONS
+from src.constants import DEFAULT_FAMILY_DATA_DIR
 
 
 def compute_hv_maps(binary_mask: np.ndarray) -> np.ndarray:
@@ -249,7 +250,7 @@ def main():
     parser = argparse.ArgumentParser(description="Préparer données par famille")
     parser.add_argument('--data_dir', type=str, default='/home/amar/data/PanNuke',
                        help='Répertoire PanNuke')
-    parser.add_argument('--output_dir', type=str, default='data/cache/family_data',
+    parser.add_argument('--output_dir', type=str, default=DEFAULT_FAMILY_DATA_DIR,
                        help='Répertoire de sortie')
     parser.add_argument('--family', type=str, choices=FAMILIES, default=None,
                        help='Famille spécifique (sinon toutes)')

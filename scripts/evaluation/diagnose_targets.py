@@ -7,7 +7,7 @@ import numpy as np
 from pathlib import Path
 import sys
 
-def diagnose_targets(family: str, data_dir: str = "data/family_FIXED"):  # ⚠️ FIX: Source de vérité unique
+def diagnose_targets(family: str, data_dir: str = DEFAULT_FAMILY_FIXED_DIR):  # ⚠️ FIX: Source de vérité unique
     """Inspecte les targets pré-calculés."""
 
     data_dir = Path(data_dir)
@@ -172,10 +172,11 @@ def diagnose_targets(family: str, data_dir: str = "data/family_FIXED"):  # ⚠�
 
 if __name__ == "__main__":
     import argparse
+from src.constants import DEFAULT_FAMILY_FIXED_DIR
 
     parser = argparse.ArgumentParser(description="Diagnostic des targets pré-calculés")
     parser.add_argument("--family", type=str, required=True, choices=["glandular", "digestive", "urologic", "respiratory", "epidermal"])
-    parser.add_argument("--data_dir", type=str, default="data/family_FIXED",
+    parser.add_argument("--data_dir", type=str, default=DEFAULT_FAMILY_FIXED_DIR,
                         help="Répertoire des données (source de vérité unique)")
 
     args = parser.parse_args()
