@@ -271,14 +271,18 @@ def verify_alignment(family: str, n_samples: int = 5):
         fold_id = data['fold_ids'][idx]
         image_id = data['image_ids'][idx]
 
-        # Créer instance map depuis np_target
-        labeled_mask, n_instances = label(np_target > 0)
+        # ✅ FIX: Charger inst_map depuis NPZ (préserve instances séparées)
+        if 'inst_maps' in data:
+            inst_map = data['inst_maps'][idx]  # ✅ Instances natives PanNuke
+        else:
+            # Fallback pour anciens NPZ (fusionne instances qui se touchent)
+            inst_map, _ = label(np_target > 0)
 
         # Extraire centroïdes GT
-        gt_centers = extract_gt_centers(labeled_mask)
+        gt_centers = extract_gt_centers(inst_map)
 
         # Extraire centroïdes prédits depuis HV (DEPUIS NPZ, PAS RECALCULÉ)
-        pred_centers = extract_centers_from_hv(hv_target, labeled_mask)
+        pred_centers = extract_centers_from_hv(hv_target, inst_map)
 
         # Matching et métriques
         result = match_and_measure(gt_centers, pred_centers)

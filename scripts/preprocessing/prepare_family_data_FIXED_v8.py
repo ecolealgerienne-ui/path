@@ -298,6 +298,7 @@ def prepare_family_data(family: str, pannuke_dir: Path, output_dir: Path):
     all_np_targets = []
     all_hv_targets = []
     all_nt_targets = []
+    all_inst_maps = []  # ✅ Ajout inst_maps
     all_fold_ids = []
     all_image_ids = []
 
@@ -337,6 +338,7 @@ def prepare_family_data(family: str, pannuke_dir: Path, output_dir: Path):
             all_np_targets.append(np_target)
             all_hv_targets.append(hv_target)
             all_nt_targets.append(nt_target)
+            all_inst_maps.append(inst_map)  # ✅ Ajout inst_map
             all_fold_ids.append(fold)
             all_image_ids.append(i)
 
@@ -354,6 +356,7 @@ def prepare_family_data(family: str, pannuke_dir: Path, output_dir: Path):
     np_targets_array = np.stack(all_np_targets, axis=0)
     hv_targets_array = np.stack(all_hv_targets, axis=0)
     nt_targets_array = np.stack(all_nt_targets, axis=0)
+    inst_maps_array = np.stack(all_inst_maps, axis=0)  # ✅ Ajout inst_maps
     fold_ids_array = np.array(all_fold_ids, dtype=np.int32)
     image_ids_array = np.array(all_image_ids, dtype=np.int32)
 
@@ -367,6 +370,7 @@ def prepare_family_data(family: str, pannuke_dir: Path, output_dir: Path):
         np_targets=np_targets_array,
         hv_targets=hv_targets_array,
         nt_targets=nt_targets_array,
+        inst_maps=inst_maps_array,  # ✅ Ajout inst_maps
         fold_ids=fold_ids_array,
         image_ids=image_ids_array,
     )
@@ -382,6 +386,7 @@ def prepare_family_data(family: str, pannuke_dir: Path, output_dir: Path):
     print(f"  NP targets shape:  {np_targets_array.shape}")
     print(f"  HV targets shape:  {hv_targets_array.shape}")
     print(f"  NT targets shape:  {nt_targets_array.shape}")
+    print(f"  Inst maps shape:   {inst_maps_array.shape}")  # ✅ Ajout inst_maps
     print()
 
     # Stats HV
