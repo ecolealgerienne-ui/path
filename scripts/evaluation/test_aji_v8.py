@@ -139,7 +139,8 @@ def main():
             np_out, hv_out, nt_out = hovernet(feat)
 
         # Convertir en numpy
-        np_pred = torch.sigmoid(np_out).cpu().numpy()[0, 0]  # (224, 224)
+        # NP utilise CrossEntropyLoss (2 canaux: background/foreground)
+        np_pred = torch.softmax(np_out, dim=1).cpu().numpy()[0, 1]  # (224, 224) - foreground prob
         hv_pred = hv_out.cpu().numpy()[0]  # (2, 224, 224)
 
         # Ground truth (256, 256) → resize à (224, 224)
