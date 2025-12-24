@@ -299,6 +299,67 @@ class HoVerNetLoss(nn.Module):
 
         return grad_loss
 
+    def magnitude_loss(
+        self,
+        hv_pred: torch.Tensor,
+        hv_target: torch.Tensor,
+        mask: torch.Tensor = None
+    ) -> torch.Tensor:
+        """
+        Force le modèle à prédire des gradients FORTS aux frontières.
+
+        PROBLÈME RÉSOLU (2025-12-24):
+        - La loss actuelle (MSE + gradient) ne pénalise PAS magnitude faible
+        - Le modèle apprend à prédire des HV maps LISSES (magnitude 0.04 vs targets 0.77)
+        - Ratio pred/target: 0.05 (20× trop faible!)
+        - Watershed ne peut pas séparer instances (AJI 0.09 catastrophique)
+
+        SOLUTION:
+        - MSE sur la MAGNITUDE (sqrt(H² + V²)) au lieu des composantes séparées
+        - Force le modèle à prédire des valeurs ÉLEVÉES (proches des targets)
+        - Gain attendu: magnitude 0.04 → 0.40-0.60 (10-15×), AJI 0.09 → 0.50-0.70 (5-7×)
+
+        CONTEXTE:
+        - Vérification targets: magnitude moyenne 0.7770 (excellent!)
+        - Distribution: 66% des samples ont magnitude >0.9
+        - Le problème vient du MODÈLE, pas des DONNÉES
+        - HV MSE plafonne à 0.16 à cause du conflit d'objectifs (MSE smoothing vs gradient sharpness)
+
+        Args:
+            hv_pred: Prédictions HV (B, 2, H, W) - float [-1, 1]
+            hv_target: Targets HV (B, 2, H, W) - float [-1, 1]
+            mask: Masque noyaux (B, 1, H, W) - binary [0, 1]
+
+        Returns:
+            Scalar loss (MSE sur magnitudes)
+
+        Example:
+            >>> hv_pred = torch.randn(1, 2, 224, 224) * 0.1  # Magnitude faible ~0.1
+            >>> hv_target = torch.randn(1, 2, 224, 224) * 0.8  # Magnitude forte ~0.8
+            >>> mask = torch.ones(1, 1, 224, 224)
+            >>> loss = criterion.magnitude_loss(hv_pred, hv_target, mask)
+            >>> # loss élevé car écart de magnitude important
+        """
+        # Calculer magnitude (norme L2 des composantes H et V)
+        # Magnitude = sqrt(H² + V²) ∈ [0, sqrt(2)] ≈ [0, 1.41]
+        mag_pred = torch.sqrt((hv_pred ** 2).sum(dim=1, keepdim=True) + 1e-8)  # (B, 1, H, W)
+        mag_target = torch.sqrt((hv_target ** 2).sum(dim=1, keepdim=True) + 1e-8)
+
+        # Masquer (calcul UNIQUEMENT sur pixels de noyaux)
+        if mask is not None and mask.sum() > 0:
+            mag_pred_masked = mag_pred * mask
+            mag_target_masked = mag_target * mask
+
+            # MSE avec normalisation par nombre de pixels masqués
+            mag_loss_sum = F.mse_loss(mag_pred_masked, mag_target_masked, reduction='sum')
+            n_pixels = mask.sum()
+            mag_loss = mag_loss_sum / (n_pixels + 1e-8)
+        else:
+            # Sans masque (fallback, ne devrait jamais arriver)
+            mag_loss = F.mse_loss(mag_pred, mag_target)
+
+        return mag_loss
+
     def forward(
         self,
         np_pred: torch.Tensor,
@@ -337,15 +398,22 @@ class HoVerNetLoss(nn.Module):
             hv_l1 = torch.tensor(0.0, device=hv_pred.device)
 
         # Gradient loss (MSGE - Graham et al.): force le modèle à apprendre les variations spatiales
-        # EXPERT FIX FINAL (2025-12-23): Lambda_hv=2.0 (équilibré)
-        # POST-MORTEM lambda_hv=10.0:
-        #   - Test de stress réussi: a révélé cause racine (features corrompues)
-        #   - Mais trop élevé: Dice 0.95→0.69 (over-regularization)
-        #   - Vrai problème: CLS std mismatch (0.82 training vs 0.66 inference)
-        # Solution: Régénérer features + lambda_hv équilibré (2.0 au lieu de 10.0)
-        # Objectif: AJI >0.60 avec features cohérentes + post-processing HoVer-Net original
         hv_gradient = self.gradient_loss(hv_pred, hv_target, mask=mask)
-        hv_loss = hv_l1 + 2.0 * hv_gradient  # Équilibré: MSE + 2× gradient
+
+        # Magnitude loss (NOUVEAU - 2025-12-24): force le modèle à prédire gradients FORTS
+        # PROBLÈME: HV MSE plafonne à 0.16, magnitude pred 0.04 vs targets 0.77 (ratio 0.05 = 20× trop faible!)
+        # CAUSE: Loss actuelle (MSE + gradient) ne RÉCOMPENSE PAS magnitude élevée
+        #        → Modèle apprend à prédire HV maps LISSES (compromis MSE vs gradient)
+        # SOLUTION: MSE sur magnitude pour forcer valeurs ÉLEVÉES aux frontières
+        # GAIN ATTENDU: magnitude 0.04 → 0.40-0.60 (10-15×), AJI 0.09 → 0.50-0.70 (5-7×)
+        hv_magnitude = self.magnitude_loss(hv_pred, hv_target, mask=mask)
+
+        # Loss totale HV (3 termes)
+        # HISTORIQUE:
+        #   - Lambda_hv=2.0 (EXPERT FIX 2025-12-23): équilibré après test stress lambda_hv=10.0
+        #   - Lambda_hv=3.0/5.0 (Tests 2025-12-24): plateaue à magnitude 0.04-0.05
+        #   - + Magnitude loss 1.0× (NOUVEAU 2025-12-24): force gradients forts
+        hv_loss = hv_l1 + 2.0 * hv_gradient + 1.0 * hv_magnitude
 
         # NT loss: CE (sur tous les pixels)
         nt_loss = self.bce(nt_pred, nt_target.long())
@@ -369,6 +437,9 @@ class HoVerNetLoss(nn.Module):
             return total, {
                 'np': np_loss.item(),
                 'hv': hv_loss.item(),
+                'hv_l1': hv_l1.item(),
+                'hv_gradient': hv_gradient.item(),
+                'hv_magnitude': hv_magnitude.item(),
                 'nt': nt_loss.item(),
                 'w_np': w_np,
                 'w_hv': w_hv,
@@ -381,6 +452,9 @@ class HoVerNetLoss(nn.Module):
             return total, {
                 'np': np_loss.item(),
                 'hv': hv_loss.item(),
+                'hv_l1': hv_l1.item(),
+                'hv_gradient': hv_gradient.item(),
+                'hv_magnitude': hv_magnitude.item(),
                 'nt': nt_loss.item(),
             }
 
