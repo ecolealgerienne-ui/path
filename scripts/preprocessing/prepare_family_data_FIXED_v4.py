@@ -125,15 +125,12 @@ def normalize_mask_format(mask: np.ndarray) -> np.ndarray:
     # DÉTECTION FORMAT
     # Cas 1: HWC (256, 256, 6)
     if mask.shape == (256, 256, 6):
-        print("      ✅ Format détecté: HWC (256, 256, 6) - OK")
         return mask
 
     # Cas 2: CHW (6, 256, 256)
     elif mask.shape == (6, 256, 256):
-        print("      ⚠️ Format détecté: CHW (6, 256, 256) - Conversion vers HWC...")
         mask_hwc = np.transpose(mask, (1, 2, 0))  # (6, 256, 256) → (256, 256, 6)
         mask_hwc = np.ascontiguousarray(mask_hwc)  # Garantir layout mémoire continu
-        print(f"      ✅ Converti: {mask.shape} → {mask_hwc.shape}")
         return mask_hwc
 
     # Cas 3: Format inconnu
