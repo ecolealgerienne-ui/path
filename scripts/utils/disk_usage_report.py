@@ -89,8 +89,18 @@ def scan_directory(directory: Path, extensions: list = None) -> list:
 
 
 def main():
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Rapport d'utilisation disque")
+    parser.add_argument('--min-size', type=int, default=10,
+                        help='Taille minimale en MB pour afficher les fichiers (défaut: 10)')
+    args = parser.parse_args()
+
+    min_size_mb = args.min_size
+    min_size_bytes = min_size_mb * 1024 * 1024
+
     print("=" * 80)
-    print("RAPPORT D'UTILISATION DISQUE - PROJET CELLVIT-OPTIMUS")
+    print(f"RAPPORT D'UTILISATION DISQUE (> {min_size_mb} MB)")
     print("=" * 80)
 
     # Définir les répertoires à scanner (UNIQUEMENT fichiers générés)
@@ -147,13 +157,18 @@ def main():
     # Détails Features Cache
     if 'Features Cache' in file_details:
         print("\n" + "=" * 80)
-        print("DÉTAILS: Features Cache (data/cache/pannuke_features)")
+        print(f"DÉTAILS: Features Cache (> {min_size_mb} MB)")
         print("-" * 80)
 
         files = file_details['Features Cache']
         if files:
-            for f in sorted(files, key=lambda x: x['size'], reverse=True):
-                print(f"   {f['path'].name:40s} {format_size(f['size']):>12s}")
+            # Filtrer uniquement fichiers > min_size
+            big_files = [f for f in files if f['size'] > min_size_bytes]
+            if big_files:
+                for f in sorted(big_files, key=lambda x: x['size'], reverse=True):
+                    print(f"   {f['path'].name:40s} {format_size(f['size']):>12s}")
+            else:
+                print(f"   (Aucun fichier > {min_size_mb} MB)")
 
             # Analyser les doublons (même taille = suspect)
             size_groups = defaultdict(list)
@@ -171,30 +186,35 @@ def main():
     # Détails Family Data FIXED
     if 'Family Data FIXED' in file_details:
         print("\n" + "=" * 80)
-        print("DÉTAILS: Family Data FIXED (data/family_FIXED)")
+        print(f"DÉTAILS: Family Data FIXED (> {min_size_mb} MB)")
         print("-" * 80)
 
         files = file_details['Family Data FIXED']
         if files:
-            for f in sorted(files, key=lambda x: x['size'], reverse=True):
-                print(f"   {f['path'].name:40s} {format_size(f['size']):>12s}")
+            # Filtrer uniquement fichiers > min_size
+            big_files = [f for f in files if f['size'] > min_size_bytes]
+            if big_files:
+                for f in sorted(big_files, key=lambda x: x['size'], reverse=True):
+                    print(f"   {f['path'].name:40s} {format_size(f['size']):>12s}")
+            else:
+                print(f"   (Aucun fichier > {min_size_mb} MB)")
 
-    # Recherche de gros fichiers (>100 MB)
+    # Recherche de gros fichiers
     print("\n" + "=" * 80)
-    print("GROS FICHIERS (>100 MB):")
+    print(f"GROS FICHIERS (> {min_size_mb} MB):")
     print("-" * 80)
 
     big_files = []
     for name, files in file_details.items():
         for f in files:
-            if f['size'] > 100 * 1024 * 1024:  # 100 MB
+            if f['size'] > min_size_bytes:
                 big_files.append((name, f))
 
     if big_files:
         for category, f in sorted(big_files, key=lambda x: x[1]['size'], reverse=True):
             print(f"{category:25s} {f['path'].name:40s} {format_size(f['size']):>12s}")
     else:
-        print("   Aucun fichier > 100 MB")
+        print(f"   (Aucun fichier > {min_size_mb} MB)")
 
     # Recommandations
     print("\n" + "=" * 80)
