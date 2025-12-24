@@ -47,27 +47,24 @@ def load_family_data(family):
     Returns:
         dict: {'images': array, 'hv_targets': array, 'np_targets': array}
     """
-    # Chercher dans data/cache/family_data/ ou family_data_FIXED/
-    possible_paths = [
-        Path(f"data/cache/family_data/{family}_data_FIXED.npz"),
-        Path(f"data/cache/family_data_FIXED/{family}_data_FIXED.npz"),
-        Path(f"data/cache/family_data/{family}_data.npz"),
-    ]
+    # ⚠️ FIX GHOST PATH BUG: Chercher UN SEUL endroit (source de vérité)
+    # AVANT: Cherchait dans 3 chemins → pouvait charger un ancien fichier corrompu
+    # APRÈS: Cherche UNIQUEMENT dans data/family_FIXED/ (dernière version générée)
+    path = Path(f"data/family_FIXED/{family}_data_FIXED.npz")
 
-    for path in possible_paths:
-        if path.exists():
-            print(f"✅ Chargement depuis: {path}")
-            data = np.load(path, allow_pickle=True)
-            return {
-                'images': data['images'],
-                'hv_targets': data['hv_targets'],
-                'np_targets': data['np_targets'],
-                'path': path
-            }
+    if path.exists():
+        print(f"✅ Chargement depuis: {path}")
+        data = np.load(path, allow_pickle=True)
+        return {
+            'images': data['images'],
+            'hv_targets': data['hv_targets'],
+            'np_targets': data['np_targets'],
+            'path': path
+        }
 
     raise FileNotFoundError(
-        f"❌ Aucun fichier de données trouvé pour famille '{family}'.\n"
-        f"   Cherché dans: {[str(p) for p in possible_paths]}"
+        f"❌ Fichier non trouvé: {path}\n"
+        f"   Régénérer avec: python scripts/preprocessing/prepare_family_data_FIXED_v4.py --family {family}"
     )
 
 def compute_hv_gradient_magnitude(hv):
