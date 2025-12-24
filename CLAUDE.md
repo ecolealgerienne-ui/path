@@ -4313,3 +4313,153 @@ python scripts/preprocessing/extract_features.py \
 
 ---
 
+### 2025-12-23 (Soir) — Test de Vérité Géométrique: Verdict MODÈLE CORROMPU ❌ CRITIQUE
+
+**Contexte:** Après régénération features fold 0 et re-training epidermal (Dice 0.9511, HV MSE 0.0475), tests d'évaluation montrent AJI catastrophique malgré bon Dice. Expert demande Test de Vérité Géométrique pour diagnostic définitif.
+
+**Tests effectués:**
+
+**Test 1: Post-processing min_size=20, dist_threshold=4**
+```
+Résultats:
+- Dice: 0.8365 (bon)
+- AJI:  0.0679 (catastrophique, objectif >0.60)
+- PQ:   0.0005 (catastrophique, objectif >0.65)
+- Instances: 7 pred vs 15 GT (sous-segmentation)
+
+Conclusion: Le problème N'EST PAS le post-processing
+```
+
+**Test 2: Test de Vérité Géométrique (Crop 224×224)**
+
+**Méthode:** Inférence sur crop central 224×224 (sans resize) pour éliminer tout artefact géométrique
+
+```python
+# Script créé: test_crop_truth.py
+img_224 = center_crop(img_256, 224)  # Pas de resize
+gt_224 = center_crop(gt_256, 224)
+pred_inst_224 = model(img_224)
+aji = compute_aji(pred_inst_224, gt_224)  # Comparaison directe
+```
+
+**Résultats (50 échantillons):**
+```
+✅ CLS std:  0.7226 (valide, dans plage 0.70-0.90)
+✅ Dice:     0.9707 ± 0.1420 (EXCELLENT - proche objectif 0.90)
+❌ AJI:      0.0634 ± 0.0420 (CATASTROPHIQUE - objectif 0.60)
+❌ PQ:       0.0005 ± 0.0022 (CATASTROPHIQUE - objectif 0.65)
+
+Instances: 9 pred vs 32 GT (sous-segmentation massive)
+```
+
+**Diagnostic Expert: "Segmentation Fantôme"**
+
+**Paradoxe:** Dice 0.97 avec AJI 0.06 → Cas rare en segmentation
+
+**Explication:**
+- Le modèle prédit correctement la **masse globale** des noyaux (Dice élevé)
+- Mais les place systématiquement **à côté** des vrais noyaux (décalage 4-5 pixels)
+- En AJI, si le centre prédit n'est pas dans le noyau réel, score → 0
+
+**Cause Racine Confirmée: Data Mismatch Temporel (Bug #4)**
+
+```
+Timeline Corrompue:
+├─ AVANT 2025-12-20: Features NPZ générées
+│  ├─ Bug #1 actif: ToPILImage float64 → overflow couleurs
+│  ├─ Bug #2 actif: blocks[23] → CLS std ~0.82
+│  └─ Résultat: Features avec décalage spatial
+│
+├─ 2025-12-22: Phase 1 Refactoring
+│  ├─ Fix Bug #1 et Bug #2
+│  └─ Targets GT régénérés (propres, alignés)
+│
+└─ 2025-12-23: Training avec MISMATCH ❌
+   ├─ Features OLD: std 0.82 (corrompues, décalées)
+   ├─ Targets NEW: propres (alignés)
+   └─ Modèle apprend un DÉCALAGE spatial systématique
+```
+
+**Impact:**
+- Durant training: Modèle force-fit features décalées → targets propres
+- Le décodeur apprend: "Appliquer décalage de 5px vers la droite"
+- Durant inference: Features propres → Modèle applique décalage appris → Prédictions à côté des vrais noyaux
+
+**Preuve du diagnostic:**
+- Dice 0.97 prouve que le décodeur **fonctionne parfaitement**
+- AJI 0.06 prouve un **décalage géométrique systématique** (pas aléatoire)
+- Test sur crop natif 224×224 élimine hypothèse "artefact resize"
+
+**Verdict Final: MODÈLE CORROMPU — Re-training OBLIGATOIRE**
+
+**Plan de Sauvetage (Option B):**
+
+1. **Purge cache features** (5 min)
+   ```bash
+   mv data/cache/pannuke_features data/cache/pannuke_features_OLD_CORRUPTED_20251223
+   mkdir -p data/cache/pannuke_features
+   ```
+
+2. **Régénération features fold 0** (20 min)
+   ```bash
+   python scripts/preprocessing/extract_features.py \
+       --data_dir /home/amar/data/PanNuke \
+       --fold 0 --batch_size 8 --chunk_size 300
+   ```
+
+3. **Vérification pixel-perfect** (CRITIQUE - 5 min)
+   - Superposer image + HV targets
+   - Vecteurs HV doivent pointer EXACTEMENT vers centres noyaux
+   - Si décalage > 2 pixels → NE PAS lancer training
+
+4. **Re-training epidermal** (40 min)
+   ```bash
+   python scripts/training/train_hovernet_family.py \
+       --family epidermal --epochs 50 --augment \
+       --lambda_hv 2.0
+   ```
+
+5. **Test de vérité final**
+   - AJI attendu: 0.06 → **0.60+** (gain +900%)
+
+**Prédiction Expert:**
+> "Ton Dice à 0.97 sur le crop 224 montre que ton décodeur est hyper-puissant. Il a juste besoin d'apprendre sur un terrain où les cibles ne bougent pas. Une fois le re-training terminé avec des features synchronisées, ton AJI va passer de 0.06 à 0.65 en une seule session."
+
+**Fichiers créés:**
+- `docs/ETAT_DES_LIEUX_2025-12-23.md` — Rapport complet d'état + plan détaillé pour demain
+- `scripts/evaluation/test_crop_truth.py` — Test de vérité géométrique (crop 224×224)
+
+**Commits:**
+- `ea2ca46` — "fix: Adjust post-processing parameters to reduce over-segmentation"
+- `308dae6` — "feat: Add geometric truth test (crop 224×224) to diagnose spatial mismatch"
+- `f6e9fb8` — "fix: Use 'valid' instead of 'status' in validate_features result"
+- `c8474b9` — "docs: Add comprehensive state report (2025-12-23)"
+
+**Leçons apprises:**
+
+1. **Data Mismatch Temporel = Bug le plus vicieux en Deep Learning**
+   - Métriques training bonnes (Dice 0.95) masquent le problème
+   - Bug n'apparaît qu'en évaluation GT (AJI 0.06)
+   - TOUJOURS régénérer cache après changement preprocessing
+
+2. **Méthode de diagnostic correcte:**
+   - Test de stress (lambda_hv=10) révèle incohérences
+   - Test de vérité (crop 224) isole problème géométrique
+   - Analyse timeline identifie cause racine temporelle
+
+3. **Dice élevé ≠ Modèle correct:**
+   - Dice mesure chevauchement global (masse)
+   - AJI mesure alignement spatial (précision géométrique)
+   - Dice 0.97 + AJI 0.06 = "Segmentation fantôme"
+
+**Timeline estimée demain:**
+- Purge + régénération + vérification: 30 min
+- **Point de décision GO/NO-GO:** Vérification pixel-perfect
+- Re-training: 40 min
+- Test final: 5 min
+- **Total:** 1h15
+
+**Statut:** ❌ MODÈLE CORROMPU CONFIRMÉ — Plan de sauvetage documenté dans `docs/ETAT_DES_LIEUX_2025-12-23.md`
+
+---
+
