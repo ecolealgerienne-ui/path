@@ -260,6 +260,43 @@ class HoVerNetDecoder(nn.Module):
         # Bottleneck partagé (économie VRAM: 1536 → 256, + dropout)
         x = self.bottleneck(x)  # (B, 256, 16, 16)
 
+        # =====================================================================
+        # TODO: V13 - Marquage Virtuel Hybride (H-Channel Injection)
+        # =====================================================================
+        #
+        # OBJECTIF: Améliorer la séparation d'instances en injectant l'info
+        # coloration Hématoxyline directement dans l'espace latent.
+        #
+        # RAISON SCIENTIFIQUE:
+        # - L'hématoxyline colore les noyaux en violet/bleu
+        # - Le canal H (Haematoxylin) du déconvolut couleur H&E contient
+        #   l'info de densité chromatinienne PURE
+        # - Injecter H dans les features force le modèle à "voir" les frontières
+        #   nucléaires même quand H-optimus-0 les a abstraites
+        #
+        # IMPLÉMENTATION PRÉVUE:
+        # 1. Extraire canal H depuis l'input RGB original (256×256)
+        #    → Utiliser déconvolution couleur Macenko ou matrice OD
+        # 2. Redimensionner canal H en 16×16 (même résolution que features)
+        #    → F.interpolate(h_channel, size=(16, 16), mode='bilinear')
+        # 3. Concaténer avec x: x = torch.cat([x, h_channel], dim=1)
+        #    → Nécessite ajuster bottleneck: 256 + 1 = 257 canaux en entrée up1
+        # 4. Passer au PixelShuffle (up1)
+        #
+        # MODIFICATION REQUISE:
+        # - Signature forward(): ajouter paramètre `rgb_input: torch.Tensor = None`
+        # - __init__(): ajuster up1 input channels (256 → 257)
+        # - Créer méthode `extract_h_channel()` avec matrice déconvolution
+        #
+        # GAIN ATTENDU:
+        # - AJI: +10-15% (séparation instances améliorée)
+        # - Particulièrement efficace sur tissus denses (Urologic, Epidermal)
+        #
+        # RÉFÉRENCE:
+        # - "Virtual Staining" (Rivenson et al., Nature BME 2019)
+        # - Macenko color normalization (Macenko et al., ISBI 2009)
+        # =====================================================================
+
         # Tronc commun (upsampling partagé avec dropout)
         x = self.up1(x)         # (B, 128, 32, 32)
         x = self.dropout(x)
