@@ -426,8 +426,27 @@ class HoVerNetLoss(nn.Module):
         # - hv_magnitude: 5.0× (priorise amplitude forte) via self.lambda_magnitude
         hv_loss = hv_l1 + 3.0 * hv_gradient + self.lambda_magnitude * hv_magnitude
 
-        # NT loss: CE (sur tous les pixels)
-        nt_loss = self.bce(nt_pred, nt_target.long())
+        # NT loss: CE MASQUÉ (uniquement sur pixels de noyaux)
+        # FIX CRITIQUE 2025-12-25: Avant, calculé sur TOUS pixels → 85% background
+        # → Modèle apprenait "prédire classe 0 partout = 85% accuracy"
+        # → NT Acc était 0.0002% (catastrophique)
+        # SOLUTION: Masquer comme HV loss (Graham et al. 2019)
+        if mask.sum() > 0:
+            # Flatten: (B, C, H, W) → (B*H*W, C) et (B, H, W) → (B*H*W,)
+            B, C, H, W = nt_pred.shape
+            nt_pred_flat = nt_pred.permute(0, 2, 3, 1).reshape(-1, C)  # (B*H*W, n_classes)
+            nt_target_flat = nt_target.reshape(-1)  # (B*H*W,)
+            mask_flat = mask.squeeze(1).reshape(-1)  # (B*H*W,)
+
+            # Sélectionner uniquement les pixels de noyaux
+            nuclear_indices = mask_flat > 0.5
+            nt_pred_masked = nt_pred_flat[nuclear_indices]  # (N_nuclear, n_classes)
+            nt_target_masked = nt_target_flat[nuclear_indices]  # (N_nuclear,)
+
+            # CrossEntropyLoss sur pixels de noyaux uniquement
+            nt_loss = F.cross_entropy(nt_pred_masked, nt_target_masked.long())
+        else:
+            nt_loss = torch.tensor(0.0, device=nt_pred.device)
 
         # Calcul du total selon le mode
         if self.adaptive:
