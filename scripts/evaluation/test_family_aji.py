@@ -1,10 +1,18 @@
 #!/usr/bin/env python3
 """
-Test AJI FINAL pour epidermal avec HV magnitude (pas Sobel).
+Test AJI pour toutes les familles HoVer-Net.
 
 Usage:
-    python scripts/evaluation/test_epidermal_aji_FINAL.py \
+    # Glandular
+    python scripts/evaluation/test_family_aji.py \
+        --checkpoint models/checkpoints/hovernet_glandular_best.pth \
+        --family glandular \
+        --n_samples 100
+
+    # Epidermal
+    python scripts/evaluation/test_family_aji.py \
         --checkpoint models/checkpoints/hovernet_epidermal_best.pth \
+        --family epidermal \
         --n_samples 50
 """
 
@@ -243,8 +251,11 @@ def get_correct_gt_instances(gt_mask: np.ndarray) -> np.ndarray:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Test AJI FINAL epidermal")
+    parser = argparse.ArgumentParser(description="Test AJI FINAL pour toutes les familles")
     parser.add_argument("--checkpoint", required=True, help="Checkpoint HoVer-Net")
+    parser.add_argument("--family", type=str, default="epidermal",
+                       choices=["glandular", "digestive", "urologic", "epidermal", "respiratory"],
+                       help="Famille à tester (défaut: epidermal)")
     parser.add_argument("--n_samples", type=int, default=50, help="Nombre échantillons test")
     parser.add_argument("--device", default="cuda", choices=["cuda", "cpu"])
     parser.add_argument(
@@ -256,9 +267,10 @@ def main():
     args = parser.parse_args()
 
     print("=" * 80)
-    print("🎯 TEST AJI FINAL - EPIDERMAL")
+    print(f"🎯 TEST AJI FINAL - {args.family.upper()}")
     print("=" * 80)
     print(f"\nCheckpoint: {args.checkpoint}")
+    print(f"Family: {args.family}")
     print(f"Samples: {args.n_samples}")
     print(f"Device: {args.device}")
 
@@ -275,8 +287,8 @@ def main():
 
     transform = create_hoptimus_transform()
 
-    # Load epidermal test data
-    print("\n📦 Chargement données epidermal...")
+    # Load family test data
+    print(f"\n📦 Chargement données {args.family}...")
     print(f"   Version courante: {CURRENT_DATA_VERSION}")
 
     # ⚠️ UTILISE LA VERSION COURANTE (centralisée dans constants.py)
@@ -284,12 +296,12 @@ def main():
         data_file = Path(args.data_file)
         print(f"   → Fichier spécifié: {data_file}")
     else:
-        data_file = Path(get_family_data_path("epidermal"))
+        data_file = Path(get_family_data_path(args.family))
         print(f"   → Fichier auto: {data_file}")
 
     if not data_file.exists():
         print(f"❌ Fichier non trouvé: {data_file}")
-        print(f"   Lancez d'abord: python scripts/preprocessing/prepare_family_data_FIXED_v12_COHERENT.py --family epidermal")
+        print(f"   Lancez d'abord: python scripts/preprocessing/prepare_family_data_FIXED_v12_COHERENT.py --family {args.family}")
         return
 
     data = np.load(data_file)
