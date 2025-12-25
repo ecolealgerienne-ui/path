@@ -83,14 +83,14 @@ class FocalLoss(nn.Module):
     - Downweight les exemples faciles (background)
     - Focus sur les exemples difficiles (bords des noyaux)
 
-    EXPERT FIX v12-Gold (2025-12-25):
-    - Alpha: 0.25 (poids 0.75 pour le fond → pénalise l'over-segmentation)
+    EXPERT FIX v12-Final-Gold (2025-12-25):
+    - Alpha: 0.5 (équilibré noyau/fond → modèle "ose" dessiner noyaux complets)
     - Gamma: 3.0 (focus maximal sur les bordures difficiles)
 
     Référence: "Focal Loss for Dense Object Detection" (Lin et al. 2017)
     """
 
-    def __init__(self, alpha: float = 0.25, gamma: float = 3.0, reduction: str = 'mean'):
+    def __init__(self, alpha: float = 0.5, gamma: float = 3.0, reduction: str = 'mean'):
         super().__init__()
         self.alpha = alpha
         self.gamma = gamma

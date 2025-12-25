@@ -379,8 +379,8 @@ def main():
     parser.add_argument('--output_dir', type=str, default='models/checkpoints')
     parser.add_argument('--augment', action='store_true',
                        help='Activer data augmentation')
-    parser.add_argument('--dropout', type=float, default=0.2,
-                       help='Dropout pour régularisation (v12-Gold: 0.2 équilibré)')
+    parser.add_argument('--dropout', type=float, default=0.4,
+                       help='Dropout pour régularisation (v12-Final-Gold: 0.4 remplace Stain Jitter)')
 
     # Options de loss weighting
     parser.add_argument('--lambda_np', type=float, default=1.0,
