@@ -400,7 +400,10 @@ def main():
 
     # Modèle
     print("\n🔧 Initialisation du décodeur HoVer-Net...")
-    model = HoVerNetDecoder(embed_dim=1536, n_classes=5, dropout=args.dropout)
+    # ⚠️ IMPORTANT: n_classes=2 pour matcher les targets v12 (binaires: 0=bg, 1=nucleus)
+    # v12 produit des targets NT avec seulement 2 valeurs [0, 1]
+    # Avant: n_classes=5 causait un mismatch fatal (NT Acc 0.15, NP Dice 0.39)
+    model = HoVerNetDecoder(embed_dim=1536, n_classes=2, dropout=args.dropout)
     model.to(device)
 
     n_params = sum(p.numel() for p in model.parameters())
