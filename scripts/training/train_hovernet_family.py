@@ -379,8 +379,8 @@ def main():
                        help='Poids loss HV (séparation instances)')
     parser.add_argument('--lambda_nt', type=float, default=1.0,
                        help='Poids loss NT (classification)')
-    parser.add_argument('--lambda_magnitude', type=float, default=5.0,
-                       help='Poids magnitude loss (Expert: 5.0 pour forcer gradients forts)')
+    parser.add_argument('--lambda_magnitude', type=float, default=1.0,
+                       help='Poids magnitude loss (réduit de 5.0 à 1.0 pour équilibrer avec NP)')
     parser.add_argument('--adaptive_loss', action='store_true',
                        help='Utiliser Uncertainty Weighting (poids appris)')
 
