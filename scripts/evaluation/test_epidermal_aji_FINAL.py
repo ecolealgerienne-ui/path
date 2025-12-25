@@ -175,6 +175,12 @@ def main():
     parser.add_argument("--checkpoint", required=True, help="Checkpoint HoVer-Net")
     parser.add_argument("--n_samples", type=int, default=50, help="Nombre échantillons test")
     parser.add_argument("--device", default="cuda", choices=["cuda", "cpu"])
+    parser.add_argument(
+        "--data_file",
+        type=str,
+        default=None,
+        help="Fichier de données (défaut: cherche v12 puis v11 puis FIXED.npz)"
+    )
     args = parser.parse_args()
 
     print("=" * 80)
@@ -198,13 +204,33 @@ def main():
 
     # Load epidermal test data
     print("\n📦 Chargement données epidermal...")
-    # ⚠️ FIX GHOST PATH BUG: Chercher UN SEUL endroit (source de vérité)
-    # AVANT: Cherchait dans data/cache/family_data/ (ancien cache, peut être corrompu)
-    # APRÈS: Cherche UNIQUEMENT dans data/family_FIXED/ (dernière version v4)
-    data_file = Path("data/family_FIXED/epidermal_data_FIXED.npz")
+
+    # Résolution du fichier de données
+    if args.data_file:
+        data_file = Path(args.data_file)
+    else:
+        # Chercher automatiquement (priorité: v12 > v11 > FIXED)
+        candidates = [
+            Path("data/family_FIXED/epidermal_data_FIXED_v12_COHERENT.npz"),
+            Path("data/family_FIXED/epidermal_data_FIXED_v11_FORCE_NT1.npz"),
+            Path("data/family_FIXED/epidermal_data_FIXED.npz"),
+        ]
+        data_file = None
+        for candidate in candidates:
+            if candidate.exists():
+                data_file = candidate
+                break
+
+        if data_file is None:
+            print(f"❌ Aucun fichier de données trouvé!")
+            print("Exécutez d'abord:")
+            print("  python scripts/preprocessing/prepare_family_data_FIXED_v12_COHERENT.py --family epidermal")
+            return
+
+    print(f"  → Utilisation: {data_file}")
+
     if not data_file.exists():
         print(f"❌ Fichier non trouvé: {data_file}")
-        print("Exécutez d'abord: python scripts/preprocessing/prepare_family_data_FIXED_v4.py --family epidermal")
         return
 
     data = np.load(data_file)
