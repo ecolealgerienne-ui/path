@@ -1410,6 +1410,164 @@ Décodeur intégré CellViT              Décodeur UNETR custom
 
 ## Journal de Développement
 
+### 2025-12-25 — Bug #7 RÉSOLU: Incohérence NP/NT dans script v11 ✅ FIX v12
+
+**Contexte:** Session précédente (24 déc) avait training convergent (Dice 0.95) MAIS conflit NP/NT persistant à 45.35%.
+
+**Diagnostic effectué:** Analyse du script `prepare_family_data_FIXED_v11_FORCE_NT1.py`
+
+**🔍 BUG LOGIQUE IDENTIFIÉ (Scénario A confirmé):**
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│ INCOHÉRENCE NP vs NT dans v11                                   │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│  compute_np_target_NUCLEI_ONLY() (ligne 295):                  │
+│    np_target = mask[:, :, :5].sum(axis=-1) > 0                 │
+│    → Union de channels 0, 1, 2, 3, 4                           │
+│                                                                 │
+│  compute_nt_target_FORCE_BINARY() (ligne 351):                 │
+│    nuclei_mask = channel_0 > 0                                 │
+│    → UNIQUEMENT channel 0 ❌                                    │
+│                                                                 │
+│  RÉSULTAT:                                                      │
+│  Pixels dans channels 1-4 mais PAS dans channel 0               │
+│  → NP = 1 (présent dans l'union)                               │
+│  → NT = 0 (absent de channel 0)                                │
+│  → CONFLIT 45.35%! ❌                                           │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+**✅ FIX v12: Cohérence parfaite NP/NT**
+
+Création de `prepare_family_data_FIXED_v12_COHERENT.py` avec:
+- Fonction commune `compute_nuclei_mask_v12()` = SOURCE UNIQUE pour NP et NT
+- NP et NT utilisent EXACTEMENT le même masque: `mask[:, :, :5].sum(axis=-1) > 0`
+- Conflit NP/NT = 0.00% GARANTI
+- Vérification automatique du conflit à la génération
+
+**Scripts créés:**
+- `prepare_family_data_FIXED_v12_COHERENT.py` — Génération données avec cohérence NP/NT
+- `verify_v12_coherence.py` — Vérification conflit après génération
+
+**Commandes pour l'utilisateur:**
+
+```bash
+# 1. Générer données v12 (cohérence NP/NT)
+python scripts/preprocessing/prepare_family_data_FIXED_v12_COHERENT.py --family epidermal
+
+# 2. Vérifier conflit = 0%
+python scripts/validation/verify_v12_coherence.py
+
+# 3. Extraire features H-optimus-0
+python scripts/preprocessing/extract_features_from_v9.py \
+    --input_file data/family_FIXED/epidermal_data_FIXED_v12_COHERENT.npz \
+    --output_dir data/cache/family_data \
+    --family epidermal
+
+# 4. Ré-entraîner HoVer-Net
+python scripts/training/train_hovernet_family.py --family epidermal --epochs 50 --augment
+
+# 5. Tester AJI final
+python scripts/evaluation/test_epidermal_aji_FINAL.py \
+    --checkpoint models/checkpoints/hovernet_epidermal_best.pth \
+    --n_samples 50
+```
+
+**Métriques cibles:**
+| Métrique | v11 (bug) | v12 (cible) |
+|----------|-----------|-------------|
+| NP Dice | 0.95 ✅ | 0.95 ✅ |
+| NT Acc | 0.84 | >0.95 |
+| Conflit NP/NT | 45.35% ❌ | **0.00%** ✅ |
+| AJI | ? | **>0.60** 🎯 |
+
+**Temps estimé:** 1h (génération 2 min + extraction 1 min + training 40 min + test 5 min)
+
+**Statut:** ✅ FIX CRÉÉ — En attente d'exécution par l'utilisateur
+
+---
+
+### 2025-12-25 (Suite) — Bug #8 CRITIQUE: CENTER PADDING au lieu de RESIZE ✅ FIX
+
+**Contexte:** Après fix v12 (conflit NP/NT = 0%), training OK (Dice 0.95), MAIS test AJI toujours catastrophique (Dice 0.35, AJI 0.04, PQ 0.00).
+
+**Demande utilisateur:** "On arrête les frais, il faut analyser notre système point par point"
+
+**Analyse complète du pipeline créée:** `docs/ANALYSE_PIPELINE_POINT_PAR_POINT.md`
+
+**🔴 BUG CRITIQUE IDENTIFIÉ:**
+
+```
+┌────────────────────────────────────────────────────────────────────────┐
+│ INCOHÉRENCE RESIZE vs CENTER PADDING                                   │
+├────────────────────────────────────────────────────────────────────────┤
+│                                                                        │
+│  TRAINING:                                                             │
+│    Image 256×256 → Resize() → 224×224  (COMPRESSÉE)                   │
+│    Target 256×256 → resize_targets() → 224×224  (COMPRESSÉ aussi)     │
+│    ✅ ALIGNEMENT PARFAIT                                               │
+│                                                                        │
+│  TEST (AVANT FIX):                                                     │
+│    Image 256×256 → Resize() → 224×224  (COMPRESSÉE)                   │
+│    Prédiction 224×224 → CENTER PADDING → 256×256                      │
+│    GT reste à 256×256 original                                         │
+│    ❌ DÉCALAGE SPATIAL DE ~16px!                                       │
+│                                                                        │
+│  CAUSE: Le script supposait que H-optimus-0 fait un "crop central"    │
+│         MAIS create_hoptimus_transform() fait un RESIZE (compression) │
+│                                                                        │
+│  RÉSULTAT: La prédiction (compressée) est paddée au lieu d'être       │
+│            ré-étirée → décalage systématique → métriques catastrophiques │
+│                                                                        │
+└────────────────────────────────────────────────────────────────────────┘
+```
+
+**✅ FIX appliqué dans `test_epidermal_aji_FINAL.py`:**
+
+```python
+# AVANT (BUG - lignes 316-325):
+diff = (256 - 224) // 2
+np_pred_256 = np.zeros((256, 256, 2))
+np_pred_256[diff:diff+h, diff:diff+w, :] = np_pred  # CENTER PADDING
+
+# APRÈS (FIX):
+np_pred_256 = cv2.resize(np_pred, (256, 256), interpolation=cv2.INTER_LINEAR)
+hv_pred_256[:, :, 0] = cv2.resize(hv_pred[:, :, 0], (256, 256), ...)
+hv_pred_256[:, :, 1] = cv2.resize(hv_pred[:, :, 1], (256, 256), ...)
+```
+
+**Explication:**
+- Training: Image COMPRESSÉE de 256→224, targets aussi
+- Test: Image COMPRESSÉE de 256→224, prédiction doit être RÉ-ÉTIRÉE de 224→256
+- Le resize inverse restaure la correspondance spatiale avec le GT
+
+**Métriques attendues après fix:**
+| Métrique | Avant fix | Après fix (attendu) |
+|----------|-----------|---------------------|
+| Dice | 0.35 | **~0.95** |
+| AJI | 0.04 | **>0.60** 🎯 |
+| PQ | 0.00 | **>0.65** |
+
+**Fichiers créés/modifiés:**
+- `docs/ANALYSE_PIPELINE_POINT_PAR_POINT.md` — Analyse complète du pipeline point par point
+- `scripts/evaluation/test_epidermal_aji_FINAL.py` — Fix CENTER PADDING → RESIZE
+
+**Commit:** `fb66774` — "fix: Replace CENTER PADDING with RESIZE in test_epidermal_aji_FINAL.py"
+
+**Commande pour tester:**
+```bash
+python scripts/evaluation/test_epidermal_aji_FINAL.py \
+    --checkpoint models/checkpoints/hovernet_epidermal_best.pth \
+    --n_samples 50
+```
+
+**Statut:** ✅ FIX APPLIQUÉ — En attente de validation par l'utilisateur
+
+---
+
 ### 2025-12-24 — Bug #7: Training Contamination (Tissue vs Nuclei) ⚠️ PRESQUE RÉSOLU
 
 **Contexte:** Training epidermal catastrophique (NP Dice 0.42, NT Acc 0.44) malgré fix HV inversion v8. AJI reste à 0.03-0.09 au lieu de >0.60.

@@ -175,6 +175,12 @@ def main():
     parser.add_argument("--checkpoint", required=True, help="Checkpoint HoVer-Net")
     parser.add_argument("--n_samples", type=int, default=50, help="Nombre échantillons test")
     parser.add_argument("--device", default="cuda", choices=["cuda", "cpu"])
+    parser.add_argument(
+        "--data_file",
+        type=str,
+        default=None,
+        help="Fichier de données (défaut: cherche v12 puis v11 puis FIXED.npz)"
+    )
     args = parser.parse_args()
 
     print("=" * 80)
@@ -198,13 +204,33 @@ def main():
 
     # Load epidermal test data
     print("\n📦 Chargement données epidermal...")
-    # ⚠️ FIX GHOST PATH BUG: Chercher UN SEUL endroit (source de vérité)
-    # AVANT: Cherchait dans data/cache/family_data/ (ancien cache, peut être corrompu)
-    # APRÈS: Cherche UNIQUEMENT dans data/family_FIXED/ (dernière version v4)
-    data_file = Path("data/family_FIXED/epidermal_data_FIXED.npz")
+
+    # Résolution du fichier de données
+    if args.data_file:
+        data_file = Path(args.data_file)
+    else:
+        # Chercher automatiquement (priorité: v12 > v11 > FIXED)
+        candidates = [
+            Path("data/family_FIXED/epidermal_data_FIXED_v12_COHERENT.npz"),
+            Path("data/family_FIXED/epidermal_data_FIXED_v11_FORCE_NT1.npz"),
+            Path("data/family_FIXED/epidermal_data_FIXED.npz"),
+        ]
+        data_file = None
+        for candidate in candidates:
+            if candidate.exists():
+                data_file = candidate
+                break
+
+        if data_file is None:
+            print(f"❌ Aucun fichier de données trouvé!")
+            print("Exécutez d'abord:")
+            print("  python scripts/preprocessing/prepare_family_data_FIXED_v12_COHERENT.py --family epidermal")
+            return
+
+    print(f"  → Utilisation: {data_file}")
+
     if not data_file.exists():
         print(f"❌ Fichier non trouvé: {data_file}")
-        print("Exécutez d'abord: python scripts/preprocessing/prepare_family_data_FIXED_v4.py --family epidermal")
         return
 
     data = np.load(data_file)
@@ -280,23 +306,27 @@ def main():
                 print(f"  NP channel 1 max: {np_pred[:, :, 1].max():.4f}")
                 print(f"  HV max: {hv_pred.max():.4f}")
 
-            # 2. CENTER PADDING 224→256 (au lieu de resize qui déforme)
+            # 2. RESIZE 224→256 (pour matcher le GT qui est à 256×256)
             #    ===================================================================
-            #    FIX EXPERT #2 (2025-12-24): PADDING au lieu de RESIZE
+            #    FIX 2025-12-25: RESIZE au lieu de CENTER PADDING
             #    ===================================================================
-            #    CAUSE: H-optimus extrait crops centraux 224×224 d'images 256×256
-            #    AVANT: cv2.resize() étirait → décalage spatial → PQ=0.00
-            #    APRÈS: Center padding préserve positions exactes
-            h, w = np_pred.shape[:2]  # 224, 224
-            diff = (256 - 224) // 2  # 16 pixels de padding de chaque côté
+            #    EXPLICATION:
+            #    - Training: Image 256→224 (resize), Target 256→224 (resize)
+            #    - Test: Image 256→224 (resize), donc Pred doit être 224→256 (resize INVERSE)
+            #    - Le center padding était FAUX car create_hoptimus_transform() fait
+            #      un Resize() qui COMPRESSE l'image, pas un crop central!
+            #    - AVANT: center padding → décalage spatial → AJI 0.04
+            #    - APRÈS: resize inverse → alignement correct → AJI attendu >0.60
 
-            # Créer images vides 256×256
-            np_pred_256 = np.zeros((256, 256, 2), dtype=np_pred.dtype)
+            # Resize NP (interpolation linéaire pour probabilités)
+            np_pred_256 = cv2.resize(np_pred, (256, 256), interpolation=cv2.INTER_LINEAR)
+
+            # Resize HV (interpolation linéaire par canal)
             hv_pred_256 = np.zeros((256, 256, 2), dtype=hv_pred.dtype)
-
-            # Placer prédictions au CENTRE (positions exactes préservées)
-            np_pred_256[diff:diff+h, diff:diff+w, :] = np_pred
-            hv_pred_256[diff:diff+h, diff:diff+w, :] = hv_pred
+            hv_pred_256[:, :, 0] = cv2.resize(hv_pred[:, :, 0], (256, 256),
+                                              interpolation=cv2.INTER_LINEAR)
+            hv_pred_256[:, :, 1] = cv2.resize(hv_pred[:, :, 1], (256, 256),
+                                              interpolation=cv2.INTER_LINEAR)
 
             # 3. Extraction du canal Noyaux (canal 1)
             prob_map = np_pred_256[:, :, 1]  # (256, 256)
