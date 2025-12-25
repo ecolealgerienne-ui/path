@@ -35,6 +35,73 @@ from src.models.hovernet_decoder import HoVerNetDecoder
 from src.models.loader import ModelLoader
 from src.preprocessing import create_hoptimus_transform
 
+# =============================================================================
+# REPRODUCTIBILITÉ: Fixer toutes les graines aléatoires
+# =============================================================================
+import random
+SEED = 42
+random.seed(SEED)
+np.random.seed(SEED)
+torch.manual_seed(SEED)
+if torch.cuda.is_available():
+    torch.cuda.manual_seed(SEED)
+    torch.backends.cudnn.deterministic = True
+print(f"🔒 SYSTÈME VERROUILLÉ : Seed {SEED} active.")
+
+
+# =============================================================================
+# SEGMENTATION ROBUSTE: Watershed quand branche HV est inactive
+# =============================================================================
+def robust_segmentation(prob_map: np.ndarray, h_threshold: float = 0.40, peak_min_dist: int = 7) -> np.ndarray:
+    """
+    Segmentation robuste quand la branche HV est faible.
+    Utilise la normalisation dynamique + Watershed.
+
+    Args:
+        prob_map: Carte de probabilité (224, 224) float [0, 1]
+        h_threshold: Seuil relatif pour le masque global (défaut: 0.40)
+        peak_min_dist: Distance minimale entre pics (défaut: 7 pixels)
+
+    Returns:
+        Instance map (224, 224) int32 avec IDs [0=bg, 1..N=instances]
+    """
+    # 1. Normalisation Dynamique [0, 1]
+    # Indispensable car le modèle 'flotte' (ex: fond=0.35, noyau=0.65)
+    p_min, p_max = prob_map.min(), prob_map.max()
+    if p_max - p_min < 0.05:  # Sécurité image vide ou plate
+        return np.zeros_like(prob_map, dtype=np.int32)
+
+    prob_norm = (prob_map - p_min) / (p_max - p_min)
+
+    # 2. Masque Binaire Global (Le "Continent")
+    # Tout ce qui est au-dessus de 40% de l'intensité relative est gardé
+    mask_global = prob_norm > h_threshold
+
+    # 3. Détection des Pics (Les "Sommets")
+    # On cherche les points les plus brillants (coeurs de noyaux)
+    local_maxi = peak_local_max(
+        prob_norm,
+        min_distance=peak_min_dist,
+        labels=mask_global.astype(np.int32),
+        threshold_abs=0.60  # Les pics doivent être forts
+    )
+
+    # Créer les marqueurs à partir des coordonnées des pics
+    markers = np.zeros_like(prob_norm, dtype=np.int32)
+    if len(local_maxi) > 0:
+        for i, (y, x) in enumerate(local_maxi, start=1):
+            markers[y, x] = i
+
+    # 4. Watershed (Inondation)
+    # On fait couler l'eau depuis les sommets jusqu'aux bords du masque global
+    if markers.max() > 0:
+        pred_inst = watershed(-prob_norm, markers, mask=mask_global)
+    else:
+        # Fallback: connected components si pas de pics détectés
+        pred_inst, _ = ndimage.label(mask_global)
+
+    return pred_inst.astype(np.int32)
+
 
 def extract_instances_hv_magnitude(
     np_pred: np.ndarray,
@@ -301,28 +368,21 @@ def main():
             gt_inst = cv2.resize(gt_inst_256, (224, 224), interpolation=cv2.INTER_NEAREST)
 
             # =========================================================================
-            # TEST BYPASS HV (Expert 2025-12-25): Connected Components sans Watershed
+            # SEGMENTATION ROBUSTE (Expert 2025-12-25): Watershed avec normalisation
             # =========================================================================
-            # DIAGNOSTIC: hv_map.max() = -0.04 au lieu de [-1, +1] → branche HV "morte"
-            # TEST: Si Dice monte à 0.60-0.70 → NP OK, problème = HV training
-            #       Si Dice reste à 0.20 → NP aussi cassé
+            # DIAGNOSTIC: branche HV "morte" (max ~-0.04) + modèle "timide" (max ~0.49)
+            # SOLUTION: Normalisation dynamique + Watershed pour séparer les cellules
             # =========================================================================
             # pred_inst = extract_instances_hv_magnitude(prob_map, hv_map)  # DÉSACTIVÉ
 
-            # Simple Connected Components (bypass HV)
-            from scipy.ndimage import label as scipy_label
+            # Segmentation robuste avec Watershed
+            pred_inst = robust_segmentation(prob_map, h_threshold=0.40, peak_min_dist=7)
 
-            # Seuil adaptatif: le modèle est "timide" (max ~0.49 < 0.5)
-            # Les Transformers ont des distributions de probabilités différentes des CNN
-            threshold = 0.35  # Valeur empirique sûre pour HoVer-Net/Optimus
-            binary_pred = prob_map > threshold
-
-            # DEBUG: Afficher le max pour confirmer
+            # DEBUG: Afficher les stats pour diagnostic
             if idx == test_indices[0]:
-                print(f"  [DEBUG] Prob Max: {prob_map.max():.4f} | Seuil: {threshold}")
-
-            pred_inst, num_pred_instances = scipy_label(binary_pred)
-            pred_inst = pred_inst.astype(np.int32)
+                p_min, p_max = prob_map.min(), prob_map.max()
+                print(f"  [DEBUG] Prob range: [{p_min:.4f}, {p_max:.4f}]")
+                print(f"  [DEBUG] Prob normalisé → seuil relatif 0.40")
 
             # gt_inst déjà calculé ci-dessus (256→224 avec INTER_NEAREST)
 
