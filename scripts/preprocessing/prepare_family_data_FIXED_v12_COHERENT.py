@@ -25,6 +25,7 @@ import argparse
 import sys
 from pathlib import Path
 
+import cv2
 import numpy as np
 from scipy.ndimage import gaussian_filter
 
@@ -32,6 +33,14 @@ from scipy.ndimage import gaussian_filter
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from src.constants import PANNUKE_IMAGE_SIZE
+
+# =============================================================================
+# RÉSOLUTION CIBLE H-OPTIMUS-0
+# =============================================================================
+# CRITIQUE: H-optimus-0 travaille en 224x224.
+# Les HV targets doivent être calculés APRÈS resize pour éviter l'interpolation
+# qui floute les gradients et "tue" la branche HV.
+HOPTIMUS_SIZE = 224
 
 
 # =============================================================================
@@ -136,19 +145,23 @@ def compute_hv_maps(inst_map: np.ndarray) -> np.ndarray:
 
 def normalize_mask_format(mask: np.ndarray) -> np.ndarray:
     """
-    Normalise le format du mask vers HWC (256, 256, 6).
+    Normalise le format du mask vers HWC (H, W, 6).
+    Supporte 256x256 (PanNuke original) et 224x224 (H-optimus-0).
     """
     if mask.ndim != 3:
         raise ValueError(f"Expected 3D mask, got {mask.ndim}D with shape {mask.shape}")
 
-    if mask.shape == (PANNUKE_IMAGE_SIZE, PANNUKE_IMAGE_SIZE, 6):
+    # Accepter les deux résolutions: 256 (original) ou 224 (H-optimus-0)
+    h, w = mask.shape[:2] if mask.shape[0] != 6 else mask.shape[1:]
+
+    if mask.shape == (h, w, 6):
         return mask
-    elif mask.shape == (6, PANNUKE_IMAGE_SIZE, PANNUKE_IMAGE_SIZE):
+    elif mask.shape == (6, h, w):
         mask_hwc = np.transpose(mask, (1, 2, 0))
         mask_hwc = np.ascontiguousarray(mask_hwc)
         return mask_hwc
     else:
-        raise ValueError(f"Unexpected mask shape: {mask.shape}")
+        raise ValueError(f"Unexpected mask shape: {mask.shape}. Expected (H, W, 6) or (6, H, W).")
 
 
 # =============================================================================
@@ -287,6 +300,16 @@ def prepare_family_data_v12(
     Prépare les données d'entraînement pour une famille d'organes.
 
     VERSION v12: COHÉRENCE PARFAITE NP/NT (0% conflit garanti)
+
+    IMPORTANT: Les données sont resizées en 224x224 (résolution H-optimus-0)
+    AVANT le calcul des HV targets pour éviter l'interpolation qui floute
+    les gradients et "tue" la branche HV.
+
+    Output:
+        - images: (N, 224, 224, 3) uint8
+        - np_targets: (N, 224, 224) float32 [0, 1]
+        - hv_targets: (N, 2, 224, 224) float32 [-1, 1]
+        - nt_targets: (N, 224, 224) int64 [0, 1]
     """
     if folds is None:
         folds = [0, 1, 2]
@@ -294,6 +317,8 @@ def prepare_family_data_v12(
     print("=" * 80)
     print(f"PRÉPARATION FAMILLE: {family.upper()} (VERSION v12 - COHÉRENCE NP/NT)")
     print("=" * 80)
+    print(f"\n⚠️  RÉSOLUTION CIBLE: {HOPTIMUS_SIZE}x{HOPTIMUS_SIZE} (H-optimus-0)")
+    print("   Les HV targets sont calculés APRÈS resize pour des gradients nets.")
 
     # Trouver les organes de cette famille
     organs = [org for org, fam in ORGAN_TO_FAMILY.items() if fam == family]
@@ -334,9 +359,29 @@ def prepare_family_data_v12(
             if organ_name not in organs:
                 continue
 
-            # Charger image et mask
+            # Charger image et mask (256x256 original)
             image = np.array(images[i], dtype=np.uint8)
             mask = np.array(masks[i])
+
+            # =========================================================================
+            # RESIZE PRÉVENTIF 256→224 (CRITIQUE pour H-optimus-0)
+            # =========================================================================
+            # On resize AVANT de calculer les HV targets pour éviter l'interpolation
+            # qui floute les gradients et "tue" la branche HV.
+            # - INTER_AREA pour l'image (meilleur pour réduire)
+            # - INTER_NEAREST pour le masque (préserve les IDs d'instances)
+            # =========================================================================
+            image = cv2.resize(image, (HOPTIMUS_SIZE, HOPTIMUS_SIZE), interpolation=cv2.INTER_AREA)
+
+            # Resize masque canal par canal (préserve les IDs avec INTER_NEAREST)
+            mask_224 = np.zeros((HOPTIMUS_SIZE, HOPTIMUS_SIZE, 6), dtype=mask.dtype)
+            for c in range(6):
+                mask_224[:, :, c] = cv2.resize(
+                    mask[:, :, c].astype(np.float32),
+                    (HOPTIMUS_SIZE, HOPTIMUS_SIZE),
+                    interpolation=cv2.INTER_NEAREST
+                ).astype(mask.dtype)
+            mask = mask_224
 
             # ✅ v9: Extraction instances NUCLEI ONLY (exclut tissue)
             inst_map = extract_pannuke_instances_NUCLEI_ONLY(mask)
