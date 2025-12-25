@@ -233,8 +233,10 @@ def main():
     # =========================================================================
     # PROBLÈME: L'indexation fold_id/img_id pour charger les masques PanNuke
     #           était décalée → 40% de GT vides → Dice 0.22
+    #           (img_id n'est PAS un index global unique qui traverse les folds)
     # SOLUTION: Utiliser np_targets du même fichier (aligné par définition)
-    #           et créer instances via connected components
+    #           et créer instances via connected components (scipy.ndimage.label)
+    # COMMIT: a912a79 - Session 2025-12-25 17:30
     # =========================================================================
     np_targets = data['np_targets']  # Binary masks (N, 256, 256) float32 [0, 1]
     print(f"  → np_targets shape: {np_targets.shape}")
