@@ -1490,6 +1490,84 @@ python scripts/evaluation/test_epidermal_aji_FINAL.py \
 
 ---
 
+### 2025-12-25 (Suite) — Bug #8 CRITIQUE: CENTER PADDING au lieu de RESIZE ✅ FIX
+
+**Contexte:** Après fix v12 (conflit NP/NT = 0%), training OK (Dice 0.95), MAIS test AJI toujours catastrophique (Dice 0.35, AJI 0.04, PQ 0.00).
+
+**Demande utilisateur:** "On arrête les frais, il faut analyser notre système point par point"
+
+**Analyse complète du pipeline créée:** `docs/ANALYSE_PIPELINE_POINT_PAR_POINT.md`
+
+**🔴 BUG CRITIQUE IDENTIFIÉ:**
+
+```
+┌────────────────────────────────────────────────────────────────────────┐
+│ INCOHÉRENCE RESIZE vs CENTER PADDING                                   │
+├────────────────────────────────────────────────────────────────────────┤
+│                                                                        │
+│  TRAINING:                                                             │
+│    Image 256×256 → Resize() → 224×224  (COMPRESSÉE)                   │
+│    Target 256×256 → resize_targets() → 224×224  (COMPRESSÉ aussi)     │
+│    ✅ ALIGNEMENT PARFAIT                                               │
+│                                                                        │
+│  TEST (AVANT FIX):                                                     │
+│    Image 256×256 → Resize() → 224×224  (COMPRESSÉE)                   │
+│    Prédiction 224×224 → CENTER PADDING → 256×256                      │
+│    GT reste à 256×256 original                                         │
+│    ❌ DÉCALAGE SPATIAL DE ~16px!                                       │
+│                                                                        │
+│  CAUSE: Le script supposait que H-optimus-0 fait un "crop central"    │
+│         MAIS create_hoptimus_transform() fait un RESIZE (compression) │
+│                                                                        │
+│  RÉSULTAT: La prédiction (compressée) est paddée au lieu d'être       │
+│            ré-étirée → décalage systématique → métriques catastrophiques │
+│                                                                        │
+└────────────────────────────────────────────────────────────────────────┘
+```
+
+**✅ FIX appliqué dans `test_epidermal_aji_FINAL.py`:**
+
+```python
+# AVANT (BUG - lignes 316-325):
+diff = (256 - 224) // 2
+np_pred_256 = np.zeros((256, 256, 2))
+np_pred_256[diff:diff+h, diff:diff+w, :] = np_pred  # CENTER PADDING
+
+# APRÈS (FIX):
+np_pred_256 = cv2.resize(np_pred, (256, 256), interpolation=cv2.INTER_LINEAR)
+hv_pred_256[:, :, 0] = cv2.resize(hv_pred[:, :, 0], (256, 256), ...)
+hv_pred_256[:, :, 1] = cv2.resize(hv_pred[:, :, 1], (256, 256), ...)
+```
+
+**Explication:**
+- Training: Image COMPRESSÉE de 256→224, targets aussi
+- Test: Image COMPRESSÉE de 256→224, prédiction doit être RÉ-ÉTIRÉE de 224→256
+- Le resize inverse restaure la correspondance spatiale avec le GT
+
+**Métriques attendues après fix:**
+| Métrique | Avant fix | Après fix (attendu) |
+|----------|-----------|---------------------|
+| Dice | 0.35 | **~0.95** |
+| AJI | 0.04 | **>0.60** 🎯 |
+| PQ | 0.00 | **>0.65** |
+
+**Fichiers créés/modifiés:**
+- `docs/ANALYSE_PIPELINE_POINT_PAR_POINT.md` — Analyse complète du pipeline point par point
+- `scripts/evaluation/test_epidermal_aji_FINAL.py` — Fix CENTER PADDING → RESIZE
+
+**Commit:** `fb66774` — "fix: Replace CENTER PADDING with RESIZE in test_epidermal_aji_FINAL.py"
+
+**Commande pour tester:**
+```bash
+python scripts/evaluation/test_epidermal_aji_FINAL.py \
+    --checkpoint models/checkpoints/hovernet_epidermal_best.pth \
+    --n_samples 50
+```
+
+**Statut:** ✅ FIX APPLIQUÉ — En attente de validation par l'utilisateur
+
+---
+
 ### 2025-12-24 — Bug #7: Training Contamination (Tissue vs Nuclei) ⚠️ PRESQUE RÉSOLU
 
 **Contexte:** Training epidermal catastrophique (NP Dice 0.42, NT Acc 0.44) malgré fix HV inversion v8. AJI reste à 0.03-0.09 au lieu de >0.60.
