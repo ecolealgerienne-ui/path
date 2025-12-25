@@ -24,7 +24,12 @@ from tqdm import tqdm
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from src.constants import PANNUKE_IMAGE_SIZE
+from src.constants import (
+    PANNUKE_IMAGE_SIZE,
+    DEFAULT_PANNUKE_DIR,
+    get_family_data_path,
+    CURRENT_DATA_VERSION,
+)
 from src.metrics.ground_truth_metrics import compute_aji, compute_dice, compute_panoptic_quality
 from src.models.hovernet_decoder import HoVerNetDecoder
 from src.models.loader import ModelLoader
@@ -204,40 +209,26 @@ def main():
 
     # Load epidermal test data
     print("\n📦 Chargement données epidermal...")
+    print(f"   Version courante: {CURRENT_DATA_VERSION}")
 
-    # Résolution du fichier de données
+    # ⚠️ UTILISE LA VERSION COURANTE (centralisée dans constants.py)
     if args.data_file:
         data_file = Path(args.data_file)
+        print(f"   → Fichier spécifié: {data_file}")
     else:
-        # Chercher automatiquement (priorité: v12 > v11 > FIXED)
-        candidates = [
-            Path("data/family_FIXED/epidermal_data_FIXED_v12_COHERENT.npz"),
-            Path("data/family_FIXED/epidermal_data_FIXED_v11_FORCE_NT1.npz"),
-            Path("data/family_FIXED/epidermal_data_FIXED.npz"),
-        ]
-        data_file = None
-        for candidate in candidates:
-            if candidate.exists():
-                data_file = candidate
-                break
-
-        if data_file is None:
-            print(f"❌ Aucun fichier de données trouvé!")
-            print("Exécutez d'abord:")
-            print("  python scripts/preprocessing/prepare_family_data_FIXED_v12_COHERENT.py --family epidermal")
-            return
-
-    print(f"  → Utilisation: {data_file}")
+        data_file = Path(get_family_data_path("epidermal"))
+        print(f"   → Fichier auto: {data_file}")
 
     if not data_file.exists():
         print(f"❌ Fichier non trouvé: {data_file}")
+        print(f"   Lancez d'abord: python scripts/preprocessing/prepare_family_data_FIXED_v12_COHERENT.py --family epidermal")
         return
 
     data = np.load(data_file)
     images = data['images']
 
-    # PanNuke base directory
-    pannuke_dir = Path("/home/amar/data/PanNuke")
+    # PanNuke base directory (centralisé)
+    pannuke_dir = Path(DEFAULT_PANNUKE_DIR)
     if not pannuke_dir.exists():
         pannuke_dir = Path("data/PanNuke")  # Fallback
 
