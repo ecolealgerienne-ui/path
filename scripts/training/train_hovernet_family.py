@@ -556,28 +556,28 @@ def main():
                     {'params': other_params, 'lr': args.lr}
                 ], weight_decay=1e-4)
 
-            # PHASE 2: Activation douce de HV
+            # PHASE 2: Activation MUSCLÉE de HV (v12-Pro)
             criterion.lambda_np = 2.0
-            criterion.lambda_hv = 0.5
+            criterion.lambda_hv = 1.0  # 0.5 → 1.0 (muscler les gradients)
             criterion.lambda_nt = 0.2
-            criterion.lambda_magnitude = 1.0
-            print(f"  [PHASE 2] Activation HV douce (λnp=2.0, λhv=0.5, λnt=0.2)")
+            criterion.lambda_magnitude = 10.0  # 1.0 → 10.0 (forcer gradients tranchants)
+            print(f"  [PHASE 2] HV Musclé v12-Pro (λnp=2.0, λhv=1.0, λmag=10.0)")
 
         elif epoch < 45:
-            # PHASE 2 (suite): Continuer avec mêmes lambdas
+            # PHASE 2 (suite): Continuer HV musclé v12-Pro
             criterion.lambda_np = 2.0
-            criterion.lambda_hv = 0.5
+            criterion.lambda_hv = 1.0  # Muscler les gradients
             criterion.lambda_nt = 0.2
-            criterion.lambda_magnitude = 1.0
-            print(f"  [PHASE 2] Activation HV douce (λnp=2.0, λhv=0.5, λnt=0.2)")
+            criterion.lambda_magnitude = 10.0  # Forcer gradients tranchants
+            print(f"  [PHASE 2] HV Musclé v12-Pro (λnp=2.0, λhv=1.0, λmag=10.0)")
 
         else:
-            # PHASE 3: Fine-tuning équilibré
+            # PHASE 3: Fine-tuning avec HV musclé v12-Pro
             criterion.lambda_np = 2.0
-            criterion.lambda_hv = 0.5
+            criterion.lambda_hv = 1.0  # Maintenir pression sur gradients
             criterion.lambda_nt = 0.5
-            criterion.lambda_magnitude = 1.0
-            print(f"  [PHASE 3] Fine-tuning équilibré (λnp=2.0, λhv=0.5, λnt=0.5)")
+            criterion.lambda_magnitude = 10.0  # Gradients tranchants jusqu'à la fin
+            print(f"  [PHASE 3] Fine-tuning v12-Pro (λnp=2.0, λhv=1.0, λnt=0.5, λmag=10.0)")
 
         train_loss, train_losses, train_metrics = train_epoch(model, train_loader, optimizer, criterion, device)
         print(f"Train - Loss: {train_loss:.4f}")
