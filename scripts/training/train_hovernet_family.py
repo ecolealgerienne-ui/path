@@ -399,8 +399,9 @@ def main():
                             shuffle=False, num_workers=0, pin_memory=False)
 
     # Modèle
+    # n_classes=2 pour données v12 (binaire: 0=background, 1=nucleus)
     print("\n🔧 Initialisation du décodeur HoVer-Net...")
-    model = HoVerNetDecoder(embed_dim=1536, n_classes=5, dropout=args.dropout)
+    model = HoVerNetDecoder(embed_dim=1536, n_classes=2, dropout=args.dropout)
     model.to(device)
 
     n_params = sum(p.numel() for p in model.parameters())

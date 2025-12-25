@@ -200,7 +200,8 @@ def main():
     backbone = ModelLoader.load_hoptimus0(device=args.device)
     backbone.eval()
 
-    hovernet = HoVerNetDecoder(embed_dim=1536, n_classes=5).to(args.device)
+    # n_classes=2 pour matcher le checkpoint entraîné sur données v12 (binaire: 0=bg, 1=nucleus)
+    hovernet = HoVerNetDecoder(embed_dim=1536, n_classes=2).to(args.device)
     checkpoint = torch.load(args.checkpoint, map_location=args.device)
     hovernet.load_state_dict(checkpoint['model_state_dict'])
     hovernet.eval()
