@@ -162,6 +162,26 @@ class FamilyHoVerDataset(Dataset):
         total_targets_gb = (self.np_targets.nbytes + self.hv_targets.nbytes + self.nt_targets.nbytes) / 1e9
         print(f"  → Targets: {total_targets_gb:.2f} GB")
 
+        # ✅ VALIDATION CRITIQUE: Vérifier taille des targets
+        target_size = self.np_targets.shape[1]
+        if target_size != 224:
+            print(f"\n" + "=" * 70)
+            print(f"⚠️  ATTENTION: Targets à {target_size}×{target_size} (attendu: 224×224)")
+            print(f"=" * 70)
+            print(f"")
+            print(f"   Les données ne sont PAS au format v12 (224×224 natif).")
+            print(f"   Les HV ont été calculés APRÈS resize → gradients dégradés!")
+            print(f"")
+            print(f"   Pour régénérer les données v12:")
+            print(f"   1. python scripts/preprocessing/prepare_family_data_FIXED_v12_COHERENT.py --family {family}")
+            print(f"   2. python scripts/preprocessing/extract_features_from_v12.py --family {family}")
+            print(f"")
+            print(f"=" * 70)
+
+            response = input("Continuer quand même? (y/N): ").strip().lower()
+            if response != 'y':
+                raise ValueError(f"Training annulé. Régénérez les données v12.")
+
         print(f"\n📊 Dataset famille {family}: {self.n_samples} samples (tout en RAM)")
 
     def __len__(self):
