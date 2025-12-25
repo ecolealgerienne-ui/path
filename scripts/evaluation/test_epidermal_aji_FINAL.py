@@ -311,7 +311,16 @@ def main():
 
             # Simple Connected Components (bypass HV)
             from scipy.ndimage import label as scipy_label
-            binary_pred = prob_map > 0.5
+
+            # Seuil adaptatif: le modèle est "timide" (max ~0.49 < 0.5)
+            # Les Transformers ont des distributions de probabilités différentes des CNN
+            threshold = 0.35  # Valeur empirique sûre pour HoVer-Net/Optimus
+            binary_pred = prob_map > threshold
+
+            # DEBUG: Afficher le max pour confirmer
+            if idx == test_indices[0]:
+                print(f"  [DEBUG] Prob Max: {prob_map.max():.4f} | Seuil: {threshold}")
+
             pred_inst, num_pred_instances = scipy_label(binary_pred)
             pred_inst = pred_inst.astype(np.int32)
 
