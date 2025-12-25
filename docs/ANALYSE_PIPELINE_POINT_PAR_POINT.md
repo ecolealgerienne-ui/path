@@ -1,25 +1,87 @@
 # ANALYSE DU PIPELINE POINT PAR POINT
 
-> **Date:** 2025-12-25
-> **Objectif:** Documenter chaque étape de traitement, entrées/sorties, pour identifier la source de l'écart Training (Dice 0.95) vs Évaluation (Dice 0.35, AJI 0.04)
+> **Date:** 2025-12-25 (mise à jour)
+> **Objectif:** Documenter chaque étape de traitement, entrées/sorties, pour identifier la source de l'écart Training (Dice 0.95) vs Évaluation (Dice 0.32, AJI 0.03)
 
 ---
 
-## 🔴 RÉSUMÉ EXÉCUTIF: BUG CRITIQUE IDENTIFIÉ
+## 🔴 RÉSUMÉ EXÉCUTIF: BUGS IDENTIFIÉS
 
-### Problème: INCOHÉRENCE RESIZE vs CENTER PADDING
+### Bug #1: CENTER PADDING au lieu de RESIZE (CORRIGÉ, mais pas suffisant)
 
 | Étape | Méthode | Taille | Problème |
 |-------|---------|--------|----------|
 | **Training** | Image 256→224 via `Resize()` | 224×224 | L'image est **COMPRESSÉE** |
 | **Training** | Targets 256→224 via `resize_targets()` | 224×224 | Targets **COMPRESSÉS** de la même façon |
 | **Test** | Image 256→224 via `Resize()` | 224×224 | L'image est **COMPRESSÉE** ✅ |
-| **Test** | Prédictions 224→256 via **CENTER PADDING** | 256×256 | ❌ **PAS COMPRESSÉ, DÉCALÉ** |
+| **Test** | Prédictions 224→256 via ~~CENTER PADDING~~ | 256×256 | ✅ CORRIGÉ → RESIZE |
 
-### Impact:
-- Training: Image et targets sont tous deux REDIMENSIONNÉS (squeezed) de 256→224
-- Test: L'image est redimensionnée, mais la prédiction est étendue par PADDING (pas resize inverse)
-- **Résultat**: Décalage spatial systématique = Dice 0.35, AJI 0.04
+**Statut:** ✅ Corrigé (commit fb66774) — Mais Dice toujours 0.32 après fix!
+
+---
+
+### 🔴🔴🔴 Bug #2: DATA MISMATCH v9 vs v12 (PROBABLE CAUSE RACINE)
+
+**Le script `extract_features_from_v9.py` charge par défaut le fichier v9:**
+```python
+# Ligne 66 de extract_features_from_v9.py:
+input_file = Path(f"data/family_FIXED/{args.family}_data_FIXED_v9_NUCLEI_ONLY.npz")
+```
+
+**Scénario probable:**
+1. ✅ Utilisateur crée v12: `epidermal_data_FIXED_v12_COHERENT.npz`
+2. ❌ Utilisateur extrait features SANS spécifier `--input_file` → utilise v9 par défaut
+3. ❌ Training utilise `epidermal_features.npz` + `epidermal_targets.npz` (générés depuis v9)
+4. ✅ Test utilise `epidermal_data_FIXED_v12_COHERENT.npz` (v12)
+
+**Conséquence:** Le modèle a été entraîné sur v9 (avec bug NP/NT), mais testé contre GT compatible v12!
+
+### Vérification nécessaire:
+
+```bash
+# Vérifier les dates des fichiers:
+ls -la data/cache/family_data/epidermal*.npz
+ls -la data/family_FIXED/epidermal*.npz
+
+# Si epidermal_features.npz est PLUS ANCIEN que epidermal_data_FIXED_v12_COHERENT.npz
+# → C'est le bug!
+```
+
+### Solution:
+
+```bash
+# Re-extraire features DEPUIS v12:
+python scripts/preprocessing/extract_features_from_v9.py \
+    --family epidermal \
+    --input_file data/family_FIXED/epidermal_data_FIXED_v12_COHERENT.npz \
+    --output_dir data/cache/family_data
+
+# Puis re-entraîner:
+python scripts/training/train_hovernet_family.py --family epidermal --epochs 50 --augment
+```
+
+---
+
+### Bug #3 potentiel: GT de test vs Targets d'entraînement
+
+**Test utilise:**
+```python
+gt_inst = get_correct_gt_instances(gt_mask)  # Depuis PanNuke brut (canal 0 + 1-4)
+```
+
+**Training utilise:**
+```python
+np_target = compute_np_target_v12(mask)  # mask[:,:,:5].sum() > 0 (union binaire)
+```
+
+Ces deux peuvent être différents si les canaux PanNuke ne correspondent pas exactement.
+
+---
+
+### Impact cumulé:
+- Bug #1 (padding): Corrigé
+- Bug #2 (v9/v12 mismatch): **PROBABLE CAUSE RACINE** - À vérifier
+- Bug #3 (GT vs targets): Potentiel - À vérifier après fix de #2
 
 ---
 
@@ -317,21 +379,19 @@ np_pred = torch.softmax(np_out, dim=1)[0].cpu().numpy().transpose(1, 2, 0)  # (2
 hv_pred = hv_out[0].cpu().numpy().transpose(1, 2, 0)  # (224, 224, 2)
 ```
 
-#### 🔴 Traitement 6: CENTER PADDING 224→256 (LE BUG!)
+#### ✅ Traitement 6: RESIZE 224→256 (CORRIGÉ - commit fb66774)
 ```python
-# LIGNE 316-325 du script:
-h, w = np_pred.shape[:2]  # 224, 224
-diff = (256 - 224) // 2  # 16 pixels
+# APRÈS FIX (lignes 321-329):
+# Resize NP (interpolation linéaire pour probabilités)
+np_pred_256 = cv2.resize(np_pred, (256, 256), interpolation=cv2.INTER_LINEAR)
 
-np_pred_256 = np.zeros((256, 256, 2), dtype=np_pred.dtype)
+# Resize HV (interpolation linéaire par canal)
 hv_pred_256 = np.zeros((256, 256, 2), dtype=hv_pred.dtype)
-
-# Place prédictions au CENTRE
-np_pred_256[diff:diff+h, diff:diff+w, :] = np_pred
-hv_pred_256[diff:diff+h, diff:diff+w, :] = hv_pred
+hv_pred_256[:, :, 0] = cv2.resize(hv_pred[:, :, 0], (256, 256), interpolation=cv2.INTER_LINEAR)
+hv_pred_256[:, :, 1] = cv2.resize(hv_pred[:, :, 1], (256, 256), interpolation=cv2.INTER_LINEAR)
 ```
 
-### 🔴🔴🔴 C'EST LE BUG! 🔴🔴🔴
+### ✅ Bug #1 corrigé — MAIS Dice toujours 0.32!
 
 ```
 PROBLÈME:
