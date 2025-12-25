@@ -196,10 +196,14 @@ def extract_pannuke_instances_NUCLEI_ONLY(mask: np.ndarray) -> np.ndarray:
     """
     ✅ FIX v9: Extrait UNIQUEMENT les instances de NOYAUX (Channels 0-4).
     ❌ EXCLUT le channel 5 (Epithelial/Tissue).
+
+    Supporte les deux résolutions: 256x256 (PanNuke) et 224x224 (H-optimus-0).
     """
     mask = normalize_mask_format(mask)
 
-    inst_map = np.zeros((PANNUKE_IMAGE_SIZE, PANNUKE_IMAGE_SIZE), dtype=np.int32)
+    # Utiliser la taille du masque (supporte 256 et 224)
+    h, w = mask.shape[:2]
+    inst_map = np.zeros((h, w), dtype=np.int32)
     instance_counter = 1
 
     # PRIORITÉ 1: Channel 0 (multi-type instances) - SOURCE PRIMAIRE
