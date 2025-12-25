@@ -489,25 +489,65 @@ def main():
         print(f"Epoch {epoch+1}/{args.epochs}")
         print(f"{'='*60}")
 
-        # --- PHASED TRAINING (Expert Spec) ---
-        # Phase 1 (0-14): Focus sur Segmentation (Dice/Focal uniquement)
-        # Phase 2 (15-34): Activation de la Séparation (HV)
-        # Phase 3 (35+): Fine-tuning global
+        # --- PHASED TRAINING (Expert Spec 2025-12-25) ---
+        #
+        # STRATÉGIE "VERROUILLAGE DU DICE":
+        # Phase 1: Le modèle apprend la "vérité géométrique" des noyaux (Dice cible: 0.85+)
+        # Phase 2: On "verrouille" NP avec LR ÷10 et active HV doucement (λhv=0.5)
+        # Phase 3: Fine-tuning équilibré
+        #
+        # NOUVEAUX LAMBDAS (Expert):
+        # | Phase | Epochs | λnp  | λhv | λnt | λmag |
+        # |-------|--------|------|-----|-----|------|
+        # | 1     | 0-14   | 1.5  | 0.0 | 0.0 | 0.0  |
+        # | 2     | 15-34  | 2.0  | 0.5 | 0.2 | 1.0  |
+        # | 3     | 35+    | 2.0  | 0.5 | 0.5 | 1.0  |
+        #
         if epoch < 15:
-            criterion.lambda_np = 1.0
-            criterion.lambda_hv = 0.0        # Éteint la séparation
-            criterion.lambda_magnitude = 0.0 # Éteint la magnitude
-            print(f"  [PHASE 1] Focus sur la Segmentation (Dice/Focal)")
-        elif epoch < 35:
-            criterion.lambda_np = 0.5        # Réduit pour laisser place à HV
-            criterion.lambda_hv = 1.0
-            criterion.lambda_magnitude = 5.0
-            print(f"  [PHASE 2] Activation de la Séparation des Noyaux (HV)")
-        else:
-            criterion.lambda_np = 1.0
-            criterion.lambda_hv = 1.0
+            # PHASE 1: Focus NP uniquement (objectif Dice 0.85+)
+            criterion.lambda_np = 1.5
+            criterion.lambda_hv = 0.0
+            criterion.lambda_nt = 0.0
+            criterion.lambda_magnitude = 0.0
+            print(f"  [PHASE 1] Focus Segmentation NP (λnp=1.5, objectif Dice>0.85)")
+
+        elif epoch == 15:
+            # TRANSITION: Activer LR différentiel pour np_head (÷10)
+            # Expert: "np_head reste stable mais peut vibrer légèrement pour s'harmoniser avec HV"
+            print("🔒 VERROUILLAGE DU DICE: LR np_head ÷ 10")
+
+            # Reconfigurer l'optimizer avec groupes de paramètres différentiels
+            np_head_params = list(model.np_head.parameters())
+            np_head_ids = set(id(p) for p in np_head_params)
+            other_params = [p for p in model.parameters() if id(p) not in np_head_ids]
+
+            optimizer = AdamW([
+                {'params': np_head_params, 'lr': args.lr / 10},  # NP head: LR ÷ 10
+                {'params': other_params, 'lr': args.lr}          # Reste: LR normal
+            ], weight_decay=1e-4)
+
+            # PHASE 2: Activation douce de HV
+            criterion.lambda_np = 2.0
+            criterion.lambda_hv = 0.5
+            criterion.lambda_nt = 0.2
             criterion.lambda_magnitude = 1.0
-            print(f"  [PHASE 3] Fine-tuning global (Équilibre)")
+            print(f"  [PHASE 2] Activation HV douce (λnp=2.0, λhv=0.5, λnt=0.2)")
+
+        elif epoch < 35:
+            # PHASE 2 (suite): Continuer avec mêmes lambdas
+            criterion.lambda_np = 2.0
+            criterion.lambda_hv = 0.5
+            criterion.lambda_nt = 0.2
+            criterion.lambda_magnitude = 1.0
+            print(f"  [PHASE 2] Activation HV douce (λnp=2.0, λhv=0.5, λnt=0.2)")
+
+        else:
+            # PHASE 3: Fine-tuning équilibré
+            criterion.lambda_np = 2.0
+            criterion.lambda_hv = 0.5
+            criterion.lambda_nt = 0.5
+            criterion.lambda_magnitude = 1.0
+            print(f"  [PHASE 3] Fine-tuning équilibré (λnp=2.0, λhv=0.5, λnt=0.5)")
 
         train_loss, train_losses, train_metrics = train_epoch(model, train_loader, optimizer, criterion, device)
         print(f"Train - Loss: {train_loss:.4f}")
