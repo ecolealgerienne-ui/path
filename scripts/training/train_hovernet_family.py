@@ -379,8 +379,8 @@ def main():
     parser.add_argument('--output_dir', type=str, default='models/checkpoints')
     parser.add_argument('--augment', action='store_true',
                        help='Activer data augmentation')
-    parser.add_argument('--dropout', type=float, default=0.3,
-                       help='Dropout pour régularisation (v12-Final: 0.3 contre overfitting)')
+    parser.add_argument('--dropout', type=float, default=0.2,
+                       help='Dropout pour régularisation (v12-Gold: 0.2 équilibré)')
 
     # Options de loss weighting
     parser.add_argument('--lambda_np', type=float, default=1.0,
@@ -490,29 +490,29 @@ def main():
         print(f"Epoch {epoch+1}/{args.epochs}")
         print(f"{'='*60}")
 
-        # --- PHASED TRAINING v12-Final (Expert Spec 2025-12-25) ---
+        # --- PHASED TRAINING v12-Gold (Expert Spec 2025-12-25) ---
         #
         # STRATÉGIE "VERROUILLAGE DU DICE":
-        # Phase 1 (ÉTENDUE): 20 époques pour atteindre Dice 0.85+ avant d'activer HV
+        # Phase 1 (LONGUE): 25 époques pour atteindre plateau Dice stable
         # Phase 2: Gel du tronc commun si Dice > 0.80, activation douce HV
         # Phase 3: Fine-tuning équilibré
         #
-        # LAMBDAS v12-Final:
+        # LAMBDAS v12-Gold:
         # | Phase | Epochs | λnp  | λhv | λnt | λmag |
         # |-------|--------|------|-----|-----|------|
-        # | 1     | 0-19   | 1.5  | 0.0 | 0.0 | 0.0  |
-        # | 2     | 20-39  | 2.0  | 0.5 | 0.2 | 1.0  |
-        # | 3     | 40+    | 2.0  | 0.5 | 0.5 | 1.0  |
+        # | 1     | 0-24   | 1.5  | 0.0 | 0.0 | 0.0  |
+        # | 2     | 25-44  | 2.0  | 0.5 | 0.2 | 1.0  |
+        # | 3     | 45+    | 2.0  | 0.5 | 0.5 | 1.0  |
         #
-        if epoch < 20:
-            # PHASE 1 ÉTENDUE: Focus NP uniquement (objectif Dice 0.85+)
+        if epoch < 25:
+            # PHASE 1 LONGUE: Focus NP uniquement (objectif Dice plateau stable)
             criterion.lambda_np = 1.5
             criterion.lambda_hv = 0.0
             criterion.lambda_nt = 0.0
             criterion.lambda_magnitude = 0.0
-            print(f"  [PHASE 1] Focus Segmentation NP (λnp=1.5, objectif Dice>0.85)")
+            print(f"  [PHASE 1] Focus Segmentation NP (λnp=1.5, objectif Dice plateau)")
 
-        elif epoch == 20:
+        elif epoch == 25:
             # TRANSITION: Vérifier si Dice > 0.80 pour geler le tronc commun
             # Expert: "Si le PixelShuffle a appris à reconstruire parfaitement,
             #          ne le laisse pas se corrompre par la suite"
@@ -563,7 +563,7 @@ def main():
             criterion.lambda_magnitude = 1.0
             print(f"  [PHASE 2] Activation HV douce (λnp=2.0, λhv=0.5, λnt=0.2)")
 
-        elif epoch < 40:
+        elif epoch < 45:
             # PHASE 2 (suite): Continuer avec mêmes lambdas
             criterion.lambda_np = 2.0
             criterion.lambda_hv = 0.5
