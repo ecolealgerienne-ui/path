@@ -375,8 +375,8 @@ def main():
     # Options de loss weighting
     parser.add_argument('--lambda_np', type=float, default=1.0,
                        help='Poids loss NP (segmentation)')
-    parser.add_argument('--lambda_hv', type=float, default=2.0,
-                       help='Poids loss HV (séparation instances)')
+    parser.add_argument('--lambda_hv', type=float, default=1.0,
+                       help='Poids loss HV (réduit de 2.0 à 1.0 pour équilibrer avec NP)')
     parser.add_argument('--lambda_nt', type=float, default=1.0,
                        help='Poids loss NT (classification)')
     parser.add_argument('--lambda_magnitude', type=float, default=1.0,
