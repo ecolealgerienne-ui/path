@@ -388,8 +388,9 @@ class HoVerNetLoss(nn.Module):
             total_loss, dict avec losses individuelles
         """
         # NP loss: BCE (avec class weights) + Dice
-        # Utilise F.cross_entropy avec weights pour gérer le device automatiquement
-        np_bce = F.cross_entropy(np_pred, np_target.long(), weight=self.np_class_weights)
+        # Déplacer weights sur le bon device (GPU)
+        weights = self.np_class_weights.to(np_pred.device)
+        np_bce = F.cross_entropy(np_pred, np_target.long(), weight=weights)
         np_dice = self.dice_loss(np_pred, np_target.float())
         np_loss = np_bce + np_dice
 
