@@ -421,10 +421,10 @@ class HoVerNetLoss(nn.Module):
         #   - Lambda_magnitude=1.0 (ANCIEN 2025-12-24): masking bugué → magnitude 0.02
         #   - Lambda_magnitude=5.0 (EXPERT FIX 2025-12-24): masking corrigé → magnitude attendue 0.5+
         #
-        # EXPERT FIX 2025-12-24:
-        # - hv_gradient: 3.0× (force variations spatiales)
-        # - hv_magnitude: 5.0× (priorise amplitude forte) via self.lambda_magnitude
-        hv_loss = hv_l1 + 3.0 * hv_gradient + self.lambda_magnitude * hv_magnitude
+        # FIX 2025-12-25: Réduire multiplicateurs pour équilibrer avec NP
+        # Avant: 3.0×gradient + 5.0×magnitude → loss HV ~7.0 (dominait tout)
+        # Après: 1.0×gradient + 1.0×magnitude → loss HV ~1.0 (équilibré)
+        hv_loss = hv_l1 + 1.0 * hv_gradient + self.lambda_magnitude * hv_magnitude
 
         # NT loss: CE MASQUÉ (uniquement sur pixels de noyaux)
         # FIX CRITIQUE 2025-12-25: Avant, calculé sur TOUS pixels → 85% background
