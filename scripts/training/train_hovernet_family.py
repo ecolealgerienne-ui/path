@@ -173,12 +173,15 @@ class FamilyHoVerDataset(Dataset):
         hv_target = self.hv_targets[idx].copy()
         nt_target = self.nt_targets[idx].copy()
 
-        # Utilisation du module centralisé pour resize 256 → 224
-        np_target, hv_target, nt_target = resize_targets(
-            np_target, hv_target, nt_target,
-            target_size=224,
-            mode="training"
-        )
+        # ✅ FIX: Skip resize si données déjà à 224 (v12)
+        # Le double resize avec bilinear dégradait les gradients HV
+        current_size = np_target.shape[0]
+        if current_size != 224:
+            np_target, hv_target, nt_target = resize_targets(
+                np_target, hv_target, nt_target,
+                target_size=224,
+                mode="training"
+            )
 
         if self.augmenter is not None:
             features, np_target, hv_target, nt_target = self.augmenter(
