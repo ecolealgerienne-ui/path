@@ -340,10 +340,13 @@ def main():
 
             # Extract features
             features = backbone.forward_features(tensor)
-            patch_tokens = features[:, 1:257, :]  # (1, 256, 1536)
+            # FIX Register Token Bug (2025-12-25):
+            # Envoyer les 261 tokens complets au décodeur
+            # Le décodeur extrait lui-même les indices 5-260 (patches spatiaux)
+            # AVANT: patch_tokens = features[:, 1:257, :] ← ERREUR: incluait les Registers!
 
-            # Predict
-            np_out, hv_out, nt_out = hovernet(patch_tokens)
+            # Predict - Le décodeur gère le slicing correctement
+            np_out, hv_out, nt_out = hovernet(features)  # (1, 261, 1536)
 
             # ===================================================================
             # STRATÉGIE EXPERT 2025-12-25: Évaluation en 224×224 (résolution native)
@@ -440,8 +443,10 @@ def main():
             # Compute metrics
             aji = compute_aji(pred_inst, gt_inst)
 
-            # Dice calculation (tout en 224×224 - résolution native du modèle)
-            dice = compute_dice((prob_map > 0.5).astype(np.uint8), (gt_inst > 0).astype(np.uint8))
+            # Dice calculation basé sur la segmentation RÉELLE (Watershed)
+            # FIX (2025-12-25): Utiliser pred_inst > 0 au lieu de prob_map > 0.5
+            # Car le modèle peut être "timide" (max prob < 0.5) mais Watershed compense
+            dice = compute_dice((pred_inst > 0).astype(np.uint8), (gt_inst > 0).astype(np.uint8))
 
             pq, dq, sq, _ = compute_panoptic_quality(pred_inst, gt_inst)
 
