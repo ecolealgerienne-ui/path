@@ -280,64 +280,31 @@ def main():
             np_out, hv_out, nt_out = hovernet(patch_tokens)
 
             # ===================================================================
-            # FIX EXPERT (2025-12-24): Correction des axes pour cv2.resize
+            # STRATÉGIE EXPERT 2025-12-25: Évaluation en 224×224 (résolution native)
             # ===================================================================
-            # 1. Conversion Numpy ET correction des axes
-            #    PyTorch: [B, C, H, W] → Enlever batch → [C, H, W]
-            #    OpenCV resize attend: [H, W, C]
-            #    Donc: transpose(1, 2, 0) pour passer de [C, H, W] à [H, W, C]
-            np_pred = torch.softmax(np_out, dim=1)[0].cpu().numpy().transpose(1, 2, 0)  # (224, 224, 2)
-            hv_pred = hv_out[0].cpu().numpy().transpose(1, 2, 0)  # (224, 224, 2)
+            # Le modèle a été entraîné en 224×224. Pour une évaluation correcte:
+            # - Prédictions: rester en 224×224 (natif, pas d'interpolation)
+            # - GT: resize 256→224 avec INTER_NEAREST (préserve IDs instances)
+            # ===================================================================
 
-            # DEBUG: Check which channel has nuclei
-            if idx == test_indices[0]:  # Print once
+            # 1. Prédictions NATIVES (224×224) - PAS de resize
+            prob_map = torch.softmax(np_out, dim=1)[0, 1].cpu().numpy()  # (224, 224)
+            hv_map = hv_out[0].cpu().numpy()  # (2, 224, 224)
+
+            # DEBUG
+            if idx == test_indices[0]:
                 print(f"\n🔍 DEBUG (first sample):")
-                print(f"  NP shape after transpose: {np_pred.shape}")
-                print(f"  HV shape after transpose: {hv_pred.shape}")
-                print(f"  NP channel 0 max: {np_pred[:, :, 0].max():.4f}")
-                print(f"  NP channel 1 max: {np_pred[:, :, 1].max():.4f}")
-                print(f"  HV max: {hv_pred.max():.4f}")
-
-            # 2. RESIZE 224→256 (pour matcher le GT qui est à 256×256)
-            #    ===================================================================
-            #    FIX 2025-12-25: RESIZE au lieu de CENTER PADDING
-            #    ===================================================================
-            #    EXPLICATION:
-            #    - Training: Image 256→224 (resize), Target 256→224 (resize)
-            #    - Test: Image 256→224 (resize), donc Pred doit être 224→256 (resize INVERSE)
-            #    - Le center padding était FAUX car create_hoptimus_transform() fait
-            #      un Resize() qui COMPRESSE l'image, pas un crop central!
-            #    - AVANT: center padding → décalage spatial → AJI 0.04
-            #    - APRÈS: resize inverse → alignement correct → AJI attendu >0.60
-
-            # Resize NP (interpolation linéaire pour probabilités)
-            np_pred_256 = cv2.resize(np_pred, (256, 256), interpolation=cv2.INTER_LINEAR)
-
-            # Resize HV (interpolation linéaire par canal)
-            hv_pred_256 = np.zeros((256, 256, 2), dtype=hv_pred.dtype)
-            hv_pred_256[:, :, 0] = cv2.resize(hv_pred[:, :, 0], (256, 256),
-                                              interpolation=cv2.INTER_LINEAR)
-            hv_pred_256[:, :, 1] = cv2.resize(hv_pred[:, :, 1], (256, 256),
-                                              interpolation=cv2.INTER_LINEAR)
-
-            # 3. Extraction du canal Noyaux (canal 1)
-            prob_map = np_pred_256[:, :, 1]  # (256, 256)
-
-            # 4. Repasser HV en [C, H, W] pour extract_instances_hv_magnitude
-            hv_map = hv_pred_256.transpose(2, 0, 1)  # (2, 256, 256)
-
-            if idx == test_indices[0]:  # Print once
                 print(f"  prob_map shape: {prob_map.shape}, max: {prob_map.max():.4f}")
                 print(f"  hv_map shape: {hv_map.shape}, max: {hv_map.max():.4f}")
 
-            # 5. Extract instances à 256×256 (résolution GT)
-            #    Plus besoin de resize après → alignement spatial parfait
-            #    ⭐ FIX ANTI-CONFETTIS: Utilise nouveaux params (min_size=50, dist_threshold=8)
+            # 2. GT adapté: 256→224 avec INTER_NEAREST (préserve les IDs)
+            gt_inst_256 = gt_mask[:, :, 0].astype(np.int32)  # Canal 0 brut
+            gt_inst = cv2.resize(gt_inst_256, (224, 224), interpolation=cv2.INTER_NEAREST)
+
+            # 3. Extraction instances (tout en 224×224)
             pred_inst = extract_instances_hv_magnitude(prob_map, hv_map)
 
-            # Compute GT instances
-            # ⭐ TEST EXPERT: Utilise CANAL 0 BRUT (sans traitement additionnel)
-            gt_inst = gt_mask[:, :, 0].astype(np.int32)
+            # gt_inst déjà calculé ci-dessus (256→224 avec INTER_NEAREST)
 
             # Count instances (needed for skip logic)
             n_pred = len(np.unique(pred_inst)) - 1  # -1 for background
@@ -356,15 +323,15 @@ def main():
                 plt.imshow(image)
                 plt.title("Image Originale")
 
-                # 2. Prédiction (Prob map > 0.5)
+                # 2. Prédiction 224×224 (Prob map > 0.5)
                 plt.subplot(1, 3, 2)
                 plt.imshow(prob_map > 0.5, cmap='gray')
-                plt.title(f"Prédiction (n={n_pred})")
+                plt.title(f"Pred 224×224 (n={n_pred})")
 
-                # 3. GT Canal 0 brut
+                # 3. GT Canal 0 (resized to 224×224)
                 plt.subplot(1, 3, 3)
                 plt.imshow(gt_inst > 0, cmap='gray')
-                plt.title(f"GT Canal 0 (n={n_gt})")
+                plt.title(f"GT 224×224 (n={n_gt})")
 
                 plt.tight_layout()
                 import os
@@ -394,7 +361,7 @@ def main():
             # Compute metrics
             aji = compute_aji(pred_inst, gt_inst)
 
-            # Dice calculation (prob_map déjà à 256×256)
+            # Dice calculation (tout en 224×224 - résolution native du modèle)
             dice = compute_dice((prob_map > 0.5).astype(np.uint8), (gt_inst > 0).astype(np.uint8))
 
             pq, dq, sq, _ = compute_panoptic_quality(pred_inst, gt_inst)
