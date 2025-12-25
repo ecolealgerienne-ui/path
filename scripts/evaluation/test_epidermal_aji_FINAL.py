@@ -306,23 +306,27 @@ def main():
                 print(f"  NP channel 1 max: {np_pred[:, :, 1].max():.4f}")
                 print(f"  HV max: {hv_pred.max():.4f}")
 
-            # 2. CENTER PADDING 224→256 (au lieu de resize qui déforme)
+            # 2. RESIZE 224→256 (pour matcher le GT qui est à 256×256)
             #    ===================================================================
-            #    FIX EXPERT #2 (2025-12-24): PADDING au lieu de RESIZE
+            #    FIX 2025-12-25: RESIZE au lieu de CENTER PADDING
             #    ===================================================================
-            #    CAUSE: H-optimus extrait crops centraux 224×224 d'images 256×256
-            #    AVANT: cv2.resize() étirait → décalage spatial → PQ=0.00
-            #    APRÈS: Center padding préserve positions exactes
-            h, w = np_pred.shape[:2]  # 224, 224
-            diff = (256 - 224) // 2  # 16 pixels de padding de chaque côté
+            #    EXPLICATION:
+            #    - Training: Image 256→224 (resize), Target 256→224 (resize)
+            #    - Test: Image 256→224 (resize), donc Pred doit être 224→256 (resize INVERSE)
+            #    - Le center padding était FAUX car create_hoptimus_transform() fait
+            #      un Resize() qui COMPRESSE l'image, pas un crop central!
+            #    - AVANT: center padding → décalage spatial → AJI 0.04
+            #    - APRÈS: resize inverse → alignement correct → AJI attendu >0.60
 
-            # Créer images vides 256×256
-            np_pred_256 = np.zeros((256, 256, 2), dtype=np_pred.dtype)
+            # Resize NP (interpolation linéaire pour probabilités)
+            np_pred_256 = cv2.resize(np_pred, (256, 256), interpolation=cv2.INTER_LINEAR)
+
+            # Resize HV (interpolation linéaire par canal)
             hv_pred_256 = np.zeros((256, 256, 2), dtype=hv_pred.dtype)
-
-            # Placer prédictions au CENTRE (positions exactes préservées)
-            np_pred_256[diff:diff+h, diff:diff+w, :] = np_pred
-            hv_pred_256[diff:diff+h, diff:diff+w, :] = hv_pred
+            hv_pred_256[:, :, 0] = cv2.resize(hv_pred[:, :, 0], (256, 256),
+                                              interpolation=cv2.INTER_LINEAR)
+            hv_pred_256[:, :, 1] = cv2.resize(hv_pred[:, :, 1], (256, 256),
+                                              interpolation=cv2.INTER_LINEAR)
 
             # 3. Extraction du canal Noyaux (canal 1)
             prob_map = np_pred_256[:, :, 1]  # (256, 256)
