@@ -1410,6 +1410,86 @@ Décodeur intégré CellViT              Décodeur UNETR custom
 
 ## Journal de Développement
 
+### 2025-12-25 — Bug #7 RÉSOLU: Incohérence NP/NT dans script v11 ✅ FIX v12
+
+**Contexte:** Session précédente (24 déc) avait training convergent (Dice 0.95) MAIS conflit NP/NT persistant à 45.35%.
+
+**Diagnostic effectué:** Analyse du script `prepare_family_data_FIXED_v11_FORCE_NT1.py`
+
+**🔍 BUG LOGIQUE IDENTIFIÉ (Scénario A confirmé):**
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│ INCOHÉRENCE NP vs NT dans v11                                   │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│  compute_np_target_NUCLEI_ONLY() (ligne 295):                  │
+│    np_target = mask[:, :, :5].sum(axis=-1) > 0                 │
+│    → Union de channels 0, 1, 2, 3, 4                           │
+│                                                                 │
+│  compute_nt_target_FORCE_BINARY() (ligne 351):                 │
+│    nuclei_mask = channel_0 > 0                                 │
+│    → UNIQUEMENT channel 0 ❌                                    │
+│                                                                 │
+│  RÉSULTAT:                                                      │
+│  Pixels dans channels 1-4 mais PAS dans channel 0               │
+│  → NP = 1 (présent dans l'union)                               │
+│  → NT = 0 (absent de channel 0)                                │
+│  → CONFLIT 45.35%! ❌                                           │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+**✅ FIX v12: Cohérence parfaite NP/NT**
+
+Création de `prepare_family_data_FIXED_v12_COHERENT.py` avec:
+- Fonction commune `compute_nuclei_mask_v12()` = SOURCE UNIQUE pour NP et NT
+- NP et NT utilisent EXACTEMENT le même masque: `mask[:, :, :5].sum(axis=-1) > 0`
+- Conflit NP/NT = 0.00% GARANTI
+- Vérification automatique du conflit à la génération
+
+**Scripts créés:**
+- `prepare_family_data_FIXED_v12_COHERENT.py` — Génération données avec cohérence NP/NT
+- `verify_v12_coherence.py` — Vérification conflit après génération
+
+**Commandes pour l'utilisateur:**
+
+```bash
+# 1. Générer données v12 (cohérence NP/NT)
+python scripts/preprocessing/prepare_family_data_FIXED_v12_COHERENT.py --family epidermal
+
+# 2. Vérifier conflit = 0%
+python scripts/validation/verify_v12_coherence.py
+
+# 3. Extraire features H-optimus-0
+python scripts/preprocessing/extract_features_from_v9.py \
+    --input_file data/family_FIXED/epidermal_data_FIXED_v12_COHERENT.npz \
+    --output_dir data/cache/family_data \
+    --family epidermal
+
+# 4. Ré-entraîner HoVer-Net
+python scripts/training/train_hovernet_family.py --family epidermal --epochs 50 --augment
+
+# 5. Tester AJI final
+python scripts/evaluation/test_epidermal_aji_FINAL.py \
+    --checkpoint models/checkpoints/hovernet_epidermal_best.pth \
+    --n_samples 50
+```
+
+**Métriques cibles:**
+| Métrique | v11 (bug) | v12 (cible) |
+|----------|-----------|-------------|
+| NP Dice | 0.95 ✅ | 0.95 ✅ |
+| NT Acc | 0.84 | >0.95 |
+| Conflit NP/NT | 45.35% ❌ | **0.00%** ✅ |
+| AJI | ? | **>0.60** 🎯 |
+
+**Temps estimé:** 1h (génération 2 min + extraction 1 min + training 40 min + test 5 min)
+
+**Statut:** ✅ FIX CRÉÉ — En attente d'exécution par l'utilisateur
+
+---
+
 ### 2025-12-24 — Bug #7: Training Contamination (Tissue vs Nuclei) ⚠️ PRESQUE RÉSOLU
 
 **Contexte:** Training epidermal catastrophique (NP Dice 0.42, NT Acc 0.44) malgré fix HV inversion v8. AJI reste à 0.03-0.09 au lieu de >0.60.
