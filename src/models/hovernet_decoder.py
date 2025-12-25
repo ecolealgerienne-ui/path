@@ -224,7 +224,12 @@ class HoVerNetLoss(nn.Module):
         self.lambda_magnitude = lambda_magnitude
         self.adaptive = adaptive
 
-        self.bce = nn.CrossEntropyLoss()
+        # Class weights pour NP: réduire over-segmentation
+        # Expert: Le modèle prédit noyau sur 3-4× la surface réelle
+        # Poids [1.0, 0.2] = pénalise moins les noyaux → modèle plus conservateur
+        # Note: weights doivent être sur le même device que les inputs (géré dans forward)
+        self.register_buffer('np_class_weights', torch.tensor([1.0, 0.2]))
+        self.bce = None  # Créé dynamiquement dans forward pour le bon device
         self.smooth_l1 = nn.SmoothL1Loss()  # Remplace MSE - moins sensible aux outliers
 
         # Uncertainty Weighting: log(σ²) pour chaque tâche (paramètres appris)
@@ -382,8 +387,9 @@ class HoVerNetLoss(nn.Module):
         Returns:
             total_loss, dict avec losses individuelles
         """
-        # NP loss: BCE + Dice
-        np_bce = self.bce(np_pred, np_target.long())
+        # NP loss: BCE (avec class weights) + Dice
+        # Utilise F.cross_entropy avec weights pour gérer le device automatiquement
+        np_bce = F.cross_entropy(np_pred, np_target.long(), weight=self.np_class_weights)
         np_dice = self.dice_loss(np_pred, np_target.float())
         np_loss = np_bce + np_dice
 
