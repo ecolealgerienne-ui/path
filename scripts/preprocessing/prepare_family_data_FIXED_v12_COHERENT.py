@@ -275,14 +275,17 @@ def compute_nt_target_v12(mask: np.ndarray) -> np.ndarray:
     - 0: Background (pas de noyau)
     - 1: Nucleus (noyau, peu importe le type)
 
+    Supporte les deux résolutions: 256x256 (PanNuke) et 224x224 (H-optimus-0).
+
     Returns:
         nt_target: Class map (H, W) en int64 [0-1]
     """
     # ✅ v12: Utilise la MÊME logique que NP
     nuclei_mask = compute_nuclei_mask_v12(mask)
 
-    # Initialiser avec classe 0 (background)
-    nt_target = np.zeros((PANNUKE_IMAGE_SIZE, PANNUKE_IMAGE_SIZE), dtype=np.int64)
+    # Utiliser la taille du masque (supporte 256 et 224)
+    h, w = nuclei_mask.shape
+    nt_target = np.zeros((h, w), dtype=np.int64)
 
     # ✅ v12: Force NT=1 pour TOUS les pixels du masque commun
     nt_target[nuclei_mask] = 1
