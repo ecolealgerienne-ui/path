@@ -228,16 +228,16 @@ def main():
     data = np.load(data_file)
     images = data['images']
 
-    # PanNuke base directory (centralisé)
-    pannuke_dir = Path(DEFAULT_PANNUKE_DIR)
-    if not pannuke_dir.exists():
-        pannuke_dir = Path("data/PanNuke")  # Fallback
-
-    masks = np.load(pannuke_dir / "fold0" / "masks.npy", mmap_mode='r')  # GT complet
-
-    # Use fold IDs to get correct GT masks
-    fold_ids = data.get('fold_ids', np.zeros(len(images), dtype=np.int32))
-    image_ids = data.get('image_ids', np.arange(len(images)))
+    # =========================================================================
+    # FIX EXPERT 2025-12-25: Utiliser np_targets du NPZ (alignement garanti)
+    # =========================================================================
+    # PROBLÈME: L'indexation fold_id/img_id pour charger les masques PanNuke
+    #           était décalée → 40% de GT vides → Dice 0.22
+    # SOLUTION: Utiliser np_targets du même fichier (aligné par définition)
+    #           et créer instances via connected components
+    # =========================================================================
+    np_targets = data['np_targets']  # Binary masks (N, 256, 256) float32 [0, 1]
+    print(f"  → np_targets shape: {np_targets.shape}")
 
     n_test = min(args.n_samples, len(images))
     test_indices = np.random.choice(len(images), n_test, replace=False)
@@ -253,18 +253,15 @@ def main():
 
     with torch.no_grad():
         for idx in tqdm(test_indices, desc="Testing"):
-            # Get image and GT
+            # Get image and GT from NPZ (ALIGNÉ par définition)
             image = images[idx]
-            fold_id = fold_ids[idx]
-            img_id = image_ids[idx]
+            np_target = np_targets[idx]  # Binary mask (256, 256) float32
 
-            # Load correct GT mask
-            if fold_id == 0:
-                gt_mask = masks[img_id]
-            else:
-                # If fold 1 or 2, load from correct fold
-                fold_masks = np.load(pannuke_dir / f"fold{fold_id}" / "masks.npy", mmap_mode='r')
-                gt_mask = fold_masks[img_id]
+            # Créer GT instances via connected components (depuis np_target aligné)
+            from scipy import ndimage
+            gt_binary = (np_target > 0.5).astype(np.uint8)
+            gt_inst_256, n_gt_instances = ndimage.label(gt_binary)
+            gt_inst_256 = gt_inst_256.astype(np.int32)
 
             # Preprocess
             if image.dtype != np.uint8:
@@ -298,7 +295,7 @@ def main():
                 print(f"  hv_map shape: {hv_map.shape}, max: {hv_map.max():.4f}")
 
             # 2. GT adapté: 256→224 avec INTER_NEAREST (préserve les IDs)
-            gt_inst_256 = gt_mask[:, :, 0].astype(np.int32)  # Canal 0 brut
+            # gt_inst_256 déjà créé via connected components ci-dessus
             gt_inst = cv2.resize(gt_inst_256, (224, 224), interpolation=cv2.INTER_NEAREST)
 
             # 3. Extraction instances (tout en 224×224)
@@ -341,15 +338,14 @@ def main():
                 print(f"\n📸 DEBUG: Image sauvée → results/DEBUG_CRASH_TEST.png")
                 print("   REGARDEZ cette image pour diagnostiquer le problème!")
 
-                # DEBUG GT MASK
-                print(f"\n🔍 DEBUG GT MASK:")
-                print(f"  gt_mask shape: {gt_mask.shape}")
-                print(f"  gt_mask dtype: {gt_mask.dtype}")
-                for c in range(gt_mask.shape[2]):
-                    channel_max = gt_mask[:, :, c].max()
-                    channel_nonzero = (gt_mask[:, :, c] > 0).sum()
-                    print(f"  Channel {c}: max={channel_max}, nonzero_pixels={channel_nonzero}")
-                print(f"  gt_inst unique IDs: {np.unique(gt_inst)}")
+                # DEBUG GT (from np_targets NPZ - aligné par définition)
+                print(f"\n🔍 DEBUG GT (NPZ np_targets):")
+                print(f"  np_target shape: {np_target.shape}")
+                print(f"  np_target dtype: {np_target.dtype}")
+                print(f"  np_target range: [{np_target.min():.3f}, {np_target.max():.3f}]")
+                print(f"  gt_binary nonzero: {gt_binary.sum()} pixels")
+                print(f"  gt_inst_256 instances: {n_gt_instances}")
+                print(f"  gt_inst (224×224) unique IDs: {np.unique(gt_inst)}")
 
             # ⚠️ CRITICAL: Skip empty GT (évite division par zéro dans AJI)
             if n_gt == 0:
