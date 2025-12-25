@@ -38,6 +38,82 @@ class UpsampleBlock(nn.Module):
         return self.conv(x)
 
 
+class PixelShuffleBlock(nn.Module):
+    """
+    Bloc d'upsampling avec PixelShuffle (Sub-Pixel Convolution).
+
+    Avantages vs Bilinear:
+    - Apprend l'upsampling (pas d'interpolation fixe)
+    - Produit des bords plus nets
+    - Utilisé dans les réseaux de super-résolution
+
+    Référence: "Real-Time Single Image and Video Super-Resolution" (Shi et al. 2016)
+    """
+
+    def __init__(self, in_channels: int, out_channels: int, scale_factor: int = 2):
+        super().__init__()
+        # Pour PixelShuffle(r), on a besoin de r² fois plus de canaux en entrée
+        mid_channels = out_channels * (scale_factor ** 2)
+
+        self.conv1 = nn.Sequential(
+            nn.Conv2d(in_channels, mid_channels, 3, padding=1, bias=False),
+            nn.BatchNorm2d(mid_channels),
+            nn.ReLU(inplace=True),
+        )
+        self.pixel_shuffle = nn.PixelShuffle(scale_factor)
+        self.conv2 = nn.Sequential(
+            nn.Conv2d(out_channels, out_channels, 3, padding=1, bias=False),
+            nn.BatchNorm2d(out_channels),
+            nn.ReLU(inplace=True),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = self.conv1(x)           # (B, out*4, H, W)
+        x = self.pixel_shuffle(x)   # (B, out, H*2, W*2)
+        x = self.conv2(x)           # (B, out, H*2, W*2)
+        return x
+
+
+class FocalLoss(nn.Module):
+    """
+    Focal Loss pour gérer le déséquilibre de classes.
+
+    Focal Loss = -α(1-p)^γ * log(p)
+
+    - Downweight les exemples faciles (background)
+    - Focus sur les exemples difficiles (bords des noyaux)
+
+    Référence: "Focal Loss for Dense Object Detection" (Lin et al. 2017)
+    """
+
+    def __init__(self, alpha: float = 0.25, gamma: float = 2.0, reduction: str = 'mean'):
+        super().__init__()
+        self.alpha = alpha
+        self.gamma = gamma
+        self.reduction = reduction
+
+    def forward(self, inputs: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            inputs: (B, C, H, W) logits
+            targets: (B, H, W) class indices
+        """
+        ce_loss = F.cross_entropy(inputs, targets, reduction='none')
+        p = torch.exp(-ce_loss)  # Probabilité de la bonne classe
+        focal_weight = (1 - p) ** self.gamma
+
+        # Alpha weighting pour classe 1 (noyau)
+        alpha_weight = torch.where(targets == 1, self.alpha, 1 - self.alpha)
+
+        focal_loss = alpha_weight * focal_weight * ce_loss
+
+        if self.reduction == 'mean':
+            return focal_loss.mean()
+        elif self.reduction == 'sum':
+            return focal_loss.sum()
+        return focal_loss
+
+
 class DecoderHead(nn.Module):
     """
     Tête de décodage légère.
@@ -105,10 +181,11 @@ class HoVerNetDecoder(nn.Module):
 
         # ===== TRONC COMMUN (upsampling partagé) =====
         # 16x16 → 32 → 64 → 128 → 224
-        self.up1 = UpsampleBlock(bottleneck_dim, 128)   # 16→32, 256→128
-        self.up2 = UpsampleBlock(128, 64)               # 32→64, 128→64
-        self.up3 = UpsampleBlock(64, 64)                # 64→128, 64→64
-        self.up4 = UpsampleBlock(64, 64)                # 128→256, 64→64
+        # Expert: Remplacer bilinear par PixelShuffle pour bords nets
+        self.up1 = PixelShuffleBlock(bottleneck_dim, 128)  # 16→32, 256→128
+        self.up2 = PixelShuffleBlock(128, 64)              # 32→64, 128→64
+        self.up3 = PixelShuffleBlock(64, 64)               # 64→128, 64→64
+        self.up4 = PixelShuffleBlock(64, 64)               # 128→256, 64→64
 
         # Dropout entre les blocs d'upsampling
         self.dropout = nn.Dropout2d(dropout) if dropout > 0 else nn.Identity()
@@ -224,13 +301,11 @@ class HoVerNetLoss(nn.Module):
         self.lambda_magnitude = lambda_magnitude
         self.adaptive = adaptive
 
-        # Class weights pour NP: réduire over-segmentation
-        # Expert: Le modèle prédit noyau sur 3-4× la surface réelle
-        # Poids [1.0, 0.2] = pénalise moins les noyaux → modèle plus conservateur
-        # Note: weights doivent être sur le même device que les inputs (géré dans forward)
-        self.register_buffer('np_class_weights', torch.tensor([1.0, 0.2]))
-        self.bce = None  # Créé dynamiquement dans forward pour le bon device
-        self.smooth_l1 = nn.SmoothL1Loss()  # Remplace MSE - moins sensible aux outliers
+        # NP Loss: Focal + Dice (Phase 1 Phased Training)
+        # Expert: Focal Loss ignore le déséquilibre fond/noyau
+        # et se concentre sur les exemples difficiles (bords)
+        self.focal_loss = FocalLoss(alpha=0.25, gamma=2.0)
+        self.smooth_l1 = nn.SmoothL1Loss()
 
         # Uncertainty Weighting: log(σ²) pour chaque tâche (paramètres appris)
         # Initialisés à 0 → σ² = 1 → poids effectif = 1
@@ -387,12 +462,12 @@ class HoVerNetLoss(nn.Module):
         Returns:
             total_loss, dict avec losses individuelles
         """
-        # NP loss: BCE (avec class weights) + Dice
-        # Déplacer weights sur le bon device (GPU)
-        weights = self.np_class_weights.to(np_pred.device)
-        np_bce = F.cross_entropy(np_pred, np_target.long(), weight=weights)
+        # NP loss: Focal + Dice (Phase 1 Phased Training)
+        # Expert: Focal Loss gère le déséquilibre et focus sur les bords difficiles
+        # Dice Loss ignore le déséquilibre et se concentre sur l'overlap
+        np_focal = self.focal_loss(np_pred, np_target.long())
         np_dice = self.dice_loss(np_pred, np_target.float())
-        np_loss = np_bce + np_dice
+        np_loss = np_focal + np_dice
 
         # HV loss: MSE MASQUÉ (uniquement sur pixels de noyaux)
         # Littérature (Graham et al.): MSE doit être calculé UNIQUEMENT sur les noyaux
@@ -473,6 +548,8 @@ class HoVerNetLoss(nn.Module):
 
             return total, {
                 'np': np_loss.item(),
+                'np_focal': np_focal.item(),
+                'np_dice': np_dice.item(),
                 'hv': hv_loss.item(),
                 'hv_l1': hv_l1.item(),
                 'hv_gradient': hv_gradient.item(),
@@ -488,6 +565,8 @@ class HoVerNetLoss(nn.Module):
 
             return total, {
                 'np': np_loss.item(),
+                'np_focal': np_focal.item(),
+                'np_dice': np_dice.item(),
                 'hv': hv_loss.item(),
                 'hv_l1': hv_l1.item(),
                 'hv_gradient': hv_gradient.item(),
