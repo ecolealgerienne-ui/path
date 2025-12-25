@@ -336,16 +336,43 @@ def main():
             pred_inst = extract_instances_hv_magnitude(prob_map, hv_map)
 
             # Compute GT instances
-            # ⭐ FIX DÉFINITIF: Utilise canal 0 PanNuke (vraies instances)
-            gt_inst = get_correct_gt_instances(gt_mask)
+            # ⭐ TEST EXPERT: Utilise CANAL 0 BRUT (sans traitement additionnel)
+            gt_inst = gt_mask[:, :, 0].astype(np.int32)
 
             # Count instances (needed for skip logic)
             n_pred = len(np.unique(pred_inst)) - 1  # -1 for background
             n_gt = len(np.unique(gt_inst)) - 1
 
-            # DEBUG: Print instance counts + GT validation
+            # DEBUG VISUEL (Expert demande)
             if idx == test_indices[0]:  # Print once
                 print(f"  Instances Pred: {n_pred} | GT: {n_gt}")
+
+                # Sauvegarde image debug
+                import matplotlib.pyplot as plt
+                plt.figure(figsize=(15, 5))
+
+                # 1. Image originale
+                plt.subplot(1, 3, 1)
+                plt.imshow(image)
+                plt.title("Image Originale")
+
+                # 2. Prédiction (Prob map > 0.5)
+                plt.subplot(1, 3, 2)
+                plt.imshow(prob_map > 0.5, cmap='gray')
+                plt.title(f"Prédiction (n={n_pred})")
+
+                # 3. GT Canal 0 brut
+                plt.subplot(1, 3, 3)
+                plt.imshow(gt_inst > 0, cmap='gray')
+                plt.title(f"GT Canal 0 (n={n_gt})")
+
+                plt.tight_layout()
+                import os
+                os.makedirs("results", exist_ok=True)
+                plt.savefig("results/DEBUG_CRASH_TEST.png", dpi=150)
+                plt.close()
+                print(f"\n📸 DEBUG: Image sauvée → results/DEBUG_CRASH_TEST.png")
+                print("   REGARDEZ cette image pour diagnostiquer le problème!")
 
                 # DEBUG GT MASK
                 print(f"\n🔍 DEBUG GT MASK:")
