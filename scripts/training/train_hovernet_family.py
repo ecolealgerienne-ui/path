@@ -379,7 +379,8 @@ def main():
     parser.add_argument('--output_dir', type=str, default='models/checkpoints')
     parser.add_argument('--augment', action='store_true',
                        help='Activer data augmentation')
-    parser.add_argument('--dropout', type=float, default=0.1)
+    parser.add_argument('--dropout', type=float, default=0.3,
+                       help='Dropout pour régularisation (v12-Final: 0.3 contre overfitting)')
 
     # Options de loss weighting
     parser.add_argument('--lambda_np', type=float, default=1.0,
@@ -489,42 +490,71 @@ def main():
         print(f"Epoch {epoch+1}/{args.epochs}")
         print(f"{'='*60}")
 
-        # --- PHASED TRAINING (Expert Spec 2025-12-25) ---
+        # --- PHASED TRAINING v12-Final (Expert Spec 2025-12-25) ---
         #
         # STRATÉGIE "VERROUILLAGE DU DICE":
-        # Phase 1: Le modèle apprend la "vérité géométrique" des noyaux (Dice cible: 0.85+)
-        # Phase 2: On "verrouille" NP avec LR ÷10 et active HV doucement (λhv=0.5)
+        # Phase 1 (ÉTENDUE): 20 époques pour atteindre Dice 0.85+ avant d'activer HV
+        # Phase 2: Gel du tronc commun si Dice > 0.80, activation douce HV
         # Phase 3: Fine-tuning équilibré
         #
-        # NOUVEAUX LAMBDAS (Expert):
+        # LAMBDAS v12-Final:
         # | Phase | Epochs | λnp  | λhv | λnt | λmag |
         # |-------|--------|------|-----|-----|------|
-        # | 1     | 0-14   | 1.5  | 0.0 | 0.0 | 0.0  |
-        # | 2     | 15-34  | 2.0  | 0.5 | 0.2 | 1.0  |
-        # | 3     | 35+    | 2.0  | 0.5 | 0.5 | 1.0  |
+        # | 1     | 0-19   | 1.5  | 0.0 | 0.0 | 0.0  |
+        # | 2     | 20-39  | 2.0  | 0.5 | 0.2 | 1.0  |
+        # | 3     | 40+    | 2.0  | 0.5 | 0.5 | 1.0  |
         #
-        if epoch < 15:
-            # PHASE 1: Focus NP uniquement (objectif Dice 0.85+)
+        if epoch < 20:
+            # PHASE 1 ÉTENDUE: Focus NP uniquement (objectif Dice 0.85+)
             criterion.lambda_np = 1.5
             criterion.lambda_hv = 0.0
             criterion.lambda_nt = 0.0
             criterion.lambda_magnitude = 0.0
             print(f"  [PHASE 1] Focus Segmentation NP (λnp=1.5, objectif Dice>0.85)")
 
-        elif epoch == 15:
-            # TRANSITION: Activer LR différentiel pour np_head (÷10)
-            # Expert: "np_head reste stable mais peut vibrer légèrement pour s'harmoniser avec HV"
-            print("🔒 VERROUILLAGE DU DICE: LR np_head ÷ 10")
+        elif epoch == 20:
+            # TRANSITION: Vérifier si Dice > 0.80 pour geler le tronc commun
+            # Expert: "Si le PixelShuffle a appris à reconstruire parfaitement,
+            #          ne le laisse pas se corrompre par la suite"
 
-            # Reconfigurer l'optimizer avec groupes de paramètres différentiels
-            np_head_params = list(model.np_head.parameters())
-            np_head_ids = set(id(p) for p in np_head_params)
-            other_params = [p for p in model.parameters() if id(p) not in np_head_ids]
+            # Récupérer le meilleur Dice de validation
+            current_best_dice = best_metrics.get('dice', 0)
 
-            optimizer = AdamW([
-                {'params': np_head_params, 'lr': args.lr / 10},  # NP head: LR ÷ 10
-                {'params': other_params, 'lr': args.lr}          # Reste: LR normal
-            ], weight_decay=1e-4)
+            if current_best_dice > 0.80:
+                print("🔒 VERROUILLAGE TOTAL: Dice > 0.80 → Gel du tronc commun (PixelShuffle)")
+
+                # Geler le tronc commun (bottleneck + upsampling PixelShuffle)
+                for param in model.bottleneck.parameters():
+                    param.requires_grad = False
+                for param in model.up1.parameters():
+                    param.requires_grad = False
+                for param in model.up2.parameters():
+                    param.requires_grad = False
+                for param in model.up3.parameters():
+                    param.requires_grad = False
+                for param in model.up4.parameters():
+                    param.requires_grad = False
+
+                # Geler np_head aussi (Dice verrouillé)
+                for param in model.np_head.parameters():
+                    param.requires_grad = False
+
+                # Reconfigurer optimizer avec seulement HV et NT heads
+                trainable_params = [p for p in model.parameters() if p.requires_grad]
+                optimizer = AdamW(trainable_params, lr=args.lr, weight_decay=1e-4)
+                print(f"    → Seules les têtes HV et NT restent entraînables")
+            else:
+                print(f"🔓 Dice actuel ({current_best_dice:.4f}) < 0.80 → LR différentiel uniquement")
+
+                # Fallback: LR différentiel pour np_head
+                np_head_params = list(model.np_head.parameters())
+                np_head_ids = set(id(p) for p in np_head_params)
+                other_params = [p for p in model.parameters() if id(p) not in np_head_ids]
+
+                optimizer = AdamW([
+                    {'params': np_head_params, 'lr': args.lr / 10},
+                    {'params': other_params, 'lr': args.lr}
+                ], weight_decay=1e-4)
 
             # PHASE 2: Activation douce de HV
             criterion.lambda_np = 2.0
@@ -533,7 +563,7 @@ def main():
             criterion.lambda_magnitude = 1.0
             print(f"  [PHASE 2] Activation HV douce (λnp=2.0, λhv=0.5, λnt=0.2)")
 
-        elif epoch < 35:
+        elif epoch < 40:
             # PHASE 2 (suite): Continuer avec mêmes lambdas
             criterion.lambda_np = 2.0
             criterion.lambda_hv = 0.5
