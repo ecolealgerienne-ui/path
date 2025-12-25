@@ -480,6 +480,26 @@ def main():
         print(f"Epoch {epoch+1}/{args.epochs}")
         print(f"{'='*60}")
 
+        # --- PHASED TRAINING (Expert Spec) ---
+        # Phase 1 (0-14): Focus sur Segmentation (Dice/Focal uniquement)
+        # Phase 2 (15-34): Activation de la Séparation (HV)
+        # Phase 3 (35+): Fine-tuning global
+        if epoch < 15:
+            criterion.lambda_np = 1.0
+            criterion.lambda_hv = 0.0        # Éteint la séparation
+            criterion.lambda_magnitude = 0.0 # Éteint la magnitude
+            print(f"  [PHASE 1] Focus sur la Segmentation (Dice/Focal)")
+        elif epoch < 35:
+            criterion.lambda_np = 0.5        # Réduit pour laisser place à HV
+            criterion.lambda_hv = 1.0
+            criterion.lambda_magnitude = 5.0
+            print(f"  [PHASE 2] Activation de la Séparation des Noyaux (HV)")
+        else:
+            criterion.lambda_np = 1.0
+            criterion.lambda_hv = 1.0
+            criterion.lambda_magnitude = 1.0
+            print(f"  [PHASE 3] Fine-tuning global (Équilibre)")
+
         train_loss, train_losses, train_metrics = train_epoch(model, train_loader, optimizer, criterion, device)
         print(f"Train - Loss: {train_loss:.4f}")
         print(f"        NP Dice: {train_metrics['dice']:.4f} | HV MSE: {train_metrics['hv_mse']:.4f} | NT Acc: {train_metrics['nt_acc']:.4f}")
