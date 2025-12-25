@@ -52,10 +52,18 @@ class FeatureAugmentation:
         self.p_rot90 = p_rot90
 
     def __call__(self, features, np_target, hv_target, nt_target):
-        # Séparer CLS, patches, registres
-        cls_token = features[0:1]
-        patches = features[1:257]
-        registers = features[257:261]
+        # Séparer CLS, registers, patches
+        # STRUCTURE H-OPTIMUS-0 (ViT-Giant/14 avec registres):
+        #   Index 0:     CLS token (classification globale)
+        #   Index 1-4:   Register tokens (mémoire, SANS info spatiale!)
+        #   Index 5-260: 256 patch tokens (grille 16×16 spatiale)
+        #
+        # BUG CORRIGÉ (2025-12-25):
+        #   AVANT: patches = features[1:257] → Prenait Registers + 252 premiers patches
+        #   APRÈS: patches = features[5:261] → Prend les 256 patches spatiaux
+        cls_token = features[0:1]       # (1, 1536) - CLS
+        registers = features[1:5]       # (4, 1536) - Registers (non-spatiaux)
+        patches = features[5:261]       # (256, 1536) - Patches spatiaux
 
         # Reshape patches en grille 16x16
         patches_grid = patches.reshape(16, 16, -1)
@@ -99,7 +107,8 @@ class FeatureAugmentation:
                 hv_target = np.stack([-hv_target[1], hv_target[0]])
 
         patches = patches_grid.reshape(256, -1)
-        features = np.concatenate([cls_token, patches, registers], axis=0)
+        # Reconstruire dans l'ordre correct: [CLS, Registers, Patches]
+        features = np.concatenate([cls_token, registers, patches], axis=0)
 
         return features, np_target, hv_target, nt_target
 

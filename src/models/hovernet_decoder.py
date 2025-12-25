@@ -203,16 +203,32 @@ class HoVerNetDecoder(nn.Module):
         Reshape les tokens ViT en feature map spatiale.
 
         Args:
-            x: (B, N, D) avec N = 1 CLS + 256 patches + 4 registers = 261
+            x: (B, N, D) avec N = 1 CLS + 4 registers + 256 patches = 261
 
         Returns:
             (B, D, H, W) avec H=W=16
+
+        IMPORTANT - Structure H-optimus-0 (ViT-Giant/14 avec registres):
+            Index 0:     CLS token (classification globale)
+            Index 1-4:   Register tokens (mémoire, SANS info spatiale!)
+            Index 5-260: 256 patch tokens (grille 16×16 spatiale)
+
+        BUG CORRIGÉ (2025-12-25):
+            AVANT: x[:, 1:257, :] → Prenait Registers(1-4) + Patches(5-256)
+                   → Registers n'ont PAS d'info spatiale → bruit dans la grille
+                   → Manquait les 4 derniers patches (257-260)
+            APRÈS: x[:, 5:, :] → Prend uniquement Patches(5-260)
+                   → 256 tokens spatiaux corrects
         """
         B, N, D = x.shape
         n_patches = self.n_patches * self.n_patches  # 256
 
-        # Extraire seulement les patch tokens (ignorer CLS et registers)
-        if N > n_patches:
+        # Extraire UNIQUEMENT les patch tokens (ignorer CLS et registers)
+        if N == 261:
+            # H-optimus-0: [CLS(0), Registers(1-4), Patches(5-260)]
+            x = x[:, 5:, :]  # (B, 256, D) - CORRECTION: sauter les registers
+        elif N > n_patches:
+            # Fallback pour autres modèles (ViT standard sans registers)
             x = x[:, 1:n_patches+1, :]  # (B, 256, D)
 
         # Reshape en spatial
