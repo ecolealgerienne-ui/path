@@ -4,16 +4,31 @@ Diagnostic CRITIQUE: Détecte le conflit NP vs NT (Expert 2025-12-24).
 
 Vérifie si NT contient des 0 (background) là où NP contient des 1 (noyau).
 Ce conflit empêche le modèle de converger (Dice bloqué à 0.40).
+
+Usage:
+    python scripts/validation/check_np_nt_conflict.py [--data_file PATH]
 """
 
+import argparse
 import numpy as np
+from pathlib import Path
+
+parser = argparse.ArgumentParser(description="Diagnostic conflit NP vs NT")
+parser.add_argument(
+    '--data_file',
+    type=Path,
+    default=Path('data/family_FIXED/epidermal_data_FIXED_v11_FORCE_NT1.npz'),
+    help='Fichier NPZ à analyser (défaut: v11)'
+)
+args = parser.parse_args()
 
 print("=" * 80)
 print("🚨 DIAGNOSTIC CONFLIT NP vs NT (Expert 2025-12-24)")
 print("=" * 80)
 
-# Load v10 data
-data = np.load('data/family_FIXED/epidermal_data_FIXED_v9_NUCLEI_ONLY.npz')
+# Load data
+print(f"\n📂 Chargement: {args.data_file}")
+data = np.load(args.data_file)
 
 np_targets = data['np_targets']
 nt_targets = data['nt_targets']
