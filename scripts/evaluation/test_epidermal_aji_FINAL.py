@@ -300,8 +300,20 @@ def main():
             # gt_inst_256 déjà créé via connected components ci-dessus
             gt_inst = cv2.resize(gt_inst_256, (224, 224), interpolation=cv2.INTER_NEAREST)
 
-            # 3. Extraction instances (tout en 224×224)
-            pred_inst = extract_instances_hv_magnitude(prob_map, hv_map)
+            # =========================================================================
+            # TEST BYPASS HV (Expert 2025-12-25): Connected Components sans Watershed
+            # =========================================================================
+            # DIAGNOSTIC: hv_map.max() = -0.04 au lieu de [-1, +1] → branche HV "morte"
+            # TEST: Si Dice monte à 0.60-0.70 → NP OK, problème = HV training
+            #       Si Dice reste à 0.20 → NP aussi cassé
+            # =========================================================================
+            # pred_inst = extract_instances_hv_magnitude(prob_map, hv_map)  # DÉSACTIVÉ
+
+            # Simple Connected Components (bypass HV)
+            from scipy.ndimage import label as scipy_label
+            binary_pred = prob_map > 0.5
+            pred_inst, num_pred_instances = scipy_label(binary_pred)
+            pred_inst = pred_inst.astype(np.int32)
 
             # gt_inst déjà calculé ci-dessus (256→224 avec INTER_NEAREST)
 
