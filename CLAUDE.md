@@ -1410,6 +1410,88 @@ Décodeur intégré CellViT              Décodeur UNETR custom
 
 ## Journal de Développement
 
+### 2025-12-24 — Bug #7: Training Contamination (Tissue vs Nuclei) ⚠️ PRESQUE RÉSOLU
+
+**Contexte:** Training epidermal catastrophique (NP Dice 0.42, NT Acc 0.44) malgré fix HV inversion v8. AJI reste à 0.03-0.09 au lieu de >0.60.
+
+**Diagnostic Expert (23:00):** "Ton modèle a appris à segmenter le TISSU au lieu des NOYAUX."
+
+**Preuve empirique:**
+```
+Channel 0 (nuclei instances): 7,411 pixels (11%)  ← SOURCE PRIMAIRE
+Channel 5 (tissue mask):     56,475 pixels (86%) ← MASQUE DE TISSU
+```
+
+**Bug identifié:** Script utilisait `mask[:, :, 1:]` incluant Channel 5 (tissue) au lieu de `mask[:, :, :5]` (nuclei only).
+
+---
+
+**Progression v9 → v11:**
+
+| Version | Fix | NP Dice | NT Acc | Conflit NP/NT | Problème |
+|---------|-----|---------|--------|---------------|----------|
+| **v9** | Exclude Channel 5 (tissue) | 0.45 | 0.54 | - | NT range [0-5] invalid |
+| **v10** | NT based on Channel 0 | 0.42 | 0.44 | 6.95% | NP/NT mismatch (Background Trap) |
+| **v11** | Force NT=1 (binary) | **0.95** ✅ | 0.84 | **45.35%** ❌ | Script buggé OU features v10 utilisées |
+
+---
+
+**Résultats Training v11:**
+```
+✅ NP Dice: 0.9523 (0.42 → 0.95 = +126% IMPROVEMENT!)
+✅ NT Acc:  0.8424 (binary classification)
+✅ HV MSE:  0.2746 (stable)
+```
+
+**MAIS Diagnostic données v11:**
+```
+❌ Conflit NP/NT: 45.35% (attendu: 0.00%)
+```
+
+**Hypothèses:**
+- **A:** Script v11 `compute_nt_target_FORCE_BINARY()` buggé (assignation `nt_target[nuclei_mask] = 1` ne fonctionne pas)
+- **B:** Training fait avec features v10 au lieu de v11 (Data Mismatch Temporel)
+
+---
+
+**Fichiers créés:**
+
+**Scripts:**
+- `prepare_family_data_FIXED_v9_NUCLEI_ONLY.py` - Exclude Channel 5
+- `prepare_family_data_FIXED_v11_FORCE_NT1.py` - Binary NT classification
+- `check_np_nt_conflict.py` - Diagnostic conflit NP/NT
+- `check_nt_distribution.py` - Distribution NT classes
+
+**Documentation:**
+- `BUG_7_TRAINING_CONTAMINATION_TISSUE_VS_NUCLEI.md` - Diagnostic complet
+- `PLAN_REPRISE_2025-12-25.md` - Plan pour demain (diagnostic + résolution)
+- `SYNTHESE_SESSION_2025-12-24.md` - Synthèse complète session
+
+---
+
+**Commits:**
+- `6c3c84c` - feat(v11): Force NT=1 binary classification to eliminate NP/NT conflict
+- `cee1a24` - fix(v11): Remove unused cv2 import
+- `cf1747f` - fix: Make check_np_nt_conflict.py accept --data_file argument
+- `384fa57` - docs: Add session synthesis and recovery plan for 2025-12-25
+
+---
+
+**Statut:** ⚠️ **PRESQUE RÉSOLU** - Training convergent (Dice 0.95) MAIS conflit NP/NT 45.35% au lieu de 0.00%
+
+**Prochaines étapes (demain):**
+1. Diagnostic complet (30 min) - Identifier Hypothèse A ou B
+2. Résolution (40-60 min) - Fix v12 OU ré-extraction features v11
+3. Test AJI final (5 min) - Objectif: >0.60
+
+**Temps estimé total:** 1h30
+
+**Documents de référence:**
+- `docs/PLAN_REPRISE_2025-12-25.md` - Plan détaillé étapes de diagnostic et résolution
+- `docs/SYNTHESE_SESSION_2025-12-24.md` - Synthèse technique complète (bugs, fixes, métriques)
+
+---
+
 ### 2025-12-23 — Vérification Méthodique: Identification Cause Racine AJI Faible ✅ BREAKTHROUGH
 
 **Contexte:** Système OptimusGate atteint TOP 10-15% mondial (NP Dice 0.95) mais AJI catastrophique (0.0863 vs HoVer-Net 0.68 = 8× pire). Investigation méthodique demandée par l'utilisateur pour éviter "fausses pistes".

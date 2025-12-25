@@ -1,39 +1,43 @@
 #!/usr/bin/env python3
 """
-PREPARE FAMILY DATA - VERSION v9 (FIX CRITIQUE: NUCLEI ONLY, NO TISSUE)
+PREPARE FAMILY DATA - VERSION v11 (FIX CRITIQUE: FORCE NT=1 POUR ÉLIMINER CONFLIT)
 
-CHANGEMENT CRITIQUE v8 → v9:
-❌ BUG v8: Inclut Channel 5 (Epithelial/Tissue) dans NP targets et inst_map
-   - Channel 5: 56,475 pixels (86% de l'image) = TISSUE MASK
-   - Channel 0-4: 7,411 pixels (11% de l'image) = NUCLEI
-   - Résultat: Modèle apprend à segmenter le TISSU au lieu des NOYAUX
-   - AJI catastrophique: 0.03-0.08 au lieu de >0.60
+CHANGEMENT CRITIQUE v10 → v11:
+❌ PROBLÈME v10: NP vs NT Conflict (Le Piège du Background)
+   - NP détecte 15.34% pixels comme noyaux (via Channel 0)
+   - NT classe seulement 8.39% comme noyaux (classes 1-4)
+   - MISMATCH 6.95%: Le modèle reçoit des ordres contradictoires!
+     * NP branche: "Prédit 1 ici (c'est un noyau)"
+     * NT branche: "Prédit 0 ici (c'est du background)"
+   - Résultat: Training Dice 0.42 au lieu de 0.95 (modèle NE PEUT PAS GAGNER)
 
-✅ FIX v9: Utilise UNIQUEMENT les canaux de noyaux (0-4), EXCLUT le tissu (5)
-   - Channel 0: Instance IDs multi-types (SOURCE PRIMAIRE)
-   - Channels 1-4: Instance IDs par classe (supplémentaires)
-   - Channel 5: EXCLU (tissue mask, pas des noyaux)
-   - NP target: Canaux 0-4 seulement (11% pixels = noyaux)
-   - Résultat attendu: AJI 0.08 → >0.60 (+650%)
+✅ FIX v11 (Expert 2025-12-24): Force NT=1 pour TOUS pixels où Channel 0 > 0
+   - Simplification: Classification binaire au lieu de multi-classe
+   - Élimination complète du conflit NP/NT
+   - Classe 1 = noyau (peu importe le type)
+   - Classe 0 = background
+   - Résultat attendu: Dice 0.42 → 0.80+ en 10 époques
 
-STRUCTURE PANNUKE CHANNELS:
-- Channel 0: Instance IDs multi-types (Neoplastic, Inflammatory, Connective, Dead mélangés)
-              Valeurs: [0, 3, 4, 12, 16, 26...68] (IDs séparés, ~11% pixels)
-- Channel 1: Neoplastic instance IDs (souvent vide pour epidermal)
-- Channel 2: Inflammatory instance IDs (souvent vide pour epidermal)
-- Channel 3: Connective instance IDs (souvent vide pour epidermal)
-- Channel 4: Dead instance IDs (souvent vide pour epidermal)
-- Channel 5: Epithelial BINARY MASK (1 ou 0, ~86% pixels) = TISSUE, PAS NOYAUX
+JUSTIFICATION (Expert):
+> "Force NT à 1 : Dans ton script de préparation des données, pour tous les pixels
+> où Canal 0 > 0, force la classe NT à 1 (au lieu de chercher entre les canaux 1-5).
+> L'objectif : Apprendre au modèle à dire 'C'est un noyau' avec 100% de certitude,
+> sans se soucier du type pour le moment. Résultat attendu : Ton Dice va bondir à
+> 0.80+ en 10 époques."
+
+NOTE IMPORTANTE:
+La classification des types cellulaires (Neoplastic, Inflammatory, etc.) sera gérée
+par OrganHead (classification d'organe) + analyse morphométrique, pas par NT.
+Le but ici est de permettre au modèle de converger d'abord sur la détection des noyaux.
 
 Usage:
-    python scripts/preprocessing/prepare_family_data_FIXED_v9_NUCLEI_ONLY.py --family epidermal
+    python scripts/preprocessing/prepare_family_data_FIXED_v11_FORCE_NT1.py --family epidermal
 """
 
 import argparse
 import sys
 from pathlib import Path
 
-import cv2
 import numpy as np
 from scipy.ndimage import gaussian_filter
 
@@ -294,71 +298,61 @@ def compute_np_target_NUCLEI_ONLY(mask: np.ndarray) -> np.ndarray:
 
 
 # =============================================================================
-# NT TARGET GENERATION
+# NT TARGET GENERATION - v11 FORCE BINARY
 # =============================================================================
 
-def compute_nt_target(mask: np.ndarray) -> np.ndarray:
+def compute_nt_target_FORCE_BINARY(mask: np.ndarray) -> np.ndarray:
     """
-    Génère le target NT (Nuclear Type) - BASÉ SUR CHANNEL 0.
+    ✅ v11 FIX CRITIQUE (Expert 2025-12-24): Force NT=1 pour éliminer conflit NP/NT.
 
-    ✅ v10 FIX CRITIQUE (Expert 2025-12-24):
-    Utilise Channel 0 (instance IDs) comme masque, puis trouve le type
-    dans Channels 1-4 (EXCLUT 5 pour éviter tissu).
+    PROBLÈME v10:
+    - NP détecte 15.34% pixels comme noyaux (via Channel 0)
+    - NT classe seulement 8.39% comme noyaux (classes 1-4 via channels 1-5)
+    - MISMATCH 6.95%: Le modèle reçoit des ordres contradictoires!
+      * NP branche: "Prédit 1 ici (c'est un noyau)"
+      * NT branche: "Prédit 0 ici (c'est du background)"
+    - Résultat: Training Dice 0.42 au lieu de 0.95 (modèle NE PEUT PAS GAGNER)
 
-    PROBLÈME v9:
-    - Pour epidermal, Channels 1-4 sont VIDES (pas de Neoplastic/etc)
-    - Channel 5 (Epithelial) exclu → NT = 100% background
-    - NP détecte 15% noyaux, NT = 0% noyaux → MISMATCH!
-    - Résultat: Training Dice 0.40 au lieu de 0.95
+    SOLUTION v11:
+    - Classification BINAIRE simplifiée au lieu de multi-classe
+    - TOUS les pixels où Channel 0 > 0 → NT = 1 (classe "noyau")
+    - TOUS les pixels où Channel 0 = 0 → NT = 0 (classe "background")
+    - COHÉRENCE PARFAITE avec NP: NP=1 ⇔ NT=1 (0% conflit)
 
-    SOLUTION v10:
-    - Utiliser Channel 0 pour identifier les pixels de noyaux
-    - Pour chaque pixel de noyau, trouver son type dans Channels 1-4
-    - Si absent de 1-4, assigner classe par défaut selon famille:
-      * epidermal → classe 4 (Dead) comme proxy (évite Epithelial=5)
-      * autres → background (0)
+    Résultat attendu (Expert):
+    > "Ton Dice va bondir à 0.80+ en 10 époques. Le modèle n'aura plus de
+    > conflit d'identité entre NP et NT. Il apprendra simplement à dire
+    > 'C'est un noyau' avec 100% de certitude."
 
-    Classes PanNuke:
-    - 0: Background
-    - 1: Neoplastic
-    - 2: Inflammatory
-    - 3: Connective
-    - 4: Dead (utilisé comme proxy pour epidermal)
+    NOTE IMPORTANTE:
+    La classification fine des types (Neoplastic, Inflammatory, etc.) sera
+    gérée par OrganHead + analyse morphométrique. Le but ici est de permettre
+    au modèle de CONVERGER D'ABORD sur la détection des noyaux.
+
+    Classes simplifiées:
+    - 0: Background (pas de noyau)
+    - 1: Nucleus (noyau, peu importe le type)
 
     Args:
         mask: Mask PanNuke (H, W, 6)
 
     Returns:
-        nt_target: Class map (H, W) en int64 [0-4]
+        nt_target: Class map (H, W) en int64 [0-1]
+                   0 = background
+                   1 = nucleus (TOUS les noyaux)
     """
     mask = normalize_mask_format(mask)
 
     # Initialiser avec classe 0 (background)
     nt_target = np.zeros((PANNUKE_IMAGE_SIZE, PANNUKE_IMAGE_SIZE), dtype=np.int64)
 
-    # ✅ ÉTAPE 1: Identifier pixels de noyaux via Channel 0
+    # ✅ v11: Channel 0 définit TOUS les noyaux
     channel_0 = mask[:, :, 0]
     nuclei_mask = channel_0 > 0
 
-    # ✅ ÉTAPE 2: Pour chaque pixel de noyau, trouver son type dans Channels 1-5
-    # NOTE: On utilise Channel 5 ICI car c'est LIMITÉ aux pixels nuclei_mask
-    # Channel 5 "tissu" (86%) n'est PAS atteint car ces pixels ont nuclei_mask=False
-    for class_id in range(1, 6):  # 1, 2, 3, 4, 5 (Epithelial AUTORISÉ pour NT)
-        channel_mask = mask[:, :, class_id] > 0
-        # Assigner type SEULEMENT si c'est un noyau (dans Channel 0)
-        nt_target[channel_mask & nuclei_mask] = class_id
-
-    # ✅ ÉTAPE 3: REMAPPER classe 5 (Epithelial) → classe 4 (Dead)
-    # Raison: Modèle HoVer-Net a n_classes=5 (0-4), pas 6 (0-5)
-    # Pour epidermal: noyaux épithéliaux classés comme Dead (proxy acceptable)
-    nt_target[nt_target == 5] = 4
-
-    # ✅ ÉTAPE 4: Pixels de noyaux SANS type dans 1-5 → classe 4 par défaut
-    untyped_nuclei = nuclei_mask & (nt_target == 0)
-
-    if untyped_nuclei.sum() > 0:
-        # Rare: noyau dans Channel 0 mais absent de tous channels 1-5
-        nt_target[untyped_nuclei] = 4  # Classe Dead par défaut
+    # ✅ v11: Force NT=1 pour TOUS les pixels de noyaux
+    # Classification binaire simplifiée: nucleus (1) vs background (0)
+    nt_target[nuclei_mask] = 1
 
     return nt_target
 
@@ -367,7 +361,7 @@ def compute_nt_target(mask: np.ndarray) -> np.ndarray:
 # MAIN PREPARATION FUNCTION
 # =============================================================================
 
-def prepare_family_data_v9(
+def prepare_family_data_v11(
     pannuke_dir: Path,
     output_dir: Path,
     family: str,
@@ -376,7 +370,7 @@ def prepare_family_data_v9(
     """
     Prépare les données d'entraînement pour une famille d'organes.
 
-    VERSION v9: NUCLEI ONLY (exclut Channel 5 tissue)
+    VERSION v11: FORCE NT=1 (élimine conflit NP/NT)
 
     Args:
         pannuke_dir: Répertoire PanNuke (/home/amar/data/PanNuke)
@@ -388,7 +382,7 @@ def prepare_family_data_v9(
         folds = [0, 1, 2]
 
     print("=" * 80)
-    print(f"PRÉPARATION FAMILLE: {family.upper()} (VERSION v9 - NUCLEI ONLY)")
+    print(f"PRÉPARATION FAMILLE: {family.upper()} (VERSION v11 - FORCE NT=1)")
     print("=" * 80)
 
     # Trouver les organes de cette famille
@@ -396,7 +390,7 @@ def prepare_family_data_v9(
     print(f"\nOrganes: {', '.join(organs)}")
 
     output_dir.mkdir(parents=True, exist_ok=True)
-    output_file = output_dir / f"{family}_data_FIXED_v9_NUCLEI_ONLY.npz"
+    output_file = output_dir / f"{family}_data_FIXED_v11_FORCE_NT1.npz"
 
     # Collecter les échantillons
     all_images = []
@@ -443,8 +437,8 @@ def prepare_family_data_v9(
             # HV targets (centripètes v8)
             hv_target = compute_hv_maps(inst_map)
 
-            # NT target
-            nt_target = compute_nt_target(mask)
+            # ✅ v11: NT target FORCE BINARY (élimine conflit)
+            nt_target = compute_nt_target_FORCE_BINARY(mask)
 
             # Stocker
             all_images.append(image)
@@ -492,11 +486,33 @@ def prepare_family_data_v9(
     print(f"  NP targets shape:  {np_targets_array.shape}")
     print(f"  HV targets shape:  {hv_targets_array.shape}")
     print(f"  NT targets shape:  {nt_targets_array.shape}")
-    print(f"  NP coverage:       {np_targets_array.mean() * 100:.2f}%")
+
+    # Vérification cohérence NP/NT (devrait être 100% maintenant)
+    np_coverage = np_targets_array.mean() * 100
+    nt_nuclei_pixels = (nt_targets_array == 1).sum()
+    nt_nuclei_pct = nt_nuclei_pixels / nt_targets_array.size * 100
+
+    print(f"  NP coverage:       {np_coverage:.2f}%")
+    print(f"  NT nuclei (cl=1):  {nt_nuclei_pct:.2f}%")
+    print(f"  Différence NP-NT:  {abs(np_coverage - nt_nuclei_pct):.4f}%")
+
+    if abs(np_coverage - nt_nuclei_pct) < 0.01:
+        print(f"  ✅ COHÉRENCE PARFAITE NP/NT (différence < 0.01%)")
+    else:
+        print(f"  ⚠️  Légère différence NP/NT: {abs(np_coverage - nt_nuclei_pct):.4f}%")
+
     print(f"  HV range:          [{hv_targets_array.min():.3f}, {hv_targets_array.max():.3f}]")
+    print(f"  NT classes:        {sorted(np.unique(nt_targets_array))}")
     print(f"  Taille fichier:    {output_file.stat().st_size / 1e6:.1f} MB")
 
     print("\n✅ TERMINÉ")
+    print("\n" + "=" * 80)
+    print("🎯 OBJECTIF v11:")
+    print("=" * 80)
+    print("  Élimination complète du conflit NP/NT")
+    print("  Classification binaire simplifiée: nucleus (1) vs background (0)")
+    print("  Résultat attendu: NP Dice 0.42 → 0.80+ en 10 époques")
+    print("=" * 80)
 
 
 # =============================================================================
@@ -505,7 +521,7 @@ def prepare_family_data_v9(
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Prépare données par famille (VERSION v9 - NUCLEI ONLY, EXCLUT TISSUE)"
+        description="Prépare données par famille (VERSION v11 - FORCE NT=1)"
     )
     parser.add_argument(
         "--pannuke_dir",
@@ -537,21 +553,24 @@ def main():
     args = parser.parse_args()
 
     print("\n" + "=" * 80)
-    print("CHANGEMENTS CRITIQUES v8 → v9:")
+    print("CHANGEMENTS CRITIQUES v10 → v11:")
     print("=" * 80)
-    print("\n❌ BUG v8:")
-    print("  - np_target = mask[:, :, 1:].sum() → Inclut Channel 5 (tissue)")
-    print("  - Channel 5: 56,475 pixels (86% image) = TISSU ENTIER")
-    print("  - Résultat: Modèle apprend à segmenter tissu, pas noyaux")
-    print("  - AJI: 0.03-0.08 (catastrophique)")
-    print("\n✅ FIX v9:")
-    print("  - np_target = mask[:, :, :5].sum() → Channels 0-4 UNIQUEMENT")
-    print("  - Channels 0-4: 7,411 pixels (11% image) = NOYAUX")
-    print("  - Résultat attendu: Modèle apprend à segmenter noyaux")
-    print("  - AJI attendu: >0.60 (gain +650%)")
+    print("\n❌ PROBLÈME v10 (Conflit NP/NT):")
+    print("  - NP: 15.34% pixels détectés comme noyaux")
+    print("  - NT: 8.39% pixels classés comme noyaux (classes 1-4)")
+    print("  - MISMATCH 6.95%: Ordres contradictoires!")
+    print("    * NP branche: 'Prédit 1 ici (c'est un noyau)'")
+    print("    * NT branche: 'Prédit 0 ici (c'est du background)'")
+    print("  - Résultat: Training Dice 0.42 (modèle NE PEUT PAS GAGNER)")
+    print("\n✅ FIX v11 (Force NT=1 pour tous noyaux):")
+    print("  - Channel 0 > 0 → NT = 1 (classe 'nucleus')")
+    print("  - Channel 0 = 0 → NT = 0 (classe 'background')")
+    print("  - Classification binaire simplifiée")
+    print("  - COHÉRENCE PARFAITE avec NP (0% conflit)")
+    print("  - Résultat attendu: Dice 0.42 → 0.80+ en 10 époques")
     print("\n" + "=" * 80)
 
-    prepare_family_data_v9(
+    prepare_family_data_v11(
         args.pannuke_dir,
         args.output_dir,
         args.family,
