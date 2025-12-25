@@ -372,7 +372,8 @@ def main():
                        help=f'Famille à entraîner: {FAMILIES}')
     parser.add_argument('--cache_dir', type=str, default=DEFAULT_FAMILY_DATA_DIR,
                        help='Répertoire des données pré-préparées (source de vérité unique)')
-    parser.add_argument('--epochs', type=int, default=50)
+    parser.add_argument('--epochs', type=int, default=60,
+                       help='Nombre d\'époques (v12-Équilibré: 60 pour grandes familles)')
     parser.add_argument('--batch_size', type=int, default=16)
     parser.add_argument('--lr', type=float, default=1e-4)
     parser.add_argument('--val_split', type=float, default=0.2)
@@ -497,22 +498,21 @@ def main():
         # Phase 2: Gel du tronc commun si Dice > 0.80, activation douce HV
         # Phase 3: Fine-tuning équilibré
         #
-        # LAMBDAS v12-Gold:
+        # LAMBDAS v12-Équilibré (Glandular optimisé):
         # | Phase | Epochs | λnp  | λhv | λnt | λmag |
         # |-------|--------|------|-----|-----|------|
-        # | 1     | 0-24   | 1.5  | 0.0 | 0.0 | 0.0  |
-        # | 2     | 25-44  | 2.0  | 0.5 | 0.2 | 1.0  |
-        # | 3     | 45+    | 2.0  | 0.5 | 0.5 | 1.0  |
+        # | 1     | 0-20   | 1.5  | 0.0 | 0.0 | 0.0  | Segmentation pure
+        # | 2     | 21-60  | 2.0  | 1.0 | 0.5 | 5.0  | HV équilibré
         #
-        if epoch < 25:
-            # PHASE 1 LONGUE: Focus NP uniquement (objectif Dice plateau stable)
+        if epoch < 21:
+            # PHASE 1: Focus NP uniquement (objectif Dice plateau stable)
             criterion.lambda_np = 1.5
             criterion.lambda_hv = 0.0
             criterion.lambda_nt = 0.0
             criterion.lambda_magnitude = 0.0
             print(f"  [PHASE 1] Focus Segmentation NP (λnp=1.5, objectif Dice plateau)")
 
-        elif epoch == 25:
+        elif epoch == 21:
             # TRANSITION: Vérifier si Dice > 0.80 pour geler le tronc commun
             # Expert: "Si le PixelShuffle a appris à reconstruire parfaitement,
             #          ne le laisse pas se corrompre par la suite"
@@ -556,28 +556,20 @@ def main():
                     {'params': other_params, 'lr': args.lr}
                 ], weight_decay=1e-4)
 
-            # PHASE 2: Activation MUSCLÉE de HV (v12-Pro)
+            # PHASE 2: Activation ÉQUILIBRÉE de HV (v12-Équilibré)
             criterion.lambda_np = 2.0
-            criterion.lambda_hv = 1.0  # 0.5 → 1.0 (muscler les gradients)
-            criterion.lambda_nt = 0.2
-            criterion.lambda_magnitude = 10.0  # 1.0 → 10.0 (forcer gradients tranchants)
-            print(f"  [PHASE 2] HV Musclé v12-Pro (λnp=2.0, λhv=1.0, λmag=10.0)")
-
-        elif epoch < 45:
-            # PHASE 2 (suite): Continuer HV musclé v12-Pro
-            criterion.lambda_np = 2.0
-            criterion.lambda_hv = 1.0  # Muscler les gradients
-            criterion.lambda_nt = 0.2
-            criterion.lambda_magnitude = 10.0  # Forcer gradients tranchants
-            print(f"  [PHASE 2] HV Musclé v12-Pro (λnp=2.0, λhv=1.0, λmag=10.0)")
+            criterion.lambda_hv = 1.0  # Gradients forts mais pas extrêmes
+            criterion.lambda_nt = 0.5
+            criterion.lambda_magnitude = 5.0  # Équilibre optimal pour grandes familles
+            print(f"  [PHASE 2] HV Équilibré (λnp=2.0, λhv=1.0, λnt=0.5, λmag=5.0)")
 
         else:
-            # PHASE 3: Fine-tuning avec HV musclé v12-Pro
+            # PHASE 2 (suite): Continuer avec réglages équilibrés
             criterion.lambda_np = 2.0
-            criterion.lambda_hv = 1.0  # Maintenir pression sur gradients
+            criterion.lambda_hv = 1.0
             criterion.lambda_nt = 0.5
-            criterion.lambda_magnitude = 10.0  # Gradients tranchants jusqu'à la fin
-            print(f"  [PHASE 3] Fine-tuning v12-Pro (λnp=2.0, λhv=1.0, λnt=0.5, λmag=10.0)")
+            criterion.lambda_magnitude = 5.0
+            print(f"  [PHASE 2] HV Équilibré (λnp=2.0, λhv=1.0, λnt=0.5, λmag=5.0)")
 
         train_loss, train_losses, train_metrics = train_epoch(model, train_loader, optimizer, criterion, device)
         print(f"Train - Loss: {train_loss:.4f}")
