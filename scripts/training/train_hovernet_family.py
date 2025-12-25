@@ -60,23 +60,30 @@ class FeatureAugmentation:
         # Reshape patches en grille 16x16
         patches_grid = patches.reshape(16, 16, -1)
 
-        # Flip horizontal
+        # Flip horizontal (Axe X: gauche <-> droite)
+        # Convention: hv_target[0] = V (Y), hv_target[1] = H (X)
+        # Un flip horizontal inverse la position X → inverser composante H (index 1)
         if np.random.random() < self.p_flip:
             patches_grid = np.flip(patches_grid, axis=1).copy()
             np_target = np.flip(np_target, axis=1).copy()
             hv_target = np.flip(hv_target, axis=2).copy()
-            hv_target[0] = -hv_target[0]
+            hv_target[1] = -hv_target[1]  # FIX: Inverser H (X) et non V
             nt_target = np.flip(nt_target, axis=1).copy()
 
-        # Flip vertical
+        # Flip vertical (Axe Y: haut <-> bas)
+        # Un flip vertical inverse la position Y → inverser composante V (index 0)
         if np.random.random() < self.p_flip:
             patches_grid = np.flip(patches_grid, axis=0).copy()
             np_target = np.flip(np_target, axis=0).copy()
             hv_target = np.flip(hv_target, axis=1).copy()
-            hv_target[1] = -hv_target[1]
+            hv_target[0] = -hv_target[0]  # FIX: Inverser V (Y) et non H
             nt_target = np.flip(nt_target, axis=0).copy()
 
-        # Rotation 90°
+        # Rotation 90° (k fois 90° anti-horaire)
+        # Convention: hv_target[0] = V (Y), hv_target[1] = H (X)
+        # Rotation de vecteur (H, V) de θ degrés anti-horaire:
+        #   new_H = H*cos(θ) - V*sin(θ)
+        #   new_V = H*sin(θ) + V*cos(θ)
         if np.random.random() < self.p_rot90:
             k = np.random.choice([1, 2, 3])
             patches_grid = np.rot90(patches_grid, k, axes=(0, 1)).copy()
@@ -84,12 +91,12 @@ class FeatureAugmentation:
             hv_target = np.rot90(hv_target, k, axes=(1, 2)).copy()
             nt_target = np.rot90(nt_target, k).copy()
 
-            if k == 1:
-                hv_target = np.stack([-hv_target[1], hv_target[0]])
-            elif k == 2:
-                hv_target = np.stack([-hv_target[0], -hv_target[1]])
-            elif k == 3:
+            if k == 1:  # 90° anti-horaire: (H,V) → (-V, H) → [new_V, new_H] = [H, -V]
                 hv_target = np.stack([hv_target[1], -hv_target[0]])
+            elif k == 2:  # 180°: (H,V) → (-H, -V) → [new_V, new_H] = [-V, -H]
+                hv_target = np.stack([-hv_target[0], -hv_target[1]])
+            elif k == 3:  # 270° (= 90° horaire): (H,V) → (V, -H) → [new_V, new_H] = [-H, V]
+                hv_target = np.stack([-hv_target[1], hv_target[0]])
 
         patches = patches_grid.reshape(256, -1)
         features = np.concatenate([cls_token, patches, registers], axis=0)
