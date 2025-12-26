@@ -243,8 +243,12 @@ def main():
     output_file = output_dir / f"optimization_{args.family}_{timestamp}.json"
     
     with open(output_file, 'w') as f:
+        # Convert PosixPath to str for JSON serialization
+        config = vars(args).copy()
+        config['checkpoint'] = str(config['checkpoint'])
+
         json.dump({
-            'config': vars(args),
+            'config': config,
             'results': results_sorted,
             'best': best,
             'baseline': baseline,
