@@ -146,19 +146,35 @@ def main():
     hybrid_data_path = Path(f"data/family_data_v13_hybrid/{args.family}_data_v13_hybrid.npz")
     h_features_path = Path(f"data/cache/family_data/{args.family}_h_features_v13.npz")
     rgb_features_path = Path(f"data/cache/family_data/{args.family}_rgb_features_v13.npz")
-    
+
     hybrid_data = np.load(hybrid_data_path)
     h_data = np.load(h_features_path)
     rgb_data = np.load(rgb_features_path)
-    
+
+    # Use SAME split logic as training (based on source_image_ids, not simple slice)
     fold_ids = hybrid_data['fold_ids']
-    n_total = len(fold_ids)
-    n_train = int(0.8 * n_total)
-    val_indices = np.arange(n_train, n_total)
-    
+    source_image_ids = hybrid_data['source_image_ids']
+
+    unique_source_ids = np.unique(source_image_ids)
+    n_unique = len(unique_source_ids)
+    n_train_unique = int(0.8 * n_unique)
+
+    np.random.seed(42)  # Same seed as training
+    shuffled_ids = np.random.permutation(unique_source_ids)
+
+    train_source_ids = shuffled_ids[:n_train_unique]
+    val_source_ids = shuffled_ids[n_train_unique:]
+
+    val_mask = np.isin(source_image_ids, val_source_ids)
+    val_indices = np.where(val_mask)[0]
+
+    print(f"  Validation samples available: {len(val_indices)}")
+
     n_to_load = min(args.n_samples, len(val_indices))
     selected_indices = val_indices[:n_to_load]
-    
+
+    print(f"  Loading {n_to_load} samples for evaluation")
+
     rgb_features = rgb_data['features'][selected_indices]
     h_features = h_data['h_features'][selected_indices]
     np_targets = hybrid_data['np_targets'][selected_indices]
