@@ -10,8 +10,13 @@ echo "║         DIAGNOSTIC DONNÉES SOURCES V13-HYBRID                 ║"
 echo "╚════════════════════════════════════════════════════════════════╝"
 echo ""
 
-PROJECT_ROOT="/home/amar/projects/cellvit-optimus"
+# Get the project root (2 levels up from this script)
+SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+PROJECT_ROOT="$( cd "$SCRIPT_DIR/../.." && pwd )"
 cd "$PROJECT_ROOT" || exit 1
+
+echo "Project root: $PROJECT_ROOT"
+echo ""
 
 # ============================================================================
 # FONCTION HELPER
@@ -141,9 +146,18 @@ echo "3️⃣  DONNÉES PANNUKE BRUTES (fallback)"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo ""
 
-PANNUKE_DIR="/home/amar/data/PanNuke"
+# Try to locate PanNuke directory
+if [[ -d "/home/amar/data/PanNuke" ]]; then
+    PANNUKE_DIR="/home/amar/data/PanNuke"
+elif [[ -d "$HOME/data/PanNuke" ]]; then
+    PANNUKE_DIR="$HOME/data/PanNuke"
+elif [[ -d "data/PanNuke" ]]; then
+    PANNUKE_DIR="data/PanNuke"
+else
+    PANNUKE_DIR=""
+fi
 
-if [[ -d "$PANNUKE_DIR" ]]; then
+if [[ -n "$PANNUKE_DIR" ]] && [[ -d "$PANNUKE_DIR" ]]; then
     echo "  ✅ Répertoire PanNuke: $PANNUKE_DIR"
     echo "     Taille: $(du -sh "$PANNUKE_DIR" 2>/dev/null | cut -f1)"
     echo ""
@@ -160,7 +174,7 @@ if [[ -d "$PANNUKE_DIR" ]]; then
         fi
     done
 else
-    echo "  ❌ Répertoire PanNuke MANQUANT: $PANNUKE_DIR"
+    echo "  ❌ Répertoire PanNuke MANQUANT (recherché dans: /home/amar/data/PanNuke, \$HOME/data/PanNuke, data/PanNuke)"
 fi
 
 echo ""
