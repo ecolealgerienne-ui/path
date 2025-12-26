@@ -27,7 +27,8 @@ from tqdm import tqdm
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from src.constants import PANNUKE_IMAGE_SIZE, ORGAN_TO_FAMILY
+from src.constants import PANNUKE_IMAGE_SIZE
+from src.models.organ_families import ORGAN_TO_FAMILY
 from src.metrics.ground_truth_metrics import compute_aji, compute_dice
 from src.models.hovernet_decoder import HoVerNetDecoder
 from src.models.loader import ModelLoader
