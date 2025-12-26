@@ -34,7 +34,7 @@ from tqdm import tqdm
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from src.constants import PANNUKE_IMAGE_SIZE
-from src.metrics.ground_truth_metrics import compute_aji, compute_pq
+from src.metrics.ground_truth_metrics import compute_aji, compute_panoptic_quality, compute_dice
 from src.models.hovernet_decoder import HoVerNetDecoder
 from src.models.loader import ModelLoader
 from src.preprocessing import create_hoptimus_transform
@@ -176,7 +176,7 @@ def evaluate_model(
             if gt_inst_224.max() > 0:  # Au moins 1 instance GT
                 dice = compute_dice(pred_inst, gt_inst_224)
                 aji = compute_aji(pred_inst, gt_inst_224)
-                pq = compute_pq(pred_inst, gt_inst_224)
+                pq, dq, sq, _ = compute_panoptic_quality(pred_inst, gt_inst_224)
 
                 all_dice.append(dice)
                 all_aji.append(aji)
