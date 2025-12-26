@@ -564,8 +564,11 @@ def evaluate_aji(
             rgb_feat = torch.from_numpy(rgb_features[i]).unsqueeze(0).to(device)  # (1, 261, 1536)
             h_feat = torch.from_numpy(h_features[i]).unsqueeze(0).to(device)      # (1, 256)
 
+            # Extract patch tokens (skip CLS token + 4 Register tokens)
+            patch_tokens = rgb_feat[:, 5:261, :]  # (1, 256, 1536)
+
             # Forward pass
-            output = model(rgb_feat, h_feat)
+            output = model(patch_tokens, h_feat)
 
             # Convert to numpy
             result = output.to_numpy(apply_activations=True)
