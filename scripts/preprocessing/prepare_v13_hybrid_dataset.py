@@ -25,6 +25,55 @@ from skimage.color import rgb2hed
 import cv2
 
 
+def extract_5_crops_from_256(
+    image_256: np.ndarray,
+    np_target_256: np.ndarray,
+    hv_target_256: np.ndarray,
+    nt_target_256: np.ndarray
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Extract 5 crops (224×224) from 256×256 images: center + 4 corners.
+
+    This implements the V13 Multi-Crop strategy for 5× data augmentation.
+
+    Args:
+        image_256: (256, 256, 3) uint8
+        np_target_256: (256, 256) float32
+        hv_target_256: (2, 256, 256) float32
+        nt_target_256: (256, 256) int64
+
+    Returns:
+        Tuple of 5 crops for each input:
+        - images_crops: (5, 224, 224, 3) uint8
+        - np_crops: (5, 224, 224) float32
+        - hv_crops: (5, 2, 224, 224) float32
+        - nt_crops: (5, 224, 224) int64
+    """
+    # Crop positions: [top_left_y, top_left_x]
+    # From 256×256, we can extract 224×224 with offset up to 32 pixels
+    positions = [
+        (16, 16),   # Center crop
+        (0, 0),     # Top-left corner
+        (0, 32),    # Top-right corner
+        (32, 0),    # Bottom-left corner
+        (32, 32),   # Bottom-right corner
+    ]
+
+    images_crops = np.zeros((5, 224, 224, 3), dtype=np.uint8)
+    np_crops = np.zeros((5, 224, 224), dtype=np.float32)
+    hv_crops = np.zeros((5, 2, 224, 224), dtype=np.float32)
+    nt_crops = np.zeros((5, 224, 224), dtype=np.int64)
+
+    for i, (y, x) in enumerate(positions):
+        # Extract 224×224 crop
+        images_crops[i] = image_256[y:y+224, x:x+224, :]
+        np_crops[i] = np_target_256[y:y+224, x:x+224]
+        hv_crops[i] = hv_target_256[:, y:y+224, x:x+224]
+        nt_crops[i] = nt_target_256[y:y+224, x:x+224]
+
+    return images_crops, np_crops, hv_crops, nt_crops
+
+
 class MacenkoNormalizer:
     """
     Macenko stain normalization implementation.
@@ -247,56 +296,70 @@ def prepare_hybrid_dataset(
 
     n_samples = images_raw.shape[0]
     orig_size = images_raw.shape[1]
-    print(f"  ✅ Loaded {n_samples} samples")
+    print(f"  ✅ Loaded {n_samples} samples (original images)")
     print(f"  Original size: {orig_size}×{orig_size}")
     print(f"  Images: {images_raw.shape}, {images_raw.dtype}")
     print(f"  NP targets: {np_targets_raw.shape}, {np_targets_raw.dtype}")
     print(f"  HV targets: {hv_targets_raw.shape}, {hv_targets_raw.dtype}")
     print(f"  NT targets: {nt_targets_raw.shape}, {nt_targets_raw.dtype}")
 
-    # Resize to 224×224 if needed (for H-optimus-0 compatibility)
-    if orig_size != 224:
-        print(f"\n🔄 Resizing from {orig_size}×{orig_size} to 224×224...")
-        from skimage.transform import resize
+    # Multi-crop: Extract 5 crops (224×224) from each 256×256 image
+    if orig_size == 256:
+        print(f"\n✂️  Extracting 5 crops per image (center + 4 corners)...")
+        print(f"   Input: {n_samples} images → Output: {n_samples * 5} crops")
 
-        images_224 = np.zeros((n_samples, 224, 224, 3), dtype=np.uint8)
-        np_targets = np.zeros((n_samples, 224, 224), dtype=np.float32)
-        hv_targets = np.zeros((n_samples, 2, 224, 224), dtype=np.float32)
-        nt_targets = np.zeros((n_samples, 224, 224), dtype=np.int64)
+        # Allocate arrays for 5× augmented data
+        n_crops = n_samples * 5
+        images_224 = np.zeros((n_crops, 224, 224, 3), dtype=np.uint8)
+        np_targets = np.zeros((n_crops, 224, 224), dtype=np.float32)
+        hv_targets = np.zeros((n_crops, 2, 224, 224), dtype=np.float32)
+        nt_targets = np.zeros((n_crops, 224, 224), dtype=np.int64)
 
+        # Replicate metadata 5× with crop position markers
+        crop_positions = ['center', 'top_left', 'top_right', 'bottom_left', 'bottom_right']
+        new_fold_ids = np.repeat(fold_ids, 5)
+        new_source_image_ids = np.repeat(source_image_ids, 5)
+        crop_position_ids = np.tile(np.arange(5, dtype=np.int32), n_samples)
+
+        # Extract crops
         for i in range(n_samples):
-            # Resize image (uint8, preserve range [0, 255])
-            images_224[i] = resize(
-                images_raw[i], (224, 224), order=1, preserve_range=True, anti_aliasing=True
-            ).astype(np.uint8)
-
-            # Resize NP (float32, preserve range [0, 1])
-            np_targets[i] = resize(
-                np_targets_raw[i], (224, 224), order=0, preserve_range=True, anti_aliasing=False
-            ).astype(np.float32)
-
-            # Resize HV (float32, preserve range [-1, 1])
-            hv_targets[i, 0] = resize(
-                hv_targets_raw[i, 0], (224, 224), order=1, preserve_range=True, anti_aliasing=False
-            )
-            hv_targets[i, 1] = resize(
-                hv_targets_raw[i, 1], (224, 224), order=1, preserve_range=True, anti_aliasing=False
+            # Extract 5 crops from this image
+            img_crops, np_crops, hv_crops, nt_crops = extract_5_crops_from_256(
+                images_raw[i],
+                np_targets_raw[i],
+                hv_targets_raw[i],
+                nt_targets_raw[i]
             )
 
-            # Resize NT (int64, nearest neighbor)
-            nt_targets[i] = resize(
-                nt_targets_raw[i], (224, 224), order=0, preserve_range=True, anti_aliasing=False
-            ).astype(np.int64)
+            # Store in output arrays
+            start_idx = i * 5
+            end_idx = start_idx + 5
+            images_224[start_idx:end_idx] = img_crops
+            np_targets[start_idx:end_idx] = np_crops
+            hv_targets[start_idx:end_idx] = hv_crops
+            nt_targets[start_idx:end_idx] = nt_crops
 
             if (i + 1) % 100 == 0:
-                print(f"  Progress: {i+1}/{n_samples}")
+                print(f"  Progress: {i+1}/{n_samples} images → {(i+1)*5}/{n_crops} crops")
 
-        print(f"  ✅ Resize complete")
-    else:
+        print(f"  ✅ Multi-crop complete: {n_crops} total crops")
+
+        # Update metadata
+        fold_ids = new_fold_ids
+        source_image_ids = new_source_image_ids
+        n_final = n_crops  # Track final number for H-channel extraction
+
+    elif orig_size == 224:
+        # Already correct size, no cropping needed
+        print(f"\n✅ Images already 224×224, no cropping needed")
         images_224 = images_raw
         np_targets = np_targets_raw
         hv_targets = hv_targets_raw
         nt_targets = nt_targets_raw
+        crop_position_ids = np.zeros(n_samples, dtype=np.int32)  # All center
+        n_final = n_samples  # Track final number for H-channel extraction
+    else:
+        raise ValueError(f"Unsupported image size: {orig_size}×{orig_size}. Expected 256×256 or 224×224.")
 
     # ⚠️ BUG #3 PREVENTION: Validate HV targets
     print("\n🔍 Validating HV targets...")
@@ -331,10 +394,10 @@ def prepare_hybrid_dataset(
             normalizer = None
 
     # Extract H-channels
-    print(f"\n🔬 Extracting H-channels...")
-    h_channels_224 = np.zeros((n_samples, 224, 224), dtype=np.uint8)
+    print(f"\n🔬 Extracting H-channels from {n_final} samples...")
+    h_channels_224 = np.zeros((n_final, 224, 224), dtype=np.uint8)
 
-    for i in tqdm(range(n_samples), desc="Processing samples"):
+    for i in tqdm(range(n_final), desc="Processing samples"):
         image = images_224[i]
 
         # Macenko normalization
@@ -389,6 +452,7 @@ def prepare_hybrid_dataset(
         nt_targets=nt_targets,
         source_image_ids=source_image_ids,
         fold_ids=fold_ids,
+        crop_position_ids=crop_position_ids,  # 0=center, 1=TL, 2=TR, 3=BL, 4=BR
         # Metadata
         macenko_applied=use_macenko and normalizer is not None,
         h_channel_std_mean=h_stats['mean_std'],
