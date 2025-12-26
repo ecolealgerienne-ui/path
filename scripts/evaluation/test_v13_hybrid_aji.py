@@ -194,32 +194,140 @@ def hv_guided_watershed(
     return inst_map
 
 
-def extract_h_channel_on_the_fly(image_rgb: np.ndarray) -> np.ndarray:
+class MacenkoNormalizer:
+    """
+    Macenko stain normalization implementation.
+
+    Based on: "A method for normalizing histology slides for quantitative analysis"
+    Macenko et al., 2009
+
+    IMPORTANT: This normalizer is used in prepare_v13_hybrid_dataset.py during training.
+    For "train as you test" consistency, it MUST be applied in on-the-fly mode.
+    """
+
+    def __init__(self):
+        self.target_stains = None
+        self.target_concentrations = None
+        self.maxC_target = None
+
+    def fit(self, target: np.ndarray):
+        """Fit normalizer on target image."""
+        self.target_stains = self._get_stain_matrix(target)
+        target_concentrations = self._get_concentrations(target, self.target_stains)
+        self.maxC_target = np.percentile(target_concentrations, 99, axis=1, keepdims=True)
+
+    def transform(self, source: np.ndarray) -> np.ndarray:
+        """Normalize source image to match target."""
+        if self.target_stains is None:
+            raise ValueError("Normalizer not fitted. Call fit() first.")
+
+        source_stains = self._get_stain_matrix(source)
+        source_concentrations = self._get_concentrations(source, source_stains)
+        maxC_source = np.percentile(source_concentrations, 99, axis=1, keepdims=True)
+
+        # Normalize concentrations
+        source_concentrations *= (self.maxC_target / maxC_source)
+
+        # Recreate image
+        normalized = 255 * np.exp(-self.target_stains @ source_concentrations)
+        normalized = normalized.T.reshape(source.shape).astype(np.uint8)
+
+        return normalized
+
+    @staticmethod
+    def _get_stain_matrix(I: np.ndarray, beta=0.15, alpha=1):
+        """Extract stain matrix using Macenko method."""
+        h, w, c = I.shape
+        I = I.reshape(-1, 3).astype(np.float32)
+
+        # Optical density
+        OD = -np.log((I + 1) / 256.0)
+
+        # Remove transparent pixels
+        ODhat = OD[~np.any(OD < beta, axis=1)]
+
+        if ODhat.shape[0] < 2:
+            # Fallback: return identity-like matrix
+            return np.array([[0.65, 0.70], [0.07, 0.99]])
+
+        # Compute eigenvectors
+        _, eigvecs = np.linalg.eigh(np.cov(ODhat.T))
+
+        # Project on the plane spanned by the eigenvectors corresponding to the two largest eigenvalues
+        That = ODhat @ eigvecs[:, 1:3]
+
+        phi = np.arctan2(That[:, 1], That[:, 0])
+
+        minPhi = np.percentile(phi, alpha)
+        maxPhi = np.percentile(phi, 100 - alpha)
+
+        vMin = eigvecs[:, 1:3] @ np.array([np.cos(minPhi), np.sin(minPhi)])
+        vMax = eigvecs[:, 1:3] @ np.array([np.cos(maxPhi), np.sin(maxPhi)])
+
+        # A heuristic to make the vector corresponding to hematoxylin first
+        if vMin[0] > vMax[0]:
+            HE = np.array([vMin, vMax]).T
+        else:
+            HE = np.array([vMax, vMin]).T
+
+        return HE
+
+    @staticmethod
+    def _get_concentrations(I: np.ndarray, stain_matrix: np.ndarray) -> np.ndarray:
+        """Get concentrations of each stain."""
+        h, w, c = I.shape
+        I = I.reshape(-1, 3).astype(np.float32)
+
+        # Optical density
+        OD = -np.log((I + 1) / 256.0)
+
+        # Concentrations
+        C = np.linalg.lstsq(stain_matrix, OD.T, rcond=None)[0]
+
+        return C
+
+
+def extract_h_channel_on_the_fly(
+    image_rgb: np.ndarray,
+    normalizer: MacenkoNormalizer = None
+) -> np.ndarray:
     """
     Extract H-channel (Hematoxylin) from RGB image on-the-fly.
 
     Uses HED (Hematoxylin-Eosin-DAB) color deconvolution from scikit-image.
 
+    IMPORTANT: If normalizer is provided, applies Macenko normalization BEFORE HED.
+    This ensures "train as you test" consistency (training data uses Macenko).
+
     Args:
         image_rgb: RGB image (H, W, 3) uint8 [0, 255]
+        normalizer: Optional MacenkoNormalizer (fitted on reference image)
 
     Returns:
         H-channel (H, W) uint8 [0, 255]
     """
-    # Convert RGB to HED
+    # 1. Macenko normalization (CRITICAL for train-test consistency)
+    if normalizer is not None:
+        try:
+            image_rgb = normalizer.transform(image_rgb)
+        except Exception as e:
+            # Fallback: use original image if Macenko fails
+            print(f"  ⚠️  Macenko normalization failed: {e}. Using original image.")
+
+    # 2. Convert RGB to HED
     hed = color.rgb2hed(image_rgb)
 
-    # Extract H-channel (first channel)
+    # 3. Extract H-channel (first channel)
     h_channel = hed[:, :, 0]
 
-    # Normalize to [0, 1]
+    # 4. Normalize to [0, 1]
     h_min, h_max = h_channel.min(), h_channel.max()
     if h_max > h_min:
         h_normalized = (h_channel - h_min) / (h_max - h_min)
     else:
         h_normalized = np.zeros_like(h_channel)
 
-    # Convert to uint8
+    # 5. Convert to uint8
     h_uint8 = (h_normalized * 255).clip(0, 255).astype(np.uint8)
 
     return h_uint8
@@ -352,6 +460,17 @@ def load_test_samples(
         # Load raw images
         images_224 = hybrid_data['images_224'][selected_indices]
 
+        # Initialize Macenko normalizer (CRITICAL for train-test consistency)
+        print(f"  🎨 Initializing Macenko normalizer...")
+        normalizer = MacenkoNormalizer()
+        try:
+            # Fit on first image as reference (same as training)
+            normalizer.fit(images_224[0])
+            print(f"    ✅ Macenko normalizer fitted on first sample")
+        except Exception as e:
+            print(f"    ⚠️  Macenko fitting failed: {e}. Skipping normalization.")
+            normalizer = None
+
         # Extract features for each sample
         rgb_features = np.zeros((n_to_load, 261, 1536), dtype=np.float32)
         h_features = np.zeros((n_to_load, 256), dtype=np.float32)
@@ -362,8 +481,8 @@ def load_test_samples(
 
             image_rgb = images_224[i]  # (224, 224, 3) uint8
 
-            # Extract H-channel
-            h_channel = extract_h_channel_on_the_fly(image_rgb)
+            # Extract H-channel (with Macenko normalization if available)
+            h_channel = extract_h_channel_on_the_fly(image_rgb, normalizer)
 
             # Extract features
             rgb_features[i] = extract_rgb_features_on_the_fly(image_rgb, backbone, device)
