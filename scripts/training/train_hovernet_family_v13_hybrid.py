@@ -8,6 +8,10 @@ Architecture:
 - Fusion: Additive (rgb_map + h_map)
 - Decoder: Shared upsampling → NP/HV/NT branches
 
+Phased Training Strategy (60 epochs):
+- Phase 1 (epochs 1-20):  Segmentation focus (λnp=1.5, λhv=0.5, λnt=0.5)
+- Phase 2 (epochs 21-60): Balanced training (λnp=2.0, λhv=2.0, λnt=1.0)
+
 Loss:
 - L_total = λ_np * L_np + λ_hv * L_hv + λ_nt * L_nt + λ_h_recon * L_h_recon
 - Separate LR for RGB (1e-4) and H (5e-5) branches
@@ -196,6 +200,12 @@ class HybridLoss(nn.Module):
 
         self.focal_alpha = focal_alpha
         self.focal_gamma = focal_gamma
+
+    def update_lambdas(self, lambda_np: float, lambda_hv: float, lambda_nt: float):
+        """Update lambda weights for phased training."""
+        self.lambda_np = lambda_np
+        self.lambda_hv = lambda_hv
+        self.lambda_nt = lambda_nt
 
     def focal_loss(self, pred, target):
         """
@@ -453,8 +463,8 @@ def main():
                         help='Directory with RGB features')
 
     # Training params
-    parser.add_argument('--epochs', type=int, default=30,
-                        help='Number of epochs')
+    parser.add_argument('--epochs', type=int, default=60,
+                        help='Number of epochs (default: 60 for phased training)')
     parser.add_argument('--batch_size', type=int, default=16,
                         help='Batch size')
     parser.add_argument('--lr_rgb', type=float, default=1e-4,
@@ -601,8 +611,26 @@ def main():
     }
 
     print(f"\nStarting training for {args.epochs} epochs...\n")
+    print("PHASED TRAINING STRATEGY:")
+    print("  Phase 1 (epochs 1-20):  Focus on segmentation (λnp=1.5, λhv=0.5, λnt=0.5)")
+    print("  Phase 2 (epochs 21-60): Balance all branches (λnp=2.0, λhv=2.0, λnt=1.0)")
+    print()
 
     for epoch in range(1, args.epochs + 1):
+        # Update lambda weights based on training phase
+        if epoch <= 20:
+            # Phase 1: Focus on segmentation (NP)
+            criterion.update_lambdas(lambda_np=1.5, lambda_hv=0.5, lambda_nt=0.5)
+            if epoch == 1:
+                print(f"📍 PHASE 1 (epochs 1-20): Segmentation focus")
+                print(f"   λnp=1.5, λhv=0.5, λnt=0.5\n")
+        else:
+            # Phase 2: Balance all branches
+            if epoch == 21:
+                print(f"\n📍 PHASE 2 (epochs 21-60): Balanced training")
+                print(f"   λnp=2.0, λhv=2.0, λnt=1.0\n")
+            criterion.update_lambdas(lambda_np=2.0, lambda_hv=2.0, lambda_nt=1.0)
+
         # Train
         train_metrics = train_epoch(model, train_loader, criterion, optimizer, device, epoch)
 
