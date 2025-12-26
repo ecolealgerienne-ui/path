@@ -80,10 +80,88 @@ DEFAULT_FEATURES_CACHE_DIR = "data/cache/pannuke_features"
 # ⚠️ CRITICAL: Family data path (Bug #6 fix)
 # This is the SINGLE SOURCE OF TRUTH for family features/targets location
 # Used by: train_hovernet_family.py, test_on_training_data.py, test_aji_v8.py, etc.
-DEFAULT_FAMILY_DATA_DIR = "data/family_data"  # ← Validated path (exists, CLS std 0.770)
+DEFAULT_FAMILY_DATA_DIR = "data/cache/family_data"  # Features + targets pour training
 
-# FIXED data (v8 with proper HV normalization)
+# FIXED data (raw images + targets before feature extraction)
 DEFAULT_FAMILY_FIXED_DIR = "data/family_FIXED"
+
+# =============================================================================
+# 🔧 CURRENT DATA VERSION (Single Source of Truth)
+# =============================================================================
+# Change this when creating new data versions
+# ALL scripts should use this to determine which files to load
+
+CURRENT_DATA_VERSION = "v12_COHERENT"  # Version actuelle des données
+
+def get_family_data_filename(family: str) -> str:
+    """
+    Retourne le nom de fichier pour une famille donnée.
+
+    Args:
+        family: Nom de la famille (epidermal, glandular, etc.)
+
+    Returns:
+        Nom du fichier, e.g., "epidermal_data_FIXED_v12_COHERENT.npz"
+    """
+    return f"{family}_data_FIXED_{CURRENT_DATA_VERSION}.npz"
+
+def get_family_data_path(family: str) -> str:
+    """
+    Retourne le chemin complet vers le fichier de données d'une famille.
+
+    Args:
+        family: Nom de la famille (epidermal, glandular, etc.)
+
+    Returns:
+        Chemin complet, e.g., "data/family_FIXED/epidermal_data_FIXED_v12_COHERENT.npz"
+    """
+    return f"{DEFAULT_FAMILY_FIXED_DIR}/{get_family_data_filename(family)}"
+
+def get_family_features_path(family: str) -> str:
+    """
+    Retourne le chemin vers le fichier features d'une famille.
+
+    Args:
+        family: Nom de la famille
+
+    Returns:
+        Chemin complet, e.g., "data/cache/family_data/epidermal_features.npz"
+    """
+    return f"{DEFAULT_FAMILY_DATA_DIR}/{family}_features.npz"
+
+def get_family_targets_path(family: str) -> str:
+    """
+    Retourne le chemin vers le fichier targets d'une famille.
+
+    Args:
+        family: Nom de la famille
+
+    Returns:
+        Chemin complet, e.g., "data/cache/family_data/epidermal_targets.npz"
+    """
+    return f"{DEFAULT_FAMILY_DATA_DIR}/{family}_targets.npz"
+
+# =============================================================================
+# 🧪 TEST CONFIGURATION (Phase de validation)
+# =============================================================================
+# Configuration pour tests rapides avant validation complète
+
+TEST_CONFIG = {
+    "folds": [0],           # Seulement fold0 pour tests
+    "epochs": 20,           # 20 epochs au lieu de 50
+    "batch_size": 8,        # Batch size standard
+    "family": "epidermal",  # Famille de test
+}
+
+# =============================================================================
+# 🚀 PRODUCTION CONFIGURATION (Après validation)
+# =============================================================================
+
+PROD_CONFIG = {
+    "folds": [0, 1, 2],     # Tous les folds
+    "epochs": 50,           # 50 epochs complet
+    "batch_size": 8,        # Batch size standard
+}
 
 # =============================================================================
 # TEMPERATURE SCALING (CALIBRATION)

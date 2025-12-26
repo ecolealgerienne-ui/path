@@ -263,8 +263,17 @@ class BackboneWrapper:
         return features[:, 0, :]
 
     def extract_patch_tokens(self, features: torch.Tensor) -> torch.Tensor:
-        """Extrait les patch tokens (positions 1-256)."""
-        return features[:, 1:257, :]
+        """
+        Extrait les patch tokens spatiaux (positions 5-260).
+
+        Structure H-optimus-0:
+        - Index 0: CLS token
+        - Index 1-4: Register tokens (non-spatiaux)
+        - Index 5-260: Patch tokens (grille 16x16 spatiale)
+
+        FIX Register Token (2025-12-25): 5:261 au lieu de 1:257
+        """
+        return features[:, 5:261, :]
 
 
 def create_hovernet_wrapper(

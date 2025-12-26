@@ -48,15 +48,24 @@ class FeatureAugmentation:
     def __call__(self, features, np_target, hv_target, nt_target):
         """
         Args:
-            features: (261, 1536) - 1 CLS + 256 patches + 4 registers
+            features: (261, 1536) - 1 CLS + 4 registers + 256 patches
             np_target: (224, 224)
             hv_target: (2, 224, 224)
             nt_target: (224, 224)
+
+        STRUCTURE H-OPTIMUS-0 (ViT-Giant/14 avec registres):
+            Index 0:     CLS token (classification globale)
+            Index 1-4:   Register tokens (mémoire, SANS info spatiale!)
+            Index 5-260: 256 patch tokens (grille 16×16 spatiale)
+
+        BUG CORRIGÉ (2025-12-25):
+            AVANT: patches = features[1:257] → Prenait Registers + 252 premiers patches
+            APRÈS: patches = features[5:261] → Prend les 256 patches spatiaux
         """
-        # Séparer CLS, patches, registres
-        cls_token = features[0:1]        # (1, 1536)
-        patches = features[1:257]        # (256, 1536)
-        registers = features[257:261]    # (4, 1536)
+        # Séparer CLS, registers, patches
+        cls_token = features[0:1]        # (1, 1536) - CLS
+        registers = features[1:5]        # (4, 1536) - Registers (non-spatiaux)
+        patches = features[5:261]        # (256, 1536) - Patches spatiaux
 
         # Reshape patches en grille 16x16
         patches_grid = patches.reshape(16, 16, -1)  # (16, 16, 1536)
@@ -96,8 +105,8 @@ class FeatureAugmentation:
         # Re-flatten patches
         patches = patches_grid.reshape(256, -1)
 
-        # Reconstruire features
-        features = np.concatenate([cls_token, patches, registers], axis=0)
+        # Reconstruire features dans l'ordre correct: [CLS, Registers, Patches]
+        features = np.concatenate([cls_token, registers, patches], axis=0)
 
         return features, np_target, hv_target, nt_target
 

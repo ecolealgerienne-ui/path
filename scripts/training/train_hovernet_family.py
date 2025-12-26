@@ -52,31 +52,46 @@ class FeatureAugmentation:
         self.p_rot90 = p_rot90
 
     def __call__(self, features, np_target, hv_target, nt_target):
-        # Séparer CLS, patches, registres
-        cls_token = features[0:1]
-        patches = features[1:257]
-        registers = features[257:261]
+        # Séparer CLS, registers, patches
+        # STRUCTURE H-OPTIMUS-0 (ViT-Giant/14 avec registres):
+        #   Index 0:     CLS token (classification globale)
+        #   Index 1-4:   Register tokens (mémoire, SANS info spatiale!)
+        #   Index 5-260: 256 patch tokens (grille 16×16 spatiale)
+        #
+        # BUG CORRIGÉ (2025-12-25):
+        #   AVANT: patches = features[1:257] → Prenait Registers + 252 premiers patches
+        #   APRÈS: patches = features[5:261] → Prend les 256 patches spatiaux
+        cls_token = features[0:1]       # (1, 1536) - CLS
+        registers = features[1:5]       # (4, 1536) - Registers (non-spatiaux)
+        patches = features[5:261]       # (256, 1536) - Patches spatiaux
 
         # Reshape patches en grille 16x16
         patches_grid = patches.reshape(16, 16, -1)
 
-        # Flip horizontal
+        # Flip horizontal (Axe X: gauche <-> droite)
+        # Convention: hv_target[0] = V (Y), hv_target[1] = H (X)
+        # Un flip horizontal inverse la position X → inverser composante H (index 1)
         if np.random.random() < self.p_flip:
             patches_grid = np.flip(patches_grid, axis=1).copy()
             np_target = np.flip(np_target, axis=1).copy()
             hv_target = np.flip(hv_target, axis=2).copy()
-            hv_target[0] = -hv_target[0]
+            hv_target[1] = -hv_target[1]  # FIX: Inverser H (X) et non V
             nt_target = np.flip(nt_target, axis=1).copy()
 
-        # Flip vertical
+        # Flip vertical (Axe Y: haut <-> bas)
+        # Un flip vertical inverse la position Y → inverser composante V (index 0)
         if np.random.random() < self.p_flip:
             patches_grid = np.flip(patches_grid, axis=0).copy()
             np_target = np.flip(np_target, axis=0).copy()
             hv_target = np.flip(hv_target, axis=1).copy()
-            hv_target[1] = -hv_target[1]
+            hv_target[0] = -hv_target[0]  # FIX: Inverser V (Y) et non H
             nt_target = np.flip(nt_target, axis=0).copy()
 
-        # Rotation 90°
+        # Rotation 90° (k fois 90° anti-horaire)
+        # Convention: hv_target[0] = V (Y), hv_target[1] = H (X)
+        # Rotation de vecteur (H, V) de θ degrés anti-horaire:
+        #   new_H = H*cos(θ) - V*sin(θ)
+        #   new_V = H*sin(θ) + V*cos(θ)
         if np.random.random() < self.p_rot90:
             k = np.random.choice([1, 2, 3])
             patches_grid = np.rot90(patches_grid, k, axes=(0, 1)).copy()
@@ -84,15 +99,16 @@ class FeatureAugmentation:
             hv_target = np.rot90(hv_target, k, axes=(1, 2)).copy()
             nt_target = np.rot90(nt_target, k).copy()
 
-            if k == 1:
-                hv_target = np.stack([-hv_target[1], hv_target[0]])
-            elif k == 2:
-                hv_target = np.stack([-hv_target[0], -hv_target[1]])
-            elif k == 3:
+            if k == 1:  # 90° anti-horaire: (H,V) → (-V, H) → [new_V, new_H] = [H, -V]
                 hv_target = np.stack([hv_target[1], -hv_target[0]])
+            elif k == 2:  # 180°: (H,V) → (-H, -V) → [new_V, new_H] = [-V, -H]
+                hv_target = np.stack([-hv_target[0], -hv_target[1]])
+            elif k == 3:  # 270° (= 90° horaire): (H,V) → (V, -H) → [new_V, new_H] = [-H, V]
+                hv_target = np.stack([-hv_target[1], hv_target[0]])
 
         patches = patches_grid.reshape(256, -1)
-        features = np.concatenate([cls_token, patches, registers], axis=0)
+        # Reconstruire dans l'ordre correct: [CLS, Registers, Patches]
+        features = np.concatenate([cls_token, registers, patches], axis=0)
 
         return features, np_target, hv_target, nt_target
 
@@ -155,6 +171,26 @@ class FamilyHoVerDataset(Dataset):
         total_targets_gb = (self.np_targets.nbytes + self.hv_targets.nbytes + self.nt_targets.nbytes) / 1e9
         print(f"  → Targets: {total_targets_gb:.2f} GB")
 
+        # ✅ VALIDATION CRITIQUE: Vérifier taille des targets
+        target_size = self.np_targets.shape[1]
+        if target_size != 224:
+            print(f"\n" + "=" * 70)
+            print(f"⚠️  ATTENTION: Targets à {target_size}×{target_size} (attendu: 224×224)")
+            print(f"=" * 70)
+            print(f"")
+            print(f"   Les données ne sont PAS au format v12 (224×224 natif).")
+            print(f"   Les HV ont été calculés APRÈS resize → gradients dégradés!")
+            print(f"")
+            print(f"   Pour régénérer les données v12:")
+            print(f"   1. python scripts/preprocessing/prepare_family_data_FIXED_v12_COHERENT.py --family {family}")
+            print(f"   2. python scripts/preprocessing/extract_features_from_v12.py --family {family}")
+            print(f"")
+            print(f"=" * 70)
+
+            response = input("Continuer quand même? (y/N): ").strip().lower()
+            if response != 'y':
+                raise ValueError(f"Training annulé. Régénérez les données v12.")
+
         print(f"\n📊 Dataset famille {family}: {self.n_samples} samples (tout en RAM)")
 
     def __len__(self):
@@ -166,12 +202,15 @@ class FamilyHoVerDataset(Dataset):
         hv_target = self.hv_targets[idx].copy()
         nt_target = self.nt_targets[idx].copy()
 
-        # Utilisation du module centralisé pour resize 256 → 224
-        np_target, hv_target, nt_target = resize_targets(
-            np_target, hv_target, nt_target,
-            target_size=224,
-            mode="training"
-        )
+        # ✅ FIX: Skip resize si données déjà à 224 (v12)
+        # Le double resize avec bilinear dégradait les gradients HV
+        current_size = np_target.shape[0]
+        if current_size != 224:
+            np_target, hv_target, nt_target = resize_targets(
+                np_target, hv_target, nt_target,
+                target_size=224,
+                mode="training"
+            )
 
         if self.augmenter is not None:
             features, np_target, hv_target, nt_target = self.augmenter(
@@ -333,24 +372,26 @@ def main():
                        help=f'Famille à entraîner: {FAMILIES}')
     parser.add_argument('--cache_dir', type=str, default=DEFAULT_FAMILY_DATA_DIR,
                        help='Répertoire des données pré-préparées (source de vérité unique)')
-    parser.add_argument('--epochs', type=int, default=50)
+    parser.add_argument('--epochs', type=int, default=60,
+                       help='Nombre d\'époques (v12-Équilibré: 60 pour grandes familles)')
     parser.add_argument('--batch_size', type=int, default=16)
     parser.add_argument('--lr', type=float, default=1e-4)
     parser.add_argument('--val_split', type=float, default=0.2)
     parser.add_argument('--output_dir', type=str, default='models/checkpoints')
     parser.add_argument('--augment', action='store_true',
                        help='Activer data augmentation')
-    parser.add_argument('--dropout', type=float, default=0.1)
+    parser.add_argument('--dropout', type=float, default=0.4,
+                       help='Dropout pour régularisation (v12-Final-Gold: 0.4 remplace Stain Jitter)')
 
     # Options de loss weighting
     parser.add_argument('--lambda_np', type=float, default=1.0,
                        help='Poids loss NP (segmentation)')
-    parser.add_argument('--lambda_hv', type=float, default=2.0,
-                       help='Poids loss HV (séparation instances)')
+    parser.add_argument('--lambda_hv', type=float, default=1.0,
+                       help='Poids loss HV (réduit de 2.0 à 1.0 pour équilibrer avec NP)')
     parser.add_argument('--lambda_nt', type=float, default=1.0,
                        help='Poids loss NT (classification)')
-    parser.add_argument('--lambda_magnitude', type=float, default=5.0,
-                       help='Poids magnitude loss (Expert: 5.0 pour forcer gradients forts)')
+    parser.add_argument('--lambda_magnitude', type=float, default=1.0,
+                       help='Poids magnitude loss (réduit de 5.0 à 1.0 pour équilibrer avec NP)')
     parser.add_argument('--adaptive_loss', action='store_true',
                        help='Utiliser Uncertainty Weighting (poids appris)')
 
@@ -399,8 +440,9 @@ def main():
                             shuffle=False, num_workers=0, pin_memory=False)
 
     # Modèle
+    # n_classes=2 pour données v12 (binaire: 0=background, 1=nucleus)
     print("\n🔧 Initialisation du décodeur HoVer-Net...")
-    model = HoVerNetDecoder(embed_dim=1536, n_classes=5, dropout=args.dropout)
+    model = HoVerNetDecoder(embed_dim=1536, n_classes=2, dropout=args.dropout)
     model.to(device)
 
     n_params = sum(p.numel() for p in model.parameters())
@@ -448,6 +490,86 @@ def main():
         print(f"\n{'='*60}")
         print(f"Epoch {epoch+1}/{args.epochs}")
         print(f"{'='*60}")
+
+        # --- PHASED TRAINING v12-Gold (Expert Spec 2025-12-25) ---
+        #
+        # STRATÉGIE "VERROUILLAGE DU DICE":
+        # Phase 1 (LONGUE): 25 époques pour atteindre plateau Dice stable
+        # Phase 2: Gel du tronc commun si Dice > 0.80, activation douce HV
+        # Phase 3: Fine-tuning équilibré
+        #
+        # LAMBDAS v12-Équilibré (Glandular optimisé):
+        # | Phase | Epochs | λnp  | λhv | λnt | λmag |
+        # |-------|--------|------|-----|-----|------|
+        # | 1     | 0-20   | 1.5  | 0.0 | 0.0 | 0.0  | Segmentation pure
+        # | 2     | 21-60  | 2.0  | 1.0 | 0.5 | 5.0  | HV équilibré
+        #
+        if epoch < 21:
+            # PHASE 1: Focus NP uniquement (objectif Dice plateau stable)
+            criterion.lambda_np = 1.5
+            criterion.lambda_hv = 0.0
+            criterion.lambda_nt = 0.0
+            criterion.lambda_magnitude = 0.0
+            print(f"  [PHASE 1] Focus Segmentation NP (λnp=1.5, objectif Dice plateau)")
+
+        elif epoch == 21:
+            # TRANSITION: Vérifier si Dice > 0.80 pour geler le tronc commun
+            # Expert: "Si le PixelShuffle a appris à reconstruire parfaitement,
+            #          ne le laisse pas se corrompre par la suite"
+
+            # Récupérer le meilleur Dice de validation
+            current_best_dice = best_metrics.get('dice', 0)
+
+            if current_best_dice > 0.80:
+                print("🔒 VERROUILLAGE TOTAL: Dice > 0.80 → Gel du tronc commun (PixelShuffle)")
+
+                # Geler le tronc commun (bottleneck + upsampling PixelShuffle)
+                for param in model.bottleneck.parameters():
+                    param.requires_grad = False
+                for param in model.up1.parameters():
+                    param.requires_grad = False
+                for param in model.up2.parameters():
+                    param.requires_grad = False
+                for param in model.up3.parameters():
+                    param.requires_grad = False
+                for param in model.up4.parameters():
+                    param.requires_grad = False
+
+                # Geler np_head aussi (Dice verrouillé)
+                for param in model.np_head.parameters():
+                    param.requires_grad = False
+
+                # Reconfigurer optimizer avec seulement HV et NT heads
+                trainable_params = [p for p in model.parameters() if p.requires_grad]
+                optimizer = AdamW(trainable_params, lr=args.lr, weight_decay=1e-4)
+                print(f"    → Seules les têtes HV et NT restent entraînables")
+            else:
+                print(f"🔓 Dice actuel ({current_best_dice:.4f}) < 0.80 → LR différentiel uniquement")
+
+                # Fallback: LR différentiel pour np_head
+                np_head_params = list(model.np_head.parameters())
+                np_head_ids = set(id(p) for p in np_head_params)
+                other_params = [p for p in model.parameters() if id(p) not in np_head_ids]
+
+                optimizer = AdamW([
+                    {'params': np_head_params, 'lr': args.lr / 10},
+                    {'params': other_params, 'lr': args.lr}
+                ], weight_decay=1e-4)
+
+            # PHASE 2: Activation ÉQUILIBRÉE de HV (v12-Équilibré)
+            criterion.lambda_np = 2.0
+            criterion.lambda_hv = 1.0  # Gradients forts mais pas extrêmes
+            criterion.lambda_nt = 0.5
+            criterion.lambda_magnitude = 5.0  # Équilibre optimal pour grandes familles
+            print(f"  [PHASE 2] HV Équilibré (λnp=2.0, λhv=1.0, λnt=0.5, λmag=5.0)")
+
+        else:
+            # PHASE 2 (suite): Continuer avec réglages équilibrés
+            criterion.lambda_np = 2.0
+            criterion.lambda_hv = 1.0
+            criterion.lambda_nt = 0.5
+            criterion.lambda_magnitude = 5.0
+            print(f"  [PHASE 2] HV Équilibré (λnp=2.0, λhv=1.0, λnt=0.5, λmag=5.0)")
 
         train_loss, train_losses, train_metrics = train_epoch(model, train_loader, optimizer, criterion, device)
         print(f"Train - Loss: {train_loss:.4f}")

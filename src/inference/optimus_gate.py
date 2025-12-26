@@ -186,7 +186,9 @@ class OptimusGate(nn.Module):
             self.organ_head.fit_ood(cls_tokens, percentile)
 
             # Patches moyennés pour OOD local
-            patches = train_features[:, 1:257, :]  # (N, 256, 1536)
+            # FIX Register Token (2025-12-25): indices 5-261 = patches spatiaux
+            # AVANT: features[:, 1:257, :] incluait les 4 Registers!
+            patches = train_features[:, 5:261, :]  # (N, 256, 1536)
             patch_means = patches.mean(dim=1)      # (N, 1536)
 
             self.patch_mean = patch_means.mean(dim=0)
@@ -246,7 +248,8 @@ class OptimusGate(nn.Module):
         # 2. OOD Local (Mahalanobis sur patches)
         ood_local = 0.0
         if self.local_ood_fitted:
-            patches = features[:, 1:257, :]
+            # FIX Register Token (2025-12-25): indices 5-261 = patches spatiaux
+            patches = features[:, 5:261, :]
             patch_mean = patches.mean(dim=1)
             mahal_local = self._local_mahalanobis(patch_mean).item()
             ood_local = min(mahal_local / (self.patch_threshold + 1e-10), 2.0) / 2.0

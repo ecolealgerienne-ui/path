@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
 """
-Extrait les features H-optimus-0 depuis epidermal_data_FIXED_v9_NUCLEI_ONLY.npz.
+Extrait les features H-optimus-0 depuis les données famille.
+
+⚠️ UTILISE AUTOMATIQUEMENT LA VERSION COURANTE définie dans src/constants.py
+   (CURRENT_DATA_VERSION = "v12_COHERENT")
 
 Génère les fichiers attendus par train_hovernet_family.py:
-- epidermal_features.npz (features H-optimus-0)
-- epidermal_targets.npz (NP/HV/NT targets)
+- {family}_features.npz (features H-optimus-0)
+- {family}_targets.npz (NP/HV/NT targets)
 
 Usage:
     python scripts/preprocessing/extract_features_from_v9.py --family epidermal
@@ -23,10 +26,32 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from src.preprocessing import create_hoptimus_transform, validate_features
 from src.models.loader import ModelLoader
+from src.constants import (
+    CURRENT_DATA_VERSION,
+    get_family_data_path,
+    get_family_features_path,
+    get_family_targets_path,
+    DEFAULT_FAMILY_DATA_DIR,
+)
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Extrait features depuis fichier v9")
+    parser = argparse.ArgumentParser(
+        description="Extrait features H-optimus-0 depuis données famille",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=f"""
+📌 Version courante: {CURRENT_DATA_VERSION}
+   (Définie dans src/constants.py)
+
+Exemples:
+    # Utilise automatiquement la version courante (v12_COHERENT)
+    python scripts/preprocessing/extract_features_from_v9.py --family epidermal
+
+    # Spécifier un fichier différent
+    python scripts/preprocessing/extract_features_from_v9.py --family epidermal \\
+        --input_file data/family_FIXED/epidermal_data_FIXED_v11.npz
+        """
+    )
     parser.add_argument(
         '--family',
         type=str,
@@ -38,13 +63,13 @@ def main():
         '--input_file',
         type=str,
         default=None,
-        help='Fichier v9 input (défaut: data/family_FIXED/{family}_data_FIXED_v9_NUCLEI_ONLY.npz)'
+        help=f'Fichier input (défaut: utilise CURRENT_DATA_VERSION={CURRENT_DATA_VERSION})'
     )
     parser.add_argument(
         '--output_dir',
         type=str,
-        default='data/cache/family_data',
-        help='Répertoire de sortie'
+        default=DEFAULT_FAMILY_DATA_DIR,
+        help=f'Répertoire de sortie (défaut: {DEFAULT_FAMILY_DATA_DIR})'
     )
     parser.add_argument(
         '--batch_size',
@@ -61,11 +86,13 @@ def main():
 
     args = parser.parse_args()
 
-    # Paths
+    # ⚠️ UTILISE LA VERSION COURANTE PAR DÉFAUT (centralisée dans constants.py)
     if args.input_file is None:
-        input_file = Path(f"data/family_FIXED/{args.family}_data_FIXED_v9_NUCLEI_ONLY.npz")
+        input_file = Path(get_family_data_path(args.family))
+        print(f"📌 Utilisation de la version courante: {CURRENT_DATA_VERSION}")
     else:
         input_file = Path(args.input_file)
+        print(f"📌 Fichier spécifié manuellement: {input_file}")
 
     if not input_file.exists():
         print(f"❌ Fichier non trouvé: {input_file}")
