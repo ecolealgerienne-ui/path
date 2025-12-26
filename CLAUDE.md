@@ -5299,3 +5299,271 @@ Timeline Corrompue:
 
 ---
 
+
+### 2025-12-26 — V13-Hybrid POC: Implementation + Data Location Issues ⚠️ EN COURS
+
+**Contexte:** Suite à validation V13 Multi-Crop POC (AJI 0.57) et spécifications expert V13-Hybrid, démarrage de l'implémentation de l'architecture hybride RGB+H-channel pour atteindre objectif AJI ≥0.68 (+18%).
+
+**Architecture V13-Hybrid:**
+```
+H-optimus-0 (gelé) → features (261, 1536)
+                           │
+                  ┌────────┴─────────┐
+                  ↓                   ↓
+         RGB Patches (256, 1536)  H-Channel (224, 224)
+                  │                   │
+         Bottleneck RGB          CNN Adapter
+         1536 → 256              → 256 features
+                  │                   │
+                  └────────┬──────────┘
+                           ↓
+                    Fusion Additive
+                    (rgb_map + h_map)
+                           ↓
+                    Decoder Partagé
+                           ↓
+                  ┌────────┼─────────┐
+                  ↓        ↓         ↓
+                 NP       HV        NT
+```
+
+**Travail effectué:**
+
+**Phase 1.1: Préparation Dataset Hybride ✅ SCRIPT CRÉÉ**
+
+Fichier créé: `scripts/preprocessing/prepare_v13_hybrid_dataset.py` (~379 lignes)
+
+**Composants implémentés:**
+- ✅ MacenkoNormalizer (normalisation staining Macenko 2009)
+- ✅ extract_h_channel() (HED deconvolution via `skimage.color.rgb2hed`)
+- ✅ validate_h_channel_quality() (vérification std ∈ [0.15, 0.35])
+- ✅ Bug #3 prevention (validation HV float32 range [-1, 1])
+
+**Pipeline:**
+```python
+1. Load V13 data (images_224, np/hv/nt_targets)
+2. Validate HV targets (dtype float32, range [-1, 1])
+3. Macenko normalization (fit sur image 0, transform sur toutes)
+4. RGB → HED deconvolution → Extract H-channel
+5. Normalize H to [0, 255] uint8
+6. Validate quality (std entre 0.15-0.35)
+7. Save hybrid .npz (images_224, h_channels_224, targets, metadata)
+```
+
+**Phase 1.2: Extraction Features H-Channel ✅ SCRIPT CRÉÉ**
+
+Fichier créé: `scripts/preprocessing/extract_h_features_v13.py` (~310 lignes)
+
+**CNN Adapter Architecture:**
+```python
+class LightweightCNNAdapter(nn.Module):
+    """
+    Convertit H-channel 224×224 → embeddings 256-dim (compatible grid 16×16)
+    
+    Layers:
+    1. Conv 7×7 stride 2 (224 → 112)
+    2. MaxPool 3×3 stride 2 (112 → 56)
+    3. Conv 3×3 stride 2 (56 → 28)
+    4. Conv 3×3 stride 2 (28 → 14)
+    5. AdaptiveAvgPool (14 → 16×16 grid)
+    6. Reshape → (256,)
+    
+    Total params: ~46k (vs 1.1B H-optimus-0)
+    """
+```
+
+**Phase 2: Architecture Hybride ✅ VALIDÉ (session précédente)**
+
+Fichier existant: `src/models/hovernet_decoder_hybrid.py`
+
+Tests unitaires: `scripts/validation/test_hybrid_architecture.py`
+- ✅ Forward pass OK
+- ✅ Gradient flow RGB + H balanced
+- ✅ Fusion additive validée
+- ✅ HV tanh activation OK
+- ✅ Parameter count raisonnable (~20-30M)
+
+**Phase 3: Training Pipeline ✅ SCRIPT CRÉÉ**
+
+Fichier créé: `scripts/training/train_hovernet_family_v13_hybrid.py` (~550 lignes)
+
+**HybridDataset class:**
+```python
+def __getitem__(self, idx):
+    # RGB features: Extract patches (skip CLS + 4 Registers)
+    rgb_full = self.rgb_features[idx]  # (261, 1536)
+    patch_tokens = rgb_full[5:261, :]  # (256, 1536)
+    
+    # H features
+    h_feats = self.h_features[global_idx]  # (256,)
+    
+    # Targets
+    np_target = self.np_targets[global_idx]  # (224, 224)
+    hv_target = self.hv_targets[global_idx]  # (2, 224, 224) float32
+    nt_target = self.nt_targets[global_idx]  # (224, 224) int64
+```
+
+**HybridLoss:**
+- FocalLoss pour NP (α=0.5, γ=3.0) → gère déséquilibre background/noyaux
+- SmoothL1Loss pour HV (masqué sur pixels noyaux uniquement)
+- CrossEntropyLoss pour NT
+
+**Separate Learning Rates (Mitigation Risk 2):**
+```python
+optimizer = torch.optim.AdamW([
+    {'params': model.bottleneck_rgb.parameters(), 'lr': 1e-4},  # RGB branch
+    {'params': model.bottleneck_h.parameters(), 'lr': 5e-5},    # H branch (plus faible)
+])
+```
+
+**Documentation créée:**
+- `docs/VALIDATION_PHASE_3_TRAINING.md` (~300 lignes)
+  - Critères de validation (5 tests)
+  - Diagnostic en cas d'échec (5 scénarios)
+  - Checklist de validation (8 points)
+  - Métriques cibles: Dice >0.90, HV MSE <0.05, NT Acc >0.85
+
+**❌ PROBLÈME BLOQUANT: Source Data Missing**
+
+**Erreur rencontrée:**
+```bash
+FileNotFoundError: Source data file not found: data/family_FIXED/epidermal_data_FIXED.npz
+```
+
+**Diagnostic:**
+1. Script initial cherchait `data/family_data_v13_multi_crop/` (n'existe pas)
+2. Fix appliqué → `data/family_FIXED/` (n'existe pas non plus)
+3. Cause racine: Données sources non générées ou dans un autre répertoire
+
+**Scripts utilitaires créés:**
+
+**1. `scripts/utils/diagnose_data_location.sh`** (~254 lignes)
+
+Diagnostic complet:
+```bash
+bash scripts/utils/diagnose_data_location.sh
+
+Vérifie:
+1. data/family_FIXED/ (source attendue)
+2. data/family_data symlink
+3. /home/amar/data/PanNuke (données brutes)
+4. data/cache/pannuke_features (features H-optimus-0)
+
+Fournit recommandations basées sur findings:
+- Générer données FIXED si manquantes
+- Créer symlink si données ailleurs
+- Vérifier date features (post-fix Bug #1/#2)
+```
+
+**2. `scripts/utils/cleanup_v13_data.sh`** (~228 lignes)
+
+Cleanup interactif avec dry-run:
+```bash
+bash scripts/utils/cleanup_v13_data.sh --dry-run  # Preview
+bash scripts/utils/cleanup_v13_data.sh             # Execute
+
+Categories cleaned:
+1. Données int8 corrompues (Bug #3)
+   - data/family_data_OLD_int8_*
+   
+2. Features corrompues (Bugs #1 #2)
+   - data/cache/pannuke_features_OLD_CORRUPTED_*
+   
+3. Checkpoints V13 POC obsolètes
+   - models/checkpoints/hovernet_*_v13_poc_*.pth
+   
+4. Données temporaires V13 Multi-Crop
+   - data/family_data_v13_multi_crop
+```
+
+**Prochaines étapes (pour utilisateur):**
+
+**Étape 1: Diagnostic (5 min)**
+```bash
+bash scripts/utils/diagnose_data_location.sh
+```
+
+**Étape 2: Génération données sources (si manquantes) (20-30 min)**
+```bash
+# Si family_FIXED manquant, générer depuis PanNuke
+for family in glandular digestive urologic epidermal respiratory; do
+    python scripts/preprocessing/prepare_family_data_FIXED.py --family $family
+done
+```
+
+**Étape 3: Pipeline V13-Hybrid (après données sources OK)**
+```bash
+# Phase 1.1 - Hybrid dataset (2 min)
+python scripts/preprocessing/prepare_v13_hybrid_dataset.py --family epidermal
+
+# Phase 1.2 - H-features extraction (1 min)
+python scripts/preprocessing/extract_h_features_v13.py --family epidermal
+
+# Phase 2 - Validation architecture (30 sec)
+python scripts/validation/test_hybrid_architecture.py
+
+# Phase 3 - Training (40 min)
+python scripts/training/train_hovernet_family_v13_hybrid.py \
+    --family epidermal --epochs 30 --batch_size 16 \
+    --lambda_np 1.0 --lambda_hv 2.0 --lambda_nt 1.0 --lambda_h_recon 0.1
+
+# Phase 4 - Evaluation AJI (5 min)
+python scripts/evaluation/test_v13_hybrid_aji.py \
+    --checkpoint models/checkpoints_v13_hybrid/hovernet_epidermal_v13_hybrid_best.pth \
+    --n_samples 50
+```
+
+**Métriques attendues:**
+
+| Métrique | V13 POC | V13-Hybrid (cible) | Amélioration |
+|----------|---------|-------------------|--------------|
+| Dice | 0.95 | >0.90 | Maintenu |
+| AJI | 0.57 | **≥0.68** | **+18%** 🎯 |
+| HV MSE | 0.03 | <0.05 | Maintenu/Amélioré |
+| NT Acc | 0.88 | >0.85 | Maintenu |
+
+**Fichiers créés/modifiés:**
+
+| Fichier | Type | Lignes | Statut |
+|---------|------|--------|--------|
+| prepare_v13_hybrid_dataset.py | Script | 379 | ✅ Créé + Fix path |
+| extract_h_features_v13.py | Script | 310 | ✅ Créé |
+| train_hovernet_family_v13_hybrid.py | Script | 550 | ✅ Créé |
+| VALIDATION_PHASE_3_TRAINING.md | Doc | 300 | ✅ Créé |
+| diagnose_data_location.sh | Util | 254 | ✅ Créé |
+| cleanup_v13_data.sh | Util | 228 | ✅ Créé |
+
+**Commits:**
+- `97220bf` — "fix(v13-hybrid): Correct source data path + Add Phase 3 training script"
+- `6152449` — "feat(utils): Add cleanup and diagnostic scripts for V13 data management"
+
+**Leçons apprises:**
+
+1. **Register Tokens Handling Critical**
+   - H-optimus-0 retourne (261, 1536) = CLS + 4 Registers + 256 Patches
+   - TOUJOURS extraire patches avec `[5:261, :]` pour spatial grid correct
+   - Sinon: Décalage spatial dans décodeur
+
+2. **Separate LR Prevents H-branch Overfitting**
+   - H-branch CNN: 46k params → LR 5e-5
+   - RGB-branch: 1.5M params → LR 1e-4
+   - Ratio 2:1 empêche CNN de dominer (Mitigation Risk 2)
+
+3. **Focal Loss pour Class Imbalance**
+   - Background ~86% pixels dans PanNuke
+   - CrossEntropy seul → modèle prédit tout background
+   - FocalLoss (α=0.5, γ=3.0) force focus sur noyaux
+
+4. **Data Location TOUJOURS Vérifier Avant Training**
+   - Ne JAMAIS supposer que données existent
+   - Créer script diagnostic pour valider pipeline
+   - Documentations claires pour régénération si manquant
+
+**Statut:** ⚠️ EN ATTENTE - User doit diagnostiquer localisation données + générer si nécessaire
+
+**Temps estimé Phase 1-4 (après données OK):** ~50 minutes
+
+**Objectif final:** AJI 0.57 → 0.68 (+18%) via injection H-channel dans espace latent
+
+---
+
