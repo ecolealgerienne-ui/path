@@ -62,8 +62,8 @@ def hv_guided_watershed(
     
     threshold = 0.3 * marker_energy.max()
     markers_binary = (marker_energy > threshold).astype(np.uint8)
-    markers, _ = label(markers_binary)
-    
+    markers = label(markers_binary)  # skimage.morphology.label returns only labeled array
+
     elevation = -marker_energy
     inst_map = watershed(elevation, markers, mask=binary_mask)
     inst_map = remove_small_objects(inst_map, min_size=min_size).astype(np.int32)
