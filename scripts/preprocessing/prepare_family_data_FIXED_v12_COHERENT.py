@@ -332,7 +332,7 @@ def prepare_family_data_v12(
     print(f"\nOrganes: {', '.join(organs)}")
 
     output_dir.mkdir(parents=True, exist_ok=True)
-    output_file = output_dir / f"{family}_data_FIXED_v12_COHERENT.npz"
+    output_file = output_dir / f"{family}_data_FIXED.npz"
 
     # Collecter les échantillons
     all_images = []
