@@ -509,7 +509,7 @@ def evaluate_aji(
 
     # Load hybrid model
     print(f"\n🔧 Loading hybrid model...")
-    checkpoint = torch.load(checkpoint_path, map_location=device)
+    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
 
     model = HoVerNetDecoderHybrid(
         embed_dim=1536,
