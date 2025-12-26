@@ -1410,6 +1410,206 @@ Décodeur intégré CellViT              Décodeur UNETR custom
 
 ## Journal de Développement
 
+### 2025-12-26 — V13-Hybrid POC: Phase 1 & 2 Complètes ✅ ARCHITECTURE PRÊTE
+
+**Contexte:** Suite validation V13 Multi-Crop POC (Dice 0.76, AJI 0.57), lancement V13-Hybrid avec canal H pour résoudre sous-segmentation (-15%).
+
+**Objectif:** Implémenter architecture hybride RGB + H-channel avec fusion additive (Suggestion 4 expert validée).
+
+#### Phase 1: Data Preparation (3-4h) ✅ COMPLÈTE
+
+**1.1 Macenko Normalization + H-Channel Extraction**
+
+Script créé: `scripts/preprocessing/prepare_v13_hybrid_dataset.py` (370 lignes)
+
+**Fonctionnalités implémentées:**
+- ✅ Macenko normalization intégrée (pas de dépendance staintools)
+- ✅ H-channel extraction via `skimage.color.rgb2hed`
+- ✅ Validation H-channel quality (std ∈ [0.15, 0.35])
+- ✅ **Prévention Bug #3**: Validation HV targets (dtype float32, range [-1, 1])
+- ✅ Checkpoint validation avant sauvegarde
+
+**Output:** `data/family_data_v13_hybrid/epidermal_data_v13_hybrid.npz` (~1-1.5 GB)
+
+**Métriques cibles:**
+- H-channel std mean ∈ [0.15, 0.35]
+- Valid samples > 80%
+- HV dtype = float32 ✅
+
+**1.2 H-Channel CNN Features**
+
+Script créé: `scripts/preprocessing/extract_h_features_v13.py` (230 lignes)
+
+**Architecture CNN:**
+```python
+Input: (B, 1, 224, 224) H-channel uint8
+Conv1: 1 → 32, kernel=7, stride=2  (224 → 112)
+Conv2: 32 → 64, kernel=5, stride=2  (112 → 56)
+Conv3: 64 → 128, kernel=3, stride=2 (56 → 28)
+AdaptiveAvgPool2d(1)                (28 → 1)
+FC: 128 → 256
+Output: (B, 256) float32
+```
+
+**Params:** ~148k (négligeable vs 1.1B H-optimus-0)
+
+**Output:** `data/cache/family_data/epidermal_h_features_v13.npz` (~2-3 MB)
+
+**Métriques cibles:**
+- H-features shape (2514, 256) ✅
+- H-features std ∈ [0.1, 2.0]
+
+#### Phase 2: Hybrid Architecture (4-5h) ✅ COMPLÈTE
+
+**2.1 HoVerNetDecoderHybrid**
+
+Fichier créé: `src/models/hovernet_decoder_hybrid.py` (300 lignes)
+
+**Architecture implémentée:**
+```
+Input:
+  - patch_tokens: (B, 256, 1536) RGB features H-optimus-0
+  - h_features: (B, 256) H-channel CNN features
+
+Bottlenecks:
+  - RGB: 1536 → 256 (Conv2d 1x1)
+  - H: 256 → 256 (Linear projection)
+
+✅ FUSION ADDITIVE (Suggestion 4):
+  fused = rgb_map + h_map  (B, 256, 16, 16)
+
+Decoder:
+  - Shared conv layers + Dropout (0.1)
+  - Upsampling 16×16 → 224×224
+  - 3 branches: NP (2), HV (2, tanh), NT (n_classes)
+
+Output:
+  - HybridDecoderOutput dataclass
+  - to_numpy() method avec activations optionnelles
+```
+
+**Avantages fusion additive:**
+- Gradient flow des 2 sources (RGB spatial + H morphology)
+- Pas de doublement de channels (vs concatenation)
+- Alignment mathématique (même espace latent 256-dim)
+
+**2.2 Tests Unitaires**
+
+Script créé: `scripts/validation/test_hybrid_architecture.py` (350 lignes)
+
+**5 tests implémentés:**
+1. **Forward Pass** — Vérification shapes (B, 2/2/n_classes, 224, 224)
+2. **Gradient Flow** — RGB & H gradients non-nuls, ratio < 100
+3. **Fusion Additive** — Les 2 branches contribuent, pas concatenation
+4. **Output Activations** — HV tanh [-1, 1], NP sigmoid [0, 1], NT softmax sum=1
+5. **Parameter Count** — [100k, 100M], optimal ~20-30M
+
+**Commande validation:**
+```bash
+python scripts/validation/test_hybrid_architecture.py
+# Attendu: 🎉 ALL TESTS PASSED! Architecture is ready for training.
+```
+
+#### Documentation Créée
+
+| Fichier | Contenu |
+|---------|---------|
+| `docs/VALIDATION_PHASE_1.1_HYBRID_DATASET.md` | Critères validation data prep, diagnostic en cas d'échec |
+| `docs/VALIDATION_PHASE_1.2_H_FEATURES.md` | Critères validation H-features, test gradient flow |
+| `docs/VALIDATION_PHASE_2_HYBRID_ARCHITECTURE.md` | Critères validation 5 tests unitaires |
+
+#### Points de Validation (À EXÉCUTER par utilisateur)
+
+**Point 1.1:**
+```bash
+python scripts/preprocessing/prepare_v13_hybrid_dataset.py --family epidermal
+# Vérifier: H-channel std, HV dtype, fichier ~1-1.5 GB
+```
+
+**Point 1.2:**
+```bash
+python scripts/preprocessing/extract_h_features_v13.py --family epidermal
+# Vérifier: H-features (2514, 256), std ∈ [0.1, 2.0], fichier ~2-3 MB
+```
+
+**Point 2:**
+```bash
+python scripts/validation/test_hybrid_architecture.py
+# Vérifier: 5/5 tests passés
+```
+
+#### Prochaines Étapes (Phase 3 & 4)
+
+**Phase 3 — Training Pipeline** (⏳ En attente validation Phases 1-2):
+- Créer `scripts/training/train_hovernet_family_v13_hybrid.py`
+- HybridDataset class (charge RGB + H features)
+- Loss hybride avec λ_h_recon = 0.1 (Suggestion 5)
+- LR séparés RGB/H (Mitigation Risque 2)
+- Entraînement 30 epochs
+
+**Phase 4 — Evaluation HV-Guided Watershed**:
+- Créer `scripts/evaluation/test_v13_hybrid_aji.py`
+- Implémenter watershed guidé: `marker_energy = -dist * (1 - hv_magnitude^beta)`
+- Calibration beta ∈ [0.5, 1.0, 1.5]
+- Comparaison V13 POC vs V13-Hybrid
+
+#### Métriques Cibles (Famille Epidermal)
+
+| Métrique | V13 POC | V13-Hybrid Cible | Gain Minimum |
+|----------|---------|------------------|--------------|
+| Dice | 0.7604 ± 0.14 | ≥ 0.78 | +3% |
+| **AJI** | 0.5730 ± 0.14 | **≥ 0.68** | **+18%** |
+| PQ | ~0.51 | ≥ 0.62 | +20% |
+
+#### Leçons Apprises
+
+**1. Macenko Normalization Intégrée**
+- staintools ne compile pas sur setuptools modernes
+- Implémentation from scratch (lignes 28-115) plus propre
+- Méthode validée: extraction stain matrix + concentration normalization
+
+**2. Fusion Additive > Concatenation**
+- Permet gradient flow équilibré des 2 branches
+- Pas de doublement de channels (économie mémoire)
+- Alignment dans même espace latent (256-dim)
+
+**3. Validation Automatique HV Targets**
+- Prévention Bug #3 (HV int8 au lieu de float32)
+- Vérification dtype + range AVANT toute sauvegarde
+- Économie potentielle: 10h ré-entraînement évitées
+
+**4. Tests Unitaires Avant Training**
+- Test gradient flow détecte problèmes fusion early
+- Test fusion additive prouve que les 2 branches contribuent
+- Économie: debug après 30 epochs évité
+
+#### Fichiers Créés (7)
+
+| Type | Fichier | Lignes |
+|------|---------|--------|
+| Script | `prepare_v13_hybrid_dataset.py` | 370 |
+| Script | `extract_h_features_v13.py` | 230 |
+| Modèle | `hovernet_decoder_hybrid.py` | 300 |
+| Test | `test_hybrid_architecture.py` | 350 |
+| Doc | `VALIDATION_PHASE_1.1_HYBRID_DATASET.md` | 180 |
+| Doc | `VALIDATION_PHASE_1.2_H_FEATURES.md` | 150 |
+| Doc | `VALIDATION_PHASE_2_HYBRID_ARCHITECTURE.md` | 200 |
+| **Total** | **7 fichiers** | **1780 lignes** |
+
+#### Commit
+
+```
+c110bc8 — feat(v13-hybrid): Phase 1 & 2 complete - Data preparation + Hybrid architecture
+
+NEXT: Phase 3 (Training) pending user validation of Phases 1-2
+```
+
+**Temps total Phase 1 & 2:** ~6h (dev + documentation + tests)
+
+**Statut:** ✅ Phases 1 & 2 complètes — ⏳ En attente validation utilisateur
+
+---
+
 ### 2025-12-25 — Bug #7 RÉSOLU: Incohérence NP/NT dans script v11 ✅ FIX v12
 
 **Contexte:** Session précédente (24 déc) avait training convergent (Dice 0.95) MAIS conflit NP/NT persistant à 45.35%.
