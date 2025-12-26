@@ -149,7 +149,8 @@ def main():
         np_out, hv_out, nt_out = model(features.float())
 
     # Activations
-    prob_map = torch.sigmoid(np_out).cpu().numpy()[0, 0]
+    # FIX INVERSION: Le modèle a mis les noyaux sur canal 1, pas canal 0 (background)
+    prob_map = torch.sigmoid(np_out).cpu().numpy()[0, 1]  # Canal 1 = Nuclei
 
     print(f"   Shape:       {prob_map.shape}")
     print(f"   Range:       [{prob_map.min():.4f}, {prob_map.max():.4f}]")

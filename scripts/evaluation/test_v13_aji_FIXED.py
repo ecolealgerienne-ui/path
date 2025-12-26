@@ -200,7 +200,8 @@ def run_v13_inference(
         np_out, hv_out, nt_out = model(features.float())
 
     # 5. Activations
-    np_pred = torch.sigmoid(np_out).cpu().numpy()[0, 0]  # (224, 224)
+    # FIX INVERSION: Le modèle a mis les noyaux sur canal 1, pas canal 0 (background)
+    np_pred = torch.sigmoid(np_out).cpu().numpy()[0, 1]  # Canal 1 = Nuclei
     hv_pred = hv_out.cpu().numpy()[0]  # (2, 224, 224)
 
     return np_pred, hv_pred
