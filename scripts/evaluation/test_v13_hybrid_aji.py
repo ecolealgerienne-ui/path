@@ -42,83 +42,11 @@ from src.models.hovernet_decoder_hybrid import HoVerNetDecoderHybrid
 from src.models.loader import ModelLoader
 from src.preprocessing import create_hoptimus_transform, preprocess_image
 from src.constants import PANNUKE_IMAGE_SIZE
+from src.metrics.ground_truth_metrics import compute_aji  # Use centralized AJI implementation
 
 # Import H-channel CNN from preprocessing script
 sys.path.insert(0, str(Path(__file__).parent.parent / 'preprocessing'))
 from extract_h_features_v13 import HChannelCNN
-
-
-def compute_aji(pred_inst: np.ndarray, gt_inst: np.ndarray) -> float:
-    """
-    Compute Aggregated Jaccard Index (AJI) - CORRECTED VERSION.
-    Uses pixel areas instead of IoU ratios for the summation.
-
-    Formula: AJI = Σ(Intersection_Areas) / (Σ(Union_Areas) + Σ(Unmatched_Pred_Areas))
-
-    Args:
-        pred_inst: Predicted instance map (H, W) with instance IDs
-        gt_inst: Ground truth instance map (H, W) with instance IDs
-
-    Returns:
-        AJI score in [0, 1], higher is better
-    """
-    pred_ids = np.unique(pred_inst)
-    pred_ids = pred_ids[pred_ids > 0]
-
-    gt_ids = np.unique(gt_inst)
-    gt_ids = gt_ids[gt_ids > 0]
-
-    if len(gt_ids) == 0:
-        return 1.0 if len(pred_ids) == 0 else 0.0
-    if len(pred_ids) == 0:
-        return 0.0
-
-    # 1. Calculate Intersection and Union Areas for all pairs
-    # Store areas to avoid recomputing
-    gt_areas = {gid: (gt_inst == gid).sum() for gid in gt_ids}
-    pred_areas = {pid: (pred_inst == pid).sum() for pid in pred_ids}
-
-    # Pairwise Intersection
-    intersection_matrix = np.zeros((len(gt_ids), len(pred_ids)))
-
-    for i, gt_id in enumerate(gt_ids):
-        gt_mask = (gt_inst == gt_id)
-        for j, pred_id in enumerate(pred_ids):
-            # Intersection (pixels)
-            intersection = np.logical_and(gt_mask, (pred_inst == pred_id)).sum()
-            intersection_matrix[i, j] = intersection
-
-    # 2. Find best match for each GT instance (maximize IoU)
-    matched_pred_indices = set()
-    numerator = 0.0
-    denominator = 0.0
-
-    for i, gt_id in enumerate(gt_ids):
-        # Calculate IoU for matching purposes only
-        # IoU = I / (Area_G + Area_P - I)
-        intersections = intersection_matrix[i, :]
-        unions = gt_areas[gt_id] + np.array([pred_areas[pid] for pid in pred_ids]) - intersections
-        ious = intersections / (unions + 1e-8)
-
-        best_j = np.argmax(ious)
-
-        # AJI Rule: We take the intersection and union of the BEST match
-        # Even if IoU is low, it contributes to the score (unlike PQ which thresholds)
-        best_intersection = intersections[best_j]
-        best_union = unions[best_j]
-
-        numerator += best_intersection
-        denominator += best_union
-        matched_pred_indices.add(best_j)
-
-    # 3. Add penalty for unmatched predicted instances
-    for j, pred_id in enumerate(pred_ids):
-        if j not in matched_pred_indices:
-            denominator += pred_areas[pred_id]
-
-    # Final Calculation
-    aji = numerator / (denominator + 1e-8)
-    return aji
 
 
 def compute_pq(pred_inst: np.ndarray, gt_inst: np.ndarray, iou_threshold: float = 0.5) -> Dict[str, float]:
