@@ -584,6 +584,7 @@ def main():
     optimizer = torch.optim.AdamW([
         {'params': model.bottleneck_rgb.parameters(), 'lr': args.lr_rgb},
         {'params': model.bottleneck_h.parameters(), 'lr': args.lr_h},
+        {'params': model.gated_fusion.parameters(), 'lr': args.lr_rgb},  # CRITICAL: Gate must be optimized!
         {'params': model.shared_conv1.parameters(), 'lr': args.lr_rgb},
         {'params': model.shared_conv2.parameters(), 'lr': args.lr_rgb},
         {'params': model.up1.parameters(), 'lr': args.lr_rgb},
