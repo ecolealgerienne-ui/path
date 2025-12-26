@@ -573,7 +573,7 @@ def evaluate_aji(
             # Convert to numpy
             result = output.to_numpy(apply_activations=True)
 
-            np_pred = result['np'][0, 0]  # (224, 224)
+            np_pred = result['np'][0, 1]  # (224, 224) - Channel 1 = nuclei (not background)
             hv_pred = result['hv'][0]     # (2, 224, 224)
 
             # Resize to 256×256 for comparison with GT
