@@ -1,11 +1,14 @@
 """
-HoVer-Net Decoder Hybrid — V13-Hybrid Production.
+HoVer-Net Decoder Hybrid — V13.1 with Gated Fusion.
 
 Dual-branch architecture combining:
 - RGB features from H-optimus-0 (frozen backbone)
 - H-channel features from lightweight CNN adapter
 
-Fusion strategy: Additive fusion after bottleneck (Suggestion 4 validated).
+Fusion strategy: Gated Fusion (CTO recommendation 2025-12-26).
+  - Prevents H-channel noise from degrading RGB performance
+  - Learnable gate parameter controls H contribution (initially ~12%)
+  - Adjusts during training: increases if H helps, decreases if H hurts
 
 Architecture:
     Input:
@@ -17,14 +20,15 @@ Architecture:
         - H: 256 → 256 (linear projection)
 
     Fusion:
-        - fused = rgb_map + h_map  (B, 256, 16, 16)
+        - fused = rgb_map + sigmoid(gate) * h_map  (B, 256, 16, 16)
+        - gate: Learnable scalar (init -2.0 → alpha ≈ 0.12)
 
     Decoder:
         - Shared upsampling (16×16 → 224×224)
         - 3 branches: NP (2 classes), HV (2 channels), NT (n_classes)
 
 Author: CellViT-Optimus Team
-Date: 2025-12-26
+Date: 2025-12-26 (V13.1 Gated Fusion)
 """
 
 import torch
@@ -32,6 +36,71 @@ import torch.nn as nn
 import torch.nn.functional as F
 from typing import Tuple
 from dataclasses import dataclass
+
+
+class GatedFusion(nn.Module):
+    """
+    Gated Fusion module for combining RGB and H-channel features.
+
+    Instead of naive additive fusion (rgb + h), this module learns a weight
+    parameter (gate) that controls how much H-channel signal to inject.
+
+    Key innovation:
+    - Gate parameter starts near 0 (trust RGB initially)
+    - If H helps classification (NT/HV), gate increases during training
+    - If H hurts segmentation (NP), gate decreases
+    - Prevents H-channel noise from degrading RGB performance
+
+    Architecture:
+        fused = rgb + sigmoid(gate) * h
+
+    Where:
+        - rgb: (B, C, H, W) - Strong features from H-optimus-0
+        - h: (B, C, H, W) - Weak features from untrained CNN
+        - gate: Learnable scalar parameter (initialized to -2.0)
+        - sigmoid(gate): Weight ∈ [0, 1] controlling H contribution
+
+    Author: CTO recommendation (2025-12-26)
+    """
+
+    def __init__(self, dim: int, init_gate: float = -2.0):
+        """
+        Initialize Gated Fusion.
+
+        Args:
+            dim: Feature dimension (not used, kept for API consistency)
+            init_gate: Initial gate value (default -2.0 → sigmoid ≈ 0.12)
+                      Negative values bias toward RGB initially
+        """
+        super().__init__()
+
+        # Learnable gate parameter (scalar)
+        # init_gate = -2.0 → sigmoid(-2.0) ≈ 0.12 (only 12% H initially)
+        self.gate = nn.Parameter(torch.tensor(init_gate))
+
+    def forward(self, rgb_feat: torch.Tensor, h_feat: torch.Tensor) -> torch.Tensor:
+        """
+        Fuse RGB and H features with learned gating.
+
+        Args:
+            rgb_feat: (B, C, H, W) - RGB features from H-optimus-0
+            h_feat: (B, C, H, W) - H-channel features from CNN
+
+        Returns:
+            fused: (B, C, H, W) - Gated fusion output
+        """
+        # Compute gate weight (0 to 1)
+        alpha = torch.sigmoid(self.gate)
+
+        # Gated fusion: Keep 100% RGB, add weighted H
+        # This ensures RGB is never degraded, only enhanced if H helps
+        fused = rgb_feat + (alpha * h_feat)
+
+        return fused
+
+    def get_gate_value(self) -> float:
+        """Get current gate weight (for monitoring)."""
+        return torch.sigmoid(self.gate).item()
 
 
 @dataclass
@@ -117,6 +186,10 @@ class HoVerNetDecoderHybrid(nn.Module):
         # H branch: 256 → 256 (projection)
         self.bottleneck_h = nn.Linear(h_dim, 256)
         self.bn_h = nn.BatchNorm1d(256)
+
+        # ========== GATED FUSION ==========
+        # Learnable fusion weight (prevents H noise from degrading RGB)
+        self.gated_fusion = GatedFusion(dim=256, init_gate=-2.0)
 
         # ========== SHARED DECODER ==========
         # After fusion: 256 → 256 (refine)
@@ -209,9 +282,10 @@ class HoVerNetDecoderHybrid(nn.Module):
         h_emb = h_emb.unsqueeze(-1).unsqueeze(-1)  # (B, 256, 1, 1)
         h_map = h_emb.expand(-1, -1, 16, 16)  # (B, 256, 16, 16)
 
-        # ========== ADDITIVE FUSION ==========
-        # ✅ SUGGESTION 4: Fusion additive (permet gradient flow des 2 sources)
-        fused = rgb_map + h_map  # (B, 256, 16, 16)
+        # ========== GATED FUSION ==========
+        # ✅ CTO RECOMMENDATION: Learned fusion weight prevents H noise from degrading RGB
+        # Initially: alpha ≈ 0.12 (12% H), adjusts during training based on gradient feedback
+        fused = self.gated_fusion(rgb_map, h_map)  # (B, 256, 16, 16)
 
         # ========== SHARED DECODER ==========
         x = F.relu(self.shared_bn1(self.shared_conv1(fused)))

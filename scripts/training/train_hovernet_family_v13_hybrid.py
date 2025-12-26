@@ -373,11 +373,14 @@ def train_epoch(model, dataloader, criterion, optimizer, device, epoch):
         total_nt += loss_dict['loss_nt']
 
         # Update progress bar
+        # Monitor gate value (alpha) to see H-channel contribution
+        gate_alpha = model.gated_fusion.get_gate_value()
         pbar.set_postfix({
             'loss': f"{loss.item():.4f}",
             'np': f"{loss_dict['loss_np']:.4f}",
             'hv': f"{loss_dict['loss_hv']:.4f}",
-            'nt': f"{loss_dict['loss_nt']:.4f}"
+            'nt': f"{loss_dict['loss_nt']:.4f}",
+            'α': f"{gate_alpha:.3f}"  # Gate weight (0=RGB only, 1=equal)
         })
 
     n_batches = len(dataloader)
@@ -641,12 +644,14 @@ def main():
         scheduler.step()
 
         # Log
+        gate_alpha = model.gated_fusion.get_gate_value()
         print(f"\nEpoch {epoch}/{args.epochs}")
         print(f"  Train Loss: {train_metrics['loss']:.4f}")
         print(f"  Val Loss:   {val_metrics['loss']:.4f}")
         print(f"  Val Dice:   {val_metrics['dice']:.4f}")
         print(f"  Val HV MSE: {val_metrics['hv_mse']:.4f}")
         print(f"  Val NT Acc: {val_metrics['nt_acc']:.4f}")
+        print(f"  Gate α:     {gate_alpha:.4f} ({gate_alpha*100:.1f}% H-channel)")
 
         # Save history
         history['train_loss'].append(train_metrics['loss'])
