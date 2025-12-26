@@ -513,7 +513,7 @@ def evaluate_aji(
 
     model = HoVerNetDecoderHybrid(
         embed_dim=1536,
-        h_feature_dim=256,
+        h_dim=256,
         n_classes=5,
         dropout=checkpoint['args']['dropout'] if 'args' in checkpoint else 0.1
     ).to(device)
