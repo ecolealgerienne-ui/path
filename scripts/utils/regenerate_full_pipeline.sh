@@ -107,7 +107,7 @@ for family in "${FAMILIES[@]}"; do
 
     python scripts/preprocessing/prepare_family_data_FIXED_v12_COHERENT.py \
         --family "$family" \
-        --data_dir /home/amar/data/PanNuke \
+        --pannuke_dir /home/amar/data/PanNuke \
         || { log_error "Failed to generate FIXED data for $family"; exit 1; }
 
     log_success "FIXED data generated for $family"

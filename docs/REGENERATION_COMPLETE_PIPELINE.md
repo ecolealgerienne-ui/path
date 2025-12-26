@@ -106,7 +106,7 @@ for family in glandular digestive urologic epidermal respiratory; do
 
     python scripts/preprocessing/prepare_family_data_FIXED_v12_COHERENT.py \
         --family $family \
-        --data_dir /home/amar/data/PanNuke
+        --pannuke_dir /home/amar/data/PanNuke
 done
 ```
 
@@ -410,7 +410,7 @@ conda activate cellvit
 echo "Phase 2: Generating Family FIXED data..."
 for family in glandular digestive urologic epidermal respiratory; do
     python scripts/preprocessing/prepare_family_data_FIXED_v12_COHERENT.py \
-        --family $family --data_dir /home/amar/data/PanNuke
+        --family $family --pannuke_dir /home/amar/data/PanNuke
 done
 
 # Phase 3: V13-Hybrid

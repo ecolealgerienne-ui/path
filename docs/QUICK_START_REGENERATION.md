@@ -182,7 +182,7 @@ pip install timm transformers scikit-learn scipy numpy opencv-python scikit-imag
 ```bash
 # Générer famille par famille au lieu du script automatique
 python scripts/preprocessing/prepare_family_data_FIXED_v12_COHERENT.py \
-    --family epidermal --data_dir /home/amar/data/PanNuke
+    --family epidermal --pannuke_dir /home/amar/data/PanNuke
 
 # Puis continuer manuellement avec les autres familles
 ```
