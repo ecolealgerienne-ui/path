@@ -24,6 +24,9 @@ from tqdm import tqdm
 from skimage.color import rgb2hed
 import cv2
 
+# Clean Split (Grouped Split) - Prevent data leakage
+from sklearn.model_selection import train_test_split
+
 
 def extract_5_crops_from_256(
     image_256: np.ndarray,
@@ -252,6 +255,144 @@ def validate_h_channel_quality(h_channels: np.ndarray) -> Dict[str, float]:
     return stats
 
 
+def create_clean_split_and_save(
+    output_path: Path,
+    images: np.ndarray,
+    h_channels: np.ndarray,
+    np_targets: np.ndarray,
+    hv_targets: np.ndarray,
+    nt_targets: np.ndarray,
+    source_ids: np.ndarray,
+    fold_ids: np.ndarray,
+    crop_position_ids: np.ndarray,
+    metadata: Dict
+) -> None:
+    """
+    Generate clean Train/Val split based on source image IDs (not crops).
+    Prevents data leakage by ensuring no crops from the same source image
+    appear in both train and validation sets.
+
+    Split is locked to disk with 'split_types' field:
+    - 0 = Train (80% of unique source IDs)
+    - 1 = Val (20% of unique source IDs)
+
+    Args:
+        output_path: Path to save .npz file
+        images: (N, 224, 224, 3) uint8 RGB images
+        h_channels: (N, 224, 224) uint8 H-channel images
+        np_targets: (N, 224, 224) float32 binary masks
+        hv_targets: (N, 2, 224, 224) float32 HV maps
+        nt_targets: (N, 224, 224) int64 class labels
+        source_ids: (N,) source image IDs
+        fold_ids: (N,) fold IDs
+        crop_position_ids: (N,) crop position indices (0-4)
+        metadata: Dict with additional metadata to save
+
+    Returns:
+        None (saves file to disk)
+    """
+    print(f"\n{'='*80}")
+    print(f"🔒 CREATING CLEAN SPLIT (GROUPED BY SOURCE ID)")
+    print(f"{'='*80}\n")
+
+    # 1. Identify unique source image IDs
+    unique_ids = np.unique(source_ids)
+    n_total_images = len(unique_ids)
+
+    print(f"📊 Split Statistics:")
+    print(f"   Total crops:          {len(source_ids)}")
+    print(f"   Unique source images: {n_total_images}")
+
+    # 2. Split source IDs (80% Train, 20% Val)
+    # random_state=42 ensures reproducibility
+    train_ids, val_ids = train_test_split(
+        unique_ids,
+        test_size=0.2,
+        random_state=42,
+        shuffle=True
+    )
+
+    n_train_images = len(train_ids)
+    n_val_images = len(val_ids)
+
+    print(f"\n📂 Source Image Split:")
+    print(f"   Train images: {n_train_images} ({n_train_images/n_total_images*100:.1f}%)")
+    print(f"   Val images:   {n_val_images} ({n_val_images/n_total_images*100:.1f}%)")
+
+    # 3. Create split mask for each crop
+    # Use np.isin for efficient membership testing
+    is_train = np.isin(source_ids, train_ids)
+    is_val = np.isin(source_ids, val_ids)
+
+    # 4. Safety checks (CRITICAL - prevent data leakage)
+    print(f"\n🔍 Safety Checks:")
+
+    # Check 1: No crop in both train and val
+    overlap = np.sum(is_train & is_val)
+    if overlap > 0:
+        raise AssertionError(
+            f"🚨 CRITICAL ERROR: {overlap} crops are in BOTH train and val! "
+            f"This indicates a logic error in split creation."
+        )
+    print(f"   ✅ No overlap: 0 crops in both train and val")
+
+    # Check 2: All crops assigned to either train or val
+    total_assigned = np.sum(is_train) + np.sum(is_val)
+    if total_assigned != len(source_ids):
+        missing = len(source_ids) - total_assigned
+        raise AssertionError(
+            f"🚨 CRITICAL ERROR: {missing} crops were not assigned to train or val! "
+            f"This indicates a logic error in split creation."
+        )
+    print(f"   ✅ All crops assigned: {total_assigned}/{len(source_ids)}")
+
+    # 5. Create split_types array
+    split_types = np.zeros(len(source_ids), dtype=np.uint8)
+    split_types[is_train] = 0  # 0 = Train
+    split_types[is_val] = 1    # 1 = Val
+
+    n_train_crops = np.sum(split_types == 0)
+    n_val_crops = np.sum(split_types == 1)
+
+    print(f"\n📦 Crop Split:")
+    print(f"   Train crops: {n_train_crops} ({n_train_crops/len(source_ids)*100:.1f}%)")
+    print(f"   Val crops:   {n_val_crops} ({n_val_crops/len(source_ids)*100:.1f}%)")
+
+    # 6. Save to disk
+    print(f"\n💾 Saving dataset with locked split to: {output_path}")
+
+    np.savez_compressed(
+        output_path,
+        # Images and features
+        images_224=images,
+        h_channels_224=h_channels,
+        # Targets
+        np_targets=np_targets,
+        hv_targets=hv_targets,
+        nt_targets=nt_targets,
+        # Metadata
+        source_image_ids=source_ids,
+        fold_ids=fold_ids,
+        crop_position_ids=crop_position_ids,
+        # 🔒 LOCKED SPLIT (the key to preventing data leakage)
+        split_types=split_types,
+        # Additional metadata
+        **metadata
+    )
+
+    file_size_mb = output_path.stat().st_size / (1024 ** 2)
+    print(f"   ✅ Saved: {file_size_mb:.2f} MB")
+
+    print(f"\n{'='*80}")
+    print(f"✅ CLEAN SPLIT CREATED AND LOCKED TO DISK")
+    print(f"{'='*80}")
+    print(f"\n📝 Usage in training/evaluation scripts:")
+    print(f"   Train set:      data['split_types'] == 0  ({n_train_crops} crops)")
+    print(f"   Validation set: data['split_types'] == 1  ({n_val_crops} crops)")
+    print(f"\n⚠️  IMPORTANT: Always use split_types to load train/val data.")
+    print(f"   This ensures NO data leakage between sets.\n")
+
+
 def prepare_hybrid_dataset(
     family: str,
     v13_data_file: Path,
@@ -441,26 +582,26 @@ def prepare_hybrid_dataset(
     print(f"  Source IDs: {source_image_ids.shape}, {source_image_ids.dtype}")
     print(f"  Fold IDs: {fold_ids.shape}, {fold_ids.dtype}")
 
-    # Save
-    print(f"\n💾 Saving to: {output_file}")
-    np.savez_compressed(
-        output_file,
-        images_224=images_224,
-        h_channels_224=h_channels_224,
+    # Prepare metadata for clean split save
+    metadata = {
+        'macenko_applied': use_macenko and normalizer is not None,
+        'h_channel_std_mean': h_stats['mean_std'],
+        'h_channel_std_range': (h_stats['min_std'], h_stats['max_std'])
+    }
+
+    # Save with Clean Split (Grouped Split) to prevent data leakage
+    create_clean_split_and_save(
+        output_path=output_file,
+        images=images_224,
+        h_channels=h_channels_224,
         np_targets=np_targets,
         hv_targets=hv_targets,
         nt_targets=nt_targets,
-        source_image_ids=source_image_ids,
+        source_ids=source_image_ids,
         fold_ids=fold_ids,
-        crop_position_ids=crop_position_ids,  # 0=center, 1=TL, 2=TR, 3=BL, 4=BR
-        # Metadata
-        macenko_applied=use_macenko and normalizer is not None,
-        h_channel_std_mean=h_stats['mean_std'],
-        h_channel_std_range=(h_stats['min_std'], h_stats['max_std'])
+        crop_position_ids=crop_position_ids,
+        metadata=metadata
     )
-
-    file_size_mb = output_file.stat().st_size / (1024 ** 2)
-    print(f"  ✅ Saved: {file_size_mb:.2f} MB")
 
     print(f"\n{'='*80}")
     print(f"✅ V13-HYBRID DATASET PREPARATION COMPLETE: {family.upper()}")
