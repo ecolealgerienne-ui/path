@@ -38,10 +38,14 @@ from typing import Dict, Tuple, List
 import json
 from datetime import datetime
 
-from src.models.hovernet_decoder_hybrid import HoVerNetDecoderHybrid, LightweightCNNAdapter
+from src.models.hovernet_decoder_hybrid import HoVerNetDecoderHybrid
 from src.models.loader import ModelLoader
 from src.preprocessing import create_hoptimus_transform, preprocess_image
 from src.constants import PANNUKE_IMAGE_SIZE
+
+# Import H-channel CNN from preprocessing script
+sys.path.insert(0, str(Path(__file__).parent.parent / 'preprocessing'))
+from extract_h_features_v13 import HChannelCNN
 
 
 def compute_aji(pred_inst: np.ndarray, gt_inst: np.ndarray) -> float:
@@ -528,13 +532,9 @@ def evaluate_aji(
         print(f"\n🔧 Loading feature extraction models for on-the-fly mode...")
 
         # Load H-CNN adapter
-        h_cnn = LightweightCNNAdapter(
-            in_channels=1,
-            out_features=256,
-            hidden_dims=[32, 64, 128]
-        ).to(device)
+        h_cnn = HChannelCNN(output_dim=256).to(device)
         h_cnn.eval()
-        print(f"  ✅ H-CNN adapter loaded ({sum(p.numel() for p in h_cnn.parameters())} params)")
+        print(f"  ✅ H-CNN adapter loaded ({h_cnn.get_num_params()} params)")
 
         # Load H-optimus-0 backbone
         backbone = ModelLoader.load_hoptimus0(device=device)
