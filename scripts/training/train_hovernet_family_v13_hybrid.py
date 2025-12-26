@@ -497,7 +497,7 @@ def main():
     # Paths
     hybrid_data_path = args.hybrid_data_dir / f"{args.family}_data_v13_hybrid.npz"
     h_features_path = args.h_features_dir / f"{args.family}_h_features_v13.npz"
-    rgb_features_path = args.rgb_features_dir / "fold0_features.npz"
+    rgb_features_path = args.h_features_dir / f"{args.family}_rgb_features_v13.npz"
 
     # Verify paths exist
     for path, name in [
