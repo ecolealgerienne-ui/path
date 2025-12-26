@@ -350,8 +350,8 @@ def main():
     parser.add_argument('--family', type=str, default='epidermal',
                         choices=['glandular', 'digestive', 'urologic', 'epidermal', 'respiratory'],
                         help='Family to process')
-    parser.add_argument('--v13_data_dir', type=Path, default=Path('data/family_data_v13_multi_crop'),
-                        help='Directory containing V13 data')
+    parser.add_argument('--source_data_dir', type=Path, default=Path('data/family_FIXED'),
+                        help='Directory containing source family data (FIXED version)')
     parser.add_argument('--output_dir', type=Path, default=Path('data/family_data_v13_hybrid'),
                         help='Output directory for hybrid data')
     parser.add_argument('--no_macenko', action='store_true',
@@ -359,11 +359,11 @@ def main():
 
     args = parser.parse_args()
 
-    # Locate V13 data file
-    v13_data_file = args.v13_data_dir / f"{args.family}_data_v13_multi_crop.npz"
+    # Locate source data file
+    v13_data_file = args.source_data_dir / f"{args.family}_data_FIXED.npz"
 
     if not v13_data_file.exists():
-        raise FileNotFoundError(f"V13 data file not found: {v13_data_file}")
+        raise FileNotFoundError(f"Source data file not found: {v13_data_file}")
 
     # Prepare hybrid dataset
     prepare_hybrid_dataset(
