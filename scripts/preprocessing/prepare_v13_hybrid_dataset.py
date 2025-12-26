@@ -226,19 +226,77 @@ def prepare_hybrid_dataset(
     print(f"📂 Loading V13 data: {v13_data_file}")
     data = np.load(v13_data_file)
 
-    images_224 = data['images_224']  # (N, 224, 224, 3) uint8
-    np_targets = data['np_targets']  # (N, 224, 224) float32
-    hv_targets = data['hv_targets']  # (N, 2, 224, 224) float32
-    nt_targets = data['nt_targets']  # (N, 224, 224) int64
-    source_image_ids = data['source_image_ids']  # (N,) int32
-    crop_positions = data['crop_positions']  # (N,) int32
+    # Load data (may be 256×256 or 224×224 depending on source)
+    images_raw = data['images']  # (N, H, W, 3) uint8
+    np_targets_raw = data['np_targets']  # (N, H, W) float32
+    hv_targets_raw = data['hv_targets']  # (N, 2, H, W) float32
+    nt_targets_raw = data['nt_targets']  # (N, H, W) int64
 
-    n_crops = images_224.shape[0]
-    print(f"  ✅ Loaded {n_crops} crops")
-    print(f"  Images: {images_224.shape}, {images_224.dtype}")
-    print(f"  NP targets: {np_targets.shape}, {np_targets.dtype}")
-    print(f"  HV targets: {hv_targets.shape}, {hv_targets.dtype}")
-    print(f"  NT targets: {nt_targets.shape}, {nt_targets.dtype}")
+    # Handle metadata (different key names in FIXED vs V13 files)
+    if 'image_ids' in data.keys():
+        source_image_ids = data['image_ids']
+    elif 'source_image_ids' in data.keys():
+        source_image_ids = data['source_image_ids']
+    else:
+        source_image_ids = np.arange(len(images_raw), dtype=np.int32)
+
+    if 'fold_ids' in data.keys():
+        fold_ids = data['fold_ids']
+    else:
+        fold_ids = np.zeros(len(images_raw), dtype=np.int32)
+
+    n_samples = images_raw.shape[0]
+    orig_size = images_raw.shape[1]
+    print(f"  ✅ Loaded {n_samples} samples")
+    print(f"  Original size: {orig_size}×{orig_size}")
+    print(f"  Images: {images_raw.shape}, {images_raw.dtype}")
+    print(f"  NP targets: {np_targets_raw.shape}, {np_targets_raw.dtype}")
+    print(f"  HV targets: {hv_targets_raw.shape}, {hv_targets_raw.dtype}")
+    print(f"  NT targets: {nt_targets_raw.shape}, {nt_targets_raw.dtype}")
+
+    # Resize to 224×224 if needed (for H-optimus-0 compatibility)
+    if orig_size != 224:
+        print(f"\n🔄 Resizing from {orig_size}×{orig_size} to 224×224...")
+        from skimage.transform import resize
+
+        images_224 = np.zeros((n_samples, 224, 224, 3), dtype=np.uint8)
+        np_targets = np.zeros((n_samples, 224, 224), dtype=np.float32)
+        hv_targets = np.zeros((n_samples, 2, 224, 224), dtype=np.float32)
+        nt_targets = np.zeros((n_samples, 224, 224), dtype=np.int64)
+
+        for i in range(n_samples):
+            # Resize image (uint8, preserve range [0, 255])
+            images_224[i] = resize(
+                images_raw[i], (224, 224), order=1, preserve_range=True, anti_aliasing=True
+            ).astype(np.uint8)
+
+            # Resize NP (float32, preserve range [0, 1])
+            np_targets[i] = resize(
+                np_targets_raw[i], (224, 224), order=0, preserve_range=True, anti_aliasing=False
+            ).astype(np.float32)
+
+            # Resize HV (float32, preserve range [-1, 1])
+            hv_targets[i, 0] = resize(
+                hv_targets_raw[i, 0], (224, 224), order=1, preserve_range=True, anti_aliasing=False
+            )
+            hv_targets[i, 1] = resize(
+                hv_targets_raw[i, 1], (224, 224), order=1, preserve_range=True, anti_aliasing=False
+            )
+
+            # Resize NT (int64, nearest neighbor)
+            nt_targets[i] = resize(
+                nt_targets_raw[i], (224, 224), order=0, preserve_range=True, anti_aliasing=False
+            ).astype(np.int64)
+
+            if (i + 1) % 100 == 0:
+                print(f"  Progress: {i+1}/{n_samples}")
+
+        print(f"  ✅ Resize complete")
+    else:
+        images_224 = images_raw
+        np_targets = np_targets_raw
+        hv_targets = hv_targets_raw
+        nt_targets = nt_targets_raw
 
     # ⚠️ BUG #3 PREVENTION: Validate HV targets
     print("\n🔍 Validating HV targets...")
@@ -274,9 +332,9 @@ def prepare_hybrid_dataset(
 
     # Extract H-channels
     print(f"\n🔬 Extracting H-channels...")
-    h_channels_224 = np.zeros((n_crops, 224, 224), dtype=np.uint8)
+    h_channels_224 = np.zeros((n_samples, 224, 224), dtype=np.uint8)
 
-    for i in tqdm(range(n_crops), desc="Processing crops"):
+    for i in tqdm(range(n_samples), desc="Processing samples"):
         image = images_224[i]
 
         # Macenko normalization
@@ -318,7 +376,7 @@ def prepare_hybrid_dataset(
     print(f"  HV targets: {hv_targets.shape}, {hv_targets.dtype}, range [{hv_targets.min():.3f}, {hv_targets.max():.3f}]")
     print(f"  NT targets: {nt_targets.shape}, {nt_targets.dtype}, unique {len(np.unique(nt_targets))} classes")
     print(f"  Source IDs: {source_image_ids.shape}, {source_image_ids.dtype}")
-    print(f"  Crop positions: {crop_positions.shape}, {crop_positions.dtype}")
+    print(f"  Fold IDs: {fold_ids.shape}, {fold_ids.dtype}")
 
     # Save
     print(f"\n💾 Saving to: {output_file}")
@@ -330,7 +388,7 @@ def prepare_hybrid_dataset(
         hv_targets=hv_targets,
         nt_targets=nt_targets,
         source_image_ids=source_image_ids,
-        crop_positions=crop_positions,
+        fold_ids=fold_ids,
         # Metadata
         macenko_applied=use_macenko and normalizer is not None,
         h_channel_std_mean=h_stats['mean_std'],
