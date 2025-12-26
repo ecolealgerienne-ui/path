@@ -87,10 +87,11 @@ def test_gradient_flow():
 
     # Initialize model
     model = HoVerNetDecoderHybrid(embed_dim=1536, h_dim=256, n_classes=5)
+    model.train()  # Ensure training mode for gradients
 
-    # Create inputs with gradients
-    patch_tokens = torch.randn(1, 256, 1536, requires_grad=True)
-    h_features = torch.randn(1, 256, requires_grad=True)
+    # Create inputs with gradients (batch_size=2 for BatchNorm compatibility)
+    patch_tokens = torch.randn(2, 256, 1536, requires_grad=True)
+    h_features = torch.randn(2, 256, requires_grad=True)
 
     # Forward pass
     output = model(patch_tokens, h_features)
@@ -138,8 +139,9 @@ def test_fusion_additive():
     print("TEST 3: FUSION ADDITIVE")
     print("="*80)
 
-    # Initialize model
+    # Initialize model in eval mode (no BatchNorm statistics needed)
     model = HoVerNetDecoderHybrid(embed_dim=1536, h_dim=256, n_classes=5)
+    model.eval()
 
     # Test 1: RGB only (H = zeros)
     patch_tokens = torch.randn(1, 256, 1536)
@@ -185,7 +187,9 @@ def test_output_activations():
     print("TEST 4: OUTPUT ACTIVATIONS")
     print("="*80)
 
+    # Initialize model in eval mode (no BatchNorm statistics needed)
     model = HoVerNetDecoderHybrid(embed_dim=1536, h_dim=256, n_classes=5)
+    model.eval()
 
     patch_tokens = torch.randn(1, 256, 1536)
     h_features = torch.randn(1, 256)
