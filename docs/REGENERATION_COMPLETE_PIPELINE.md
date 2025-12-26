@@ -241,7 +241,67 @@ print('H-features dtype:', data['h_features'].dtype)  # Attendu: float32
 
 ---
 
-## Phase 5: Extraction RGB Features (OPTIONNEL, si OrganHead nécessaire)
+## Phase 4b: Extraction RGB Features (~10 minutes, 5 familles) ✅ REQUIS
+
+**Script:** `extract_rgb_features_from_hybrid.py`
+
+**⚠️ IMPORTANT:** Cette phase est OBLIGATOIRE pour l'entraînement V13-Hybrid. Ne pas sauter!
+
+**Commandes:**
+```bash
+for family in glandular digestive urologic epidermal respiratory; do
+    echo "========================================="
+    echo "Extracting RGB features for: $family"
+    echo "========================================="
+
+    python scripts/preprocessing/extract_rgb_features_from_hybrid.py \
+        --family $family \
+        --batch_size 8
+done
+```
+
+**Alternative (script automatisé):**
+```bash
+bash scripts/utils/extract_all_rgb_features.sh
+```
+
+**Sortie attendue:**
+```
+data/cache/family_data/
+├── glandular_rgb_features_v13.npz      # ~50 MB
+├── digestive_rgb_features_v13.npz      # ~35 MB
+├── urologic_rgb_features_v13.npz       # ~17 MB
+├── epidermal_rgb_features_v13.npz      # ~8 MB
+└── respiratory_rgb_features_v13.npz    # ~6 MB
+```
+
+**Temps estimé:** ~2 min par famille = ~10 minutes total
+
+### Validation Phase 4b
+
+```bash
+# Vérifier RGB features shape et CLS std
+python -c "
+import numpy as np
+data = np.load('data/cache/family_data/epidermal_rgb_features_v13.npz')
+print('RGB features shape:', data['features'].shape)  # Attendu: (N, 261, 1536)
+print('RGB features dtype:', data['features'].dtype)  # Attendu: float32
+
+# Valider CLS std
+cls_tokens = data['features'][:, 0, :]
+cls_std = cls_tokens.std()
+print(f'CLS std: {cls_std:.4f}')  # Attendu: 0.70-0.90
+
+if 0.70 <= cls_std <= 0.90:
+    print('✅ CLS std OK')
+else:
+    print(f'⚠️  WARNING: CLS std out of range [0.70, 0.90]')
+"
+```
+
+---
+
+## Phase 5: Extraction RGB Features PanNuke (OPTIONNEL, si OrganHead nécessaire)
 
 **Script:** `extract_features.py`
 
@@ -348,11 +408,12 @@ done
 | 2 | Family Data FIXED (5 familles) | ~30 min |
 | 3 | V13-Hybrid Dataset (5 familles) | ~10 min |
 | 4 | H-Features Extraction (5 familles) | ~5 min |
-| 5 | RGB Features (optionnel) | ~30 min |
+| **4b** | **RGB Features V13-Hybrid (REQUIS)** | **~10 min** |
+| 5 | RGB Features PanNuke (optionnel OrganHead) | ~30 min |
 | 6 | Training V13-Hybrid (5 familles) | ~3-4h |
 | 7 | Évaluation (5 familles) | ~25 min |
-| **TOTAL** | **Sans training** | **~1h** |
-| **TOTAL** | **Avec training** | **~4-5h** |
+| **TOTAL** | **Sans training** | **~1h 5min** |
+| **TOTAL** | **Avec training** | **~4h 15min** |
 
 ---
 

@@ -192,6 +192,28 @@ done
 log_success "Phase 4 complete: All H-features extracted"
 
 # ============================================================================
+# PHASE 4b: Extract RGB Features
+# ============================================================================
+echo ""
+echo "========================================"
+echo "PHASE 4b: Extracting RGB Features"
+echo "========================================"
+echo ""
+
+for family in "${FAMILIES[@]}"; do
+    log "Extracting RGB features for: $family"
+
+    python scripts/preprocessing/extract_rgb_features_from_hybrid.py \
+        --family "$family" \
+        --batch_size 8 \
+        || { log_error "Failed to extract RGB features for $family"; exit 1; }
+
+    log_success "RGB features extracted for $family"
+done
+
+log_success "Phase 4b complete: All RGB features extracted"
+
+# ============================================================================
 # Summary
 # ============================================================================
 echo ""
@@ -232,6 +254,18 @@ echo ""
 echo "H-Features (data/cache/family_data/):"
 for family in "${FAMILIES[@]}"; do
     FILE="data/cache/family_data/${family}_h_features_v13.npz"
+    if [ -f "$FILE" ]; then
+        SIZE=$(du -h "$FILE" | cut -f1)
+        echo "  ✅ $family: $SIZE"
+    else
+        echo "  ❌ $family: MISSING"
+    fi
+done
+
+echo ""
+echo "RGB Features (data/cache/family_data/):"
+for family in "${FAMILIES[@]}"; do
+    FILE="data/cache/family_data/${family}_rgb_features_v13.npz"
     if [ -f "$FILE" ]; then
         SIZE=$(du -h "$FILE" | cut -f1)
         echo "  ✅ $family: $SIZE"
