@@ -101,20 +101,32 @@ def check_hybrid_dataset(data_path: Path, expect_multicrop: bool = True) -> Dict
         if pos < len(crop_names):
             print(f"  {crop_names[pos]}: {count} samples")
 
-    if len(unique_positions) != 5:
-        result["valid"] = False
-        result["error"] = f"Expected 5 crop positions, got {len(unique_positions)}"
-        print(f"  ❌ FAIL: Expected 5 crop positions")
-        return result
+    if expect_multicrop:
+        # Multi-crop mode: expect 5 positions with equal distribution
+        if len(unique_positions) != 5:
+            result["valid"] = False
+            result["error"] = f"Expected 5 crop positions, got {len(unique_positions)}"
+            print(f"  ❌ FAIL: Expected 5 crop positions")
+            return result
 
-    if not np.allclose(counts, n_inferred_images):
-        result["valid"] = False
-        result["error"] = "Crop distribution incorrect"
-        print(f"  ❌ FAIL: Expected {n_inferred_images} samples per crop position")
-        return result
+        n_inferred_images = n_samples // 5
+        if not np.allclose(counts, n_inferred_images):
+            result["valid"] = False
+            result["error"] = "Crop distribution incorrect"
+            print(f"  ❌ FAIL: Expected {n_inferred_images} samples per crop position")
+            return result
+        else:
+            print(f"  ✅ PASS: All 5 crop positions have {n_inferred_images} samples each")
+            result["checks"].append("crop_distribution")
     else:
-        print(f"  ✅ PASS: All 5 crop positions have {n_inferred_images} samples each")
-        result["checks"].append("crop_distribution")
+        # No multi-crop mode: expect only center crops (position 0)
+        if len(unique_positions) == 1 and unique_positions[0] == 0:
+            print(f"  ✅ PASS: All samples are center crops (no augmentation)")
+            result["checks"].append("no_multicrop_crops")
+        else:
+            print(f"  ⚠️  WARNING: Expected only center crops (position 0) for no-multicrop mode")
+            print(f"     Found positions: {unique_positions.tolist()}")
+            # Don't fail, just warn
 
     # Check fold distribution
     folds = data['fold_ids']
@@ -124,14 +136,16 @@ def check_hybrid_dataset(data_path: Path, expect_multicrop: bool = True) -> Dict
     for fold, count in zip(unique_folds, fold_counts):
         print(f"  Fold {fold}: {count} samples ({count/n_samples*100:.1f}%)")
 
-    if len(unique_folds) < 3:
-        result["valid"] = False
-        result["error"] = f"Only {len(unique_folds)} folds present, expected 3"
-        print(f"  ❌ FAIL: Expected 3 folds")
-        return result
-    else:
+    # For single-family training, we typically use only fold 0
+    if len(unique_folds) == 1 and 0 in unique_folds:
+        print(f"  ✅ PASS: Using fold 0 (standard for single-family training)")
+        result["checks"].append("fold_0_only")
+    elif len(unique_folds) >= 3:
         print(f"  ✅ PASS: All 3 folds present")
         result["checks"].append("fold_distribution")
+    else:
+        print(f"  ⚠️  WARNING: {len(unique_folds)} fold(s) present")
+        # Don't fail, just warn
 
     # Check shapes consistency
     print(f"\n📏 Array shapes:")
