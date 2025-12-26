@@ -145,7 +145,7 @@ def main():
     print("\n📂 Loading test samples...")
     hybrid_data_path = Path(f"data/family_data_v13_hybrid/{args.family}_data_v13_hybrid.npz")
     h_features_path = Path(f"data/cache/family_data/{args.family}_h_features_v13.npz")
-    rgb_features_path = Path("data/cache/pannuke_features/fold0_features.npz")
+    rgb_features_path = Path(f"data/cache/family_data/{args.family}_rgb_features_v13.npz")
     
     hybrid_data = np.load(hybrid_data_path)
     h_data = np.load(h_features_path)
