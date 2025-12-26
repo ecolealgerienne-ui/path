@@ -22,6 +22,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 from scipy import ndimage
+from skimage.segmentation import watershed
 from tqdm import tqdm
 
 # Add project root to path
@@ -146,12 +147,8 @@ def post_process_v13_predictions(
     markers, _ = ndimage.label(local_max)
 
     # 5. Watershed
-    watershed_input = -dist
-    watershed_input[edges == 1] = 0  # Imposer contours
-
-    instances = ndimage.watershed_ift(watershed_input.astype(np.int16), markers)
+    instances = watershed(-dist, markers, mask=binary_mask)
     instances = instances.astype(np.int32)
-    instances[binary_mask == 0] = 0  # Remove background
 
     # 6. Filtrer petites instances
     for inst_id in np.unique(instances):
