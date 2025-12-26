@@ -8,9 +8,14 @@ Checks:
 3. H-channel features alignment
 4. Fold distribution
 5. Data quality (NaN/Inf, dtypes, ranges)
-6. Expected sample counts (571 × 5 = 2855)
+6. Expected sample counts (571 with --no-multicrop, 2855 with multicrop)
 
-Usage: python validate_training_data_v13_hybrid.py --family epidermal
+Usage:
+    # With multi-crop augmentation (5 crops per image)
+    python validate_training_data_v13_hybrid.py --family epidermal
+
+    # Without multi-crop (1:1 ratio)
+    python validate_training_data_v13_hybrid.py --family epidermal --no-multicrop
 """
 
 import argparse
@@ -19,8 +24,14 @@ from pathlib import Path
 from typing import Dict, List
 
 
-def check_hybrid_dataset(data_path: Path) -> Dict:
-    """Check hybrid dataset structure and multi-crop consistency."""
+def check_hybrid_dataset(data_path: Path, expect_multicrop: bool = True) -> Dict:
+    """Check hybrid dataset structure and multi-crop consistency.
+
+    Args:
+        data_path: Path to hybrid dataset .npz file
+        expect_multicrop: If True, expects 5 crops per image (n_samples % 5 == 0)
+                         If False, accepts any sample count (1:1 ratio)
+    """
     print("\n" + "="*80)
     print("CHECK 1: HYBRID DATASET STRUCTURE")
     print("="*80)
@@ -45,30 +56,40 @@ def check_hybrid_dataset(data_path: Path) -> Dict:
 
     # Check shapes
     n_samples = len(data['images_224'])
-    print(f"\n📊 Dataset size: {n_samples} samples")
-
-    # Check multi-crop consistency
-    # Note: source_image_ids may have duplicates (same image processed multiple times)
-    # What matters is that n_samples is divisible by 5
-    if n_samples % 5 != 0:
-        result["valid"] = False
-        result["error"] = f"Sample count {n_samples} not divisible by 5!"
-        print(f"  ❌ FAIL: Sample count must be divisible by 5 for multi-crop")
-        return result
-
-    n_inferred_images = n_samples // 5
     n_unique_source_ids = len(np.unique(data['source_image_ids']))
 
-    print(f"  Total samples: {n_samples}")
-    print(f"  Inferred original images: {n_inferred_images} (= {n_samples} / 5)")
-    print(f"  Unique source_image_ids: {n_unique_source_ids}")
+    print(f"\n📊 Dataset size: {n_samples} samples")
+    print(f"   Unique source images: {n_unique_source_ids}")
+    print(f"   Mode: {'Multi-crop (5×)' if expect_multicrop else 'No augmentation (1:1)'}")
 
-    if n_unique_source_ids < n_inferred_images:
-        print(f"  ℹ️  Note: {n_inferred_images - n_unique_source_ids} duplicate source_image_ids")
-        print(f"     This is OK if the same image was processed multiple times")
+    # Check multi-crop consistency
+    if expect_multicrop:
+        if n_samples % 5 != 0:
+            result["valid"] = False
+            result["error"] = f"Sample count {n_samples} not divisible by 5!"
+            print(f"  ❌ FAIL: Sample count must be divisible by 5 for multi-crop")
+            print(f"  💡 TIP: Use --no-multicrop flag if data was generated without augmentation")
+            return result
 
-    print(f"  ✅ PASS: Sample count {n_samples} = {n_inferred_images} × 5 (valid multi-crop)")
-    result["checks"].append("multi_crop_count")
+        n_inferred_images = n_samples // 5
+        print(f"  Total samples: {n_samples}")
+        print(f"  Inferred original images: {n_inferred_images} (= {n_samples} / 5)")
+
+        if n_unique_source_ids < n_inferred_images:
+            print(f"  ℹ️  Note: {n_inferred_images - n_unique_source_ids} duplicate source_image_ids")
+            print(f"     This is OK if the same image was processed multiple times")
+
+        print(f"  ✅ PASS: Sample count {n_samples} = {n_inferred_images} × 5 (valid multi-crop)")
+        result["checks"].append("multi_crop_count")
+    else:
+        # No multi-crop: 1:1 ratio expected
+        if n_samples != n_unique_source_ids:
+            print(f"  ⚠️  WARNING: {n_samples} samples but {n_unique_source_ids} unique source IDs")
+            print(f"     Expected 1:1 ratio for no-multicrop mode")
+        else:
+            print(f"  ✅ PASS: 1:1 ratio ({n_samples} samples = {n_unique_source_ids} source images)")
+
+        result["checks"].append("no_multicrop_count")
 
     # Check crop positions distribution
     crop_positions = data['crop_position_ids']
@@ -431,6 +452,8 @@ def main():
                         default=Path('data/family_data_v13_hybrid'))
     parser.add_argument('--features_dir', type=Path,
                         default=Path('data/cache/family_data'))
+    parser.add_argument('--no-multicrop', action='store_true',
+                        help='Dataset has no multi-crop augmentation (1:1 ratio instead of 1:5)')
 
     args = parser.parse_args()
 
@@ -448,7 +471,8 @@ def main():
     results = []
 
     # Check 1: Hybrid dataset
-    hybrid_result = check_hybrid_dataset(hybrid_path)
+    expect_multicrop = not args.no_multicrop
+    hybrid_result = check_hybrid_dataset(hybrid_path, expect_multicrop=expect_multicrop)
     results.append(("Hybrid Dataset", hybrid_result))
 
     if not hybrid_result["valid"]:
