@@ -163,8 +163,8 @@ def extract_features_chunked(
     # 5. Validation CLS std (CRITIQUE)
     print(f"\n🔍 Validation CLS std (détection bugs preprocessing)...")
 
-    cls_tokens = all_features[:, 0, :]  # (N, 1536)
-    validation_result = validate_features(torch.from_numpy(cls_tokens))
+    # validate_features() extrait CLS tokens en interne → passer all_features complet
+    validation_result = validate_features(torch.from_numpy(all_features))
 
     if not validation_result['valid']:
         print(f"❌ ERREUR: {validation_result['message']}")
