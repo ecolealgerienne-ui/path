@@ -456,16 +456,43 @@ def load_test_samples(
     np_targets = hybrid_data['np_targets'][selected_indices]
 
     # Create GT instance maps from np_targets
-    # For simplicity, use connected components on binary mask
-    # (In real usage, should load pre-computed instance maps)
+    # FIXED: Use watershed to separate touching nuclei instead of simple connected components
+    # (label() merges touching nuclei into single blob → wrong GT)
+    print(f"  🔧 Generating GT instance maps with watershed (to separate touching nuclei)...")
+
+    from skimage.feature import peak_local_max
+
     gt_inst_maps = []
 
     for i in range(n_to_load):
         binary_mask = (np_targets[i] > 0.5).astype(np.uint8)
-        inst_map, _ = label(binary_mask)
-        gt_inst_maps.append(inst_map)
+
+        # Distance transform to find centers
+        dist = distance_transform_edt(binary_mask)
+
+        # Find local maxima (nuclei centers)
+        # min_distance=5 for GT (smaller than prediction watershed to be more sensitive)
+        local_maxi = peak_local_max(
+            dist,
+            min_distance=5,
+            labels=binary_mask,
+            exclude_border=False
+        )
+
+        # Create markers from local maxima
+        markers_gt = np.zeros_like(dist, dtype=int)
+        for idx, (y, x) in enumerate(local_maxi):
+            markers_gt[y, x] = idx + 1
+
+        # Apply watershed to separate touching nuclei
+        gt_inst = watershed(-dist, markers_gt, mask=binary_mask)
+        gt_inst_maps.append(gt_inst)
 
     gt_inst = np.array(gt_inst_maps)
+
+    # Verify GT instance count is reasonable
+    avg_gt_instances = np.mean([len(np.unique(inst)) - 1 for inst in gt_inst_maps])  # -1 for background
+    print(f"  ✅ GT generation complete - Avg instances per image: {avg_gt_instances:.1f}")
 
     return rgb_features, h_features, np_targets, gt_inst
 
