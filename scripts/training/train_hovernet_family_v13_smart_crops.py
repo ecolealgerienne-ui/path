@@ -234,16 +234,20 @@ def compute_hv_mse(hv_pred: torch.Tensor, hv_target: torch.Tensor, np_target: to
 
 def compute_nt_accuracy(nt_pred: torch.Tensor, nt_target: torch.Tensor, np_target: torch.Tensor) -> float:
     """Calcule l'accuracy de classification NT sur pixels de noyaux."""
-    mask = np_target.bool()
+    # Masque des pixels de noyaux
+    mask = np_target > 0
 
     if mask.sum() == 0:
-        return 0.0
+        return 1.0  # Pas d'erreur possible si pas de noyaux
 
-    nt_pred_class = nt_pred.argmax(dim=1)
-    correct = (nt_pred_class[mask] == nt_target[mask]).float().sum()
-    total = mask.sum()
+    # Prédiction de classe
+    pred_class = nt_pred.argmax(dim=1)
 
-    return (correct / total).item()
+    # Accuracy uniquement sur les pixels de noyaux
+    correct = (pred_class == nt_target) & mask
+    accuracy = correct.sum().float() / mask.sum().float()
+
+    return accuracy.item()
 
 
 def train_one_epoch(
@@ -341,6 +345,19 @@ def validate(model, dataloader, criterion, device, n_classes):
         total_hv_mse += hv_mse
         total_nt_acc += nt_acc
         n_batches += 1
+
+        # Diagnostic NT sur premier batch de validation
+        if n_batches == 1:
+            mask = np_target > 0
+            print(f"\n🔍 DIAGNOSTIC NT (Validation - Batch 1):")
+            print(f"  nt_out shape: {nt_out.shape}")
+            print(f"  nt_target shape: {nt_target.shape}")
+            print(f"  nt_target unique: {torch.unique(nt_target)}")
+            print(f"  nt_target (noyaux) unique: {torch.unique(nt_target[mask]) if mask.sum() > 0 else 'no nuclei'}")
+            print(f"  nt_pred argmax unique: {torch.unique(nt_out.argmax(dim=1))}")
+            print(f"  nt_pred argmax (noyaux) unique: {torch.unique(nt_out.argmax(dim=1)[mask]) if mask.sum() > 0 else 'no nuclei'}")
+            print(f"  mask sum: {mask.sum().item()} / {mask.numel()} pixels")
+            print(f"  NT Acc: {nt_acc:.4f}\n")
 
     return {
         'loss': total_loss / n_batches,
