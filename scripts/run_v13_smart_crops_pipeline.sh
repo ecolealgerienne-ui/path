@@ -50,7 +50,7 @@ DEVICE="cuda"
 
 # Répertoires
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-DATA_DIR="${PROJECT_ROOT}/data/family_FIXED"
+PANNUKE_DIR="/home/amar/data/PanNuke"  # Données PanNuke brutes
 OUTPUT_DIR="${PROJECT_ROOT}/data/family_data_v13_smart_crops"
 CACHE_DIR="${PROJECT_ROOT}/data/cache/family_data"
 CHECKPOINT_DIR="${PROJECT_ROOT}/models/checkpoints_v13_smart_crops"
@@ -164,7 +164,7 @@ step_1_prepare_data() {
 
     python "${PROJECT_ROOT}/scripts/preprocessing/prepare_v13_smart_crops.py" \
         --family "${FAMILY}" \
-        --source_data_dir "${DATA_DIR}" \
+        --pannuke_dir "${PANNUKE_DIR}" \
         --output_dir "${OUTPUT_DIR}"
 
     log_success "Data preparation completed"
