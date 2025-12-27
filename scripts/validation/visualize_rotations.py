@@ -26,7 +26,9 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from scripts.preprocessing.prepare_v13_smart_crops import (
     apply_rotation,
     extract_pannuke_instances,
-    compute_hv_maps
+    compute_hv_maps,
+    compute_np_target,
+    compute_nt_target
 )
 
 
@@ -189,12 +191,12 @@ def visualize_rotations(
     image_224, _, _ = center_crop(image, 224)
     mask_224, _, _ = center_crop(mask, 224)
 
-    # Générer targets réels
+    # Générer targets réels (utilise les mêmes fonctions que prepare_v13_smart_crops.py)
     print(f"🔧 Génération targets HV...")
     inst_map = extract_pannuke_instances(mask_224)
     hv_target = compute_hv_maps(inst_map)
-    np_target = (mask_224[:, :, 1:5].sum(axis=-1) > 0).astype(np.float32)
-    nt_target = np.zeros((224, 224), dtype=np.int64)
+    np_target = compute_np_target(mask_224)
+    nt_target = compute_nt_target(mask_224)
 
     print(f"✅ Instances détectées: {len(np.unique(inst_map)) - 1}")
     print(f"✅ HV shape: {hv_target.shape}")
