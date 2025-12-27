@@ -217,12 +217,14 @@ def main():
     for i in range(min(args.n_samples, len(images_224) // 5)):
         fig, axes = plt.subplots(1, 5, figsize=(20, 4))
 
-        crop_names = [
-            'Centre 0°',
-            'Top-Left 90°',
-            'Top-Right 180°',
-            'Bottom-Left 270°',
-            'Bottom-Right Hflip'
+        # Data order: for each crop position, apply 5 rotations
+        # So indices 0-4 are: same crop (e.g. centre) with 5 rotations
+        rotation_names = [
+            '0° (original)',
+            '90° CW',
+            '180°',
+            '270° CW',
+            'Flip H'
         ]
 
         start_idx = i * 5
@@ -233,7 +235,7 @@ def main():
                 images_224[idx],
                 np_targets[idx],
                 hv_targets[idx],
-                crop_names[j],
+                rotation_names[j],
                 axes[j],
                 subsample=16
             )
