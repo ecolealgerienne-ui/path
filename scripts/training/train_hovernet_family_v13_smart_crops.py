@@ -269,7 +269,7 @@ def train_one_epoch(
         np_out, hv_out, nt_out = model(features)
 
         # Loss
-        loss, np_loss, hv_loss, nt_loss = criterion(
+        loss, loss_dict = criterion(
             np_out, hv_out, nt_out,
             np_target, hv_target, nt_target
         )
@@ -326,7 +326,7 @@ def validate(model, dataloader, criterion, device, n_classes):
         np_out, hv_out, nt_out = model(features)
 
         # Loss
-        loss, np_loss, hv_loss, nt_loss = criterion(
+        loss, loss_dict = criterion(
             np_out, hv_out, nt_out,
             np_target, hv_target, nt_target
         )
