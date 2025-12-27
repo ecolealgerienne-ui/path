@@ -7,10 +7,19 @@ les HV targets pour pointer vers les centres LOCAUX (dans le crop) au lieu
 des centres GLOBAUX (dans l'image source 256×256).
 
 Usage:
+    # Validation rapide (sans visualisations)
     python scripts/validation/validate_local_hv_centers.py \
         --pannuke_dir /home/amar/data/PanNuke \
         --fold 0 \
         --n_samples 5
+
+    # Avec visualisations comparatives
+    python scripts/validation/validate_local_hv_centers.py \
+        --pannuke_dir /home/amar/data/PanNuke \
+        --fold 0 \
+        --n_samples 5 \
+        --visualize \
+        --output_dir results/hv_validation
 """
 
 import argparse
@@ -20,6 +29,8 @@ from typing import Tuple
 
 import numpy as np
 from scipy import ndimage
+import matplotlib.pyplot as plt
+import matplotlib.patches as mpatches
 
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
@@ -171,6 +182,118 @@ def find_hv_centers(hv_map: np.ndarray, np_mask: np.ndarray) -> list:
     return centers.tolist()
 
 
+def visualize_hv_comparison(
+    crop_image: np.ndarray,
+    crop_hv_old: np.ndarray,
+    crop_hv_new: np.ndarray,
+    crop_np: np.ndarray,
+    crop_name: str,
+    output_path: Path
+):
+    """
+    Génère visualisation comparative OLD vs NEW HV maps.
+
+    Créé une figure 2×3:
+    Row 1: RGB | HV magnitude OLD | HV magnitude NEW
+    Row 2: Overlay centres OLD | Overlay centres NEW | Divergence map
+    """
+    fig, axes = plt.subplots(2, 3, figsize=(15, 10))
+    fig.suptitle(f"Validation HV Centres Locaux - {crop_name}", fontsize=16, fontweight='bold')
+
+    # Calculer magnitudes
+    mag_old = np.sqrt(crop_hv_old[0]**2 + crop_hv_old[1]**2)
+    mag_new = np.sqrt(crop_hv_new[0]**2 + crop_hv_new[1]**2)
+
+    # Masquer background
+    mag_old_masked = mag_old.copy()
+    mag_new_masked = mag_new.copy()
+    mag_old_masked[crop_np <= 0.5] = 0
+    mag_new_masked[crop_np <= 0.5] = 0
+
+    # Trouver centres
+    centers_old = find_hv_centers(crop_hv_old, crop_np)
+    centers_new = find_hv_centers(crop_hv_new, crop_np)
+
+    # Row 1, Col 1: RGB crop
+    axes[0, 0].imshow(crop_image)
+    axes[0, 0].set_title('Image RGB Crop', fontweight='bold')
+    axes[0, 0].axis('off')
+
+    # Row 1, Col 2: HV magnitude OLD
+    im1 = axes[0, 1].imshow(mag_old_masked, cmap='jet', vmin=0, vmax=1)
+    axes[0, 1].set_title(f'HV Magnitude OLD\n({len(centers_old)} centres globaux)', fontweight='bold')
+    axes[0, 1].axis('off')
+    plt.colorbar(im1, ax=axes[0, 1], fraction=0.046)
+
+    # Row 1, Col 3: HV magnitude NEW
+    im2 = axes[0, 2].imshow(mag_new_masked, cmap='jet', vmin=0, vmax=1)
+    axes[0, 2].set_title(f'HV Magnitude NEW\n({len(centers_new)} centres locaux)', fontweight='bold')
+    axes[0, 2].axis('off')
+    plt.colorbar(im2, ax=axes[0, 2], fraction=0.046)
+
+    # Row 2, Col 1: Overlay centres OLD
+    axes[1, 0].imshow(crop_image)
+    for cy, cx in centers_old:
+        circle = mpatches.Circle((cx, cy), radius=5, color='red', fill=False, linewidth=2)
+        axes[1, 0].add_patch(circle)
+        # Croix pour marquer centre
+        axes[1, 0].plot(cx, cy, 'r+', markersize=10, markeredgewidth=2)
+    axes[1, 0].set_title('Centres OLD (globaux)\n❌ Peuvent être hors crop', fontweight='bold', color='red')
+    axes[1, 0].axis('off')
+
+    # Row 2, Col 2: Overlay centres NEW
+    axes[1, 1].imshow(crop_image)
+    for cy, cx in centers_new:
+        circle = mpatches.Circle((cx, cy), radius=5, color='lime', fill=False, linewidth=2)
+        axes[1, 1].add_patch(circle)
+        axes[1, 1].plot(cx, cy, 'g+', markersize=10, markeredgewidth=2)
+    axes[1, 1].set_title('Centres NEW (locaux)\n✅ Tous dans crop', fontweight='bold', color='green')
+    axes[1, 1].axis('off')
+
+    # Row 2, Col 3: Divergence map
+    # Calculer divergence
+    h_old = crop_hv_old[0]
+    v_old = crop_hv_old[1]
+    dh_dx_old = np.gradient(h_old, axis=1)
+    dv_dy_old = np.gradient(v_old, axis=0)
+    div_old = dh_dx_old + dv_dy_old
+
+    h_new = crop_hv_new[0]
+    v_new = crop_hv_new[1]
+    dh_dx_new = np.gradient(h_new, axis=1)
+    dv_dy_new = np.gradient(v_new, axis=0)
+    div_new = dh_dx_new + dv_dy_new
+
+    # Masquer background
+    div_new_masked = div_new.copy()
+    div_new_masked[crop_np <= 0.5] = 0
+
+    im3 = axes[1, 2].imshow(div_new_masked, cmap='RdBu_r', vmin=-0.5, vmax=0.5)
+    axes[1, 2].set_title('Divergence NEW\n(Bleu=centripète, Rouge=sortant)', fontweight='bold')
+    axes[1, 2].axis('off')
+    plt.colorbar(im3, ax=axes[1, 2], fraction=0.046)
+
+    # Statistiques
+    div_mean_old = div_old[crop_np > 0.5].mean()
+    div_mean_new = div_new[crop_np > 0.5].mean()
+
+    stats_text = (
+        f"Statistiques:\n"
+        f"  Divergence OLD: {div_mean_old:+.6f}\n"
+        f"  Divergence NEW: {div_mean_new:+.6f}\n"
+        f"  Centres OLD: {len(centers_old)}\n"
+        f"  Centres NEW: {len(centers_new)}\n"
+    )
+    fig.text(0.02, 0.02, stats_text, fontsize=10, family='monospace',
+             bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
+
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=150, bbox_inches='tight')
+    plt.close()
+
+    print(f"      💾 Visualisation sauvegardée: {output_path.name}")
+
+
 def validate_crop(
     crop_hv_old: np.ndarray,
     crop_hv_new: np.ndarray,
@@ -237,8 +360,17 @@ def main():
                         help="Fold PanNuke (0, 1, 2)")
     parser.add_argument('--n_samples', type=int, default=5,
                         help="Nombre d'échantillons à tester")
+    parser.add_argument('--visualize', action='store_true',
+                        help="Générer visualisations comparatives (sauvées dans results/)")
+    parser.add_argument('--output_dir', type=Path, default=Path('results/hv_validation'),
+                        help="Répertoire de sortie pour visualisations")
 
     args = parser.parse_args()
+
+    # Créer répertoire de sortie si visualisation activée
+    if args.visualize:
+        args.output_dir.mkdir(parents=True, exist_ok=True)
+        print(f"📁 Visualisations seront sauvegardées dans: {args.output_dir}\n")
 
     # Charger données PanNuke
     fold_dir = args.pannuke_dir / f"fold{args.fold}"
@@ -309,6 +441,15 @@ def main():
             if result['errors']:
                 for error in result['errors']:
                     print(f"      ⚠️  {error}")
+
+            # Générer visualisation (seulement premiers échantillons)
+            if args.visualize and i < 2:  # Limiter à 2 images pour ne pas saturer
+                crop_image = image[y1:y2, x1:x2]
+                output_path = args.output_dir / f"validation_image{i+1}_{crop_name}.png"
+                visualize_hv_comparison(
+                    crop_image, crop_hv_old, crop_hv_new, crop_np,
+                    f"Image {i+1} - {crop_name}", output_path
+                )
 
     # Résumé
     print(f"\n{'='*70}")
