@@ -42,6 +42,16 @@ CROP_POSITIONS = {
     'bottom_right': (32, 32, 256, 256),
 }
 
+# Stratégie V13 Smart Crops: chaque crop a UNE rotation spécifique
+# = 5 échantillons par image (pas 25!)
+CROP_ROTATION_MAPPING = {
+    'center':       '0',       # Référence sans rotation
+    'top_left':     '90',      # 90° clockwise
+    'top_right':    '180',     # 180°
+    'bottom_left':  '270',     # 270° clockwise (= 90° CCW)
+    'bottom_right': 'flip_h',  # Flip horizontal
+}
+
 CROP_SIZE = 224
 
 
@@ -357,7 +367,7 @@ def generate_smart_crops_from_pannuke(
     print(f"  Val:   {len(val_indices)} images sources ({100*len(val_indices)/n_total:.1f}%)\n")
 
     # ========== ÉTAPE 3: Traiter train et val séparément ==========
-    rotations = ['0', '90', '180', '270', 'flip_h']
+    # Stratégie V13 Smart Crops: 1 crop = 1 rotation (via CROP_ROTATION_MAPPING)
 
     for split_name, split_indices in [('train', train_indices), ('val', val_indices)]:
         print(f"{'='*70}")
@@ -397,7 +407,7 @@ def generate_smart_crops_from_pannuke(
             hv_target = compute_hv_maps(inst_map)
             nt_target = compute_nt_target(mask)
 
-            # Générer 5 crops
+            # Générer 5 crops avec rotations spécifiques (stratégie V13 Smart Crops)
             for pos_name, (x1, y1, x2, y2) in CROP_POSITIONS.items():
                 crop = extract_crop(image, np_target, hv_target, nt_target, x1, y1, x2, y2)
 
@@ -408,26 +418,27 @@ def generate_smart_crops_from_pannuke(
                     stats['total_crops_filtered'] += 1
                     continue
 
-                # Appliquer 5 rotations à ce crop
-                for rotation in rotations:
-                    img_rot, np_rot, hv_rot, nt_rot = apply_rotation(
-                        crop['image'],
-                        crop['np_target'],
-                        crop['hv_target'],
-                        crop['nt_target'],
-                        rotation
-                    )
+                # Appliquer la rotation spécifique à ce crop (1 seule rotation par crop)
+                rotation = CROP_ROTATION_MAPPING[pos_name]
 
-                    crops_data['images'].append(img_rot)
-                    crops_data['np_targets'].append(np_rot)
-                    crops_data['hv_targets'].append(hv_rot)
-                    crops_data['nt_targets'].append(nt_rot)
-                    crops_data['source_image_ids'].append(source_id)
-                    crops_data['crop_positions'].append(pos_name)
-                    crops_data['fold_ids'].append(fold_id)
-                    crops_data['rotations'].append(rotation)
+                img_rot, np_rot, hv_rot, nt_rot = apply_rotation(
+                    crop['image'],
+                    crop['np_target'],
+                    crop['hv_target'],
+                    crop['nt_target'],
+                    rotation
+                )
 
-                    stats['total_crops_kept'] += 1
+                crops_data['images'].append(img_rot)
+                crops_data['np_targets'].append(np_rot)
+                crops_data['hv_targets'].append(hv_rot)
+                crops_data['nt_targets'].append(nt_rot)
+                crops_data['source_image_ids'].append(source_id)
+                crops_data['crop_positions'].append(pos_name)
+                crops_data['fold_ids'].append(fold_id)
+                crops_data['rotations'].append(rotation)
+
+                stats['total_crops_kept'] += 1
 
         # Statistiques split
         print(f"\n📊 Statistiques {split_name}:")

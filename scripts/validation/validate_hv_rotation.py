@@ -217,14 +217,14 @@ def main():
     for i in range(min(args.n_samples, len(images_224) // 5)):
         fig, axes = plt.subplots(1, 5, figsize=(20, 4))
 
-        # Data order: for each crop position, apply 5 rotations
-        # So indices 0-4 are: same crop (e.g. centre) with 5 rotations
-        rotation_names = [
-            '0° (original)',
-            '90° CW',
-            '180°',
-            '270° CW',
-            'Flip H'
+        # Stratégie V13 Smart Crops: 1 image source → 5 crops avec rotations spécifiques
+        # Indices i*5 à i*5+4 = les 5 crops de la même image source
+        crop_labels = [
+            'Centre 0°',
+            'Top-Left 90°',
+            'Top-Right 180°',
+            'Bottom-Left 270°',
+            'Bottom-Right Flip-H'
         ]
 
         start_idx = i * 5
@@ -235,7 +235,7 @@ def main():
                 images_224[idx],
                 np_targets[idx],
                 hv_targets[idx],
-                rotation_names[j],
+                crop_labels[j],
                 axes[j],
                 subsample=16
             )
