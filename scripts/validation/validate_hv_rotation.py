@@ -182,7 +182,7 @@ def main():
     print(f"Loading: {args.data_file}")
     data = np.load(args.data_file)
 
-    images_224 = data['images_224']
+    images_224 = data['images']
     np_targets = data['np_targets']
     hv_targets = data['hv_targets']
 
