@@ -286,6 +286,7 @@ def extract_crop(
         'np_target': crop_np,
         'hv_target': crop_hv,  # ✅ HYBRIDE: Complets (global) + Fragmentés (local)
         'nt_target': crop_nt,
+        'inst_map': crop_inst,  # ✅ Instance map cropé (IDs préservés)
     }
 
 
@@ -303,8 +304,9 @@ def apply_rotation(
     np_target: np.ndarray,
     hv_target: np.ndarray,
     nt_target: np.ndarray,
+    inst_map: np.ndarray,
     rotation: str
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """
     Applique rotation déterministe avec HV component swapping.
 
@@ -313,19 +315,21 @@ def apply_rotation(
         np_target: (224, 224)
         hv_target: (2, 224, 224) - [H, V] (Convention HoVer-Net)
         nt_target: (224, 224)
+        inst_map: (224, 224) int32
         rotation: '0', '90', '180', '270', 'flip_h'
 
     Returns:
-        (image_rot, np_rot, hv_rot, nt_rot)
+        (image_rot, np_rot, hv_rot, nt_rot, inst_map_rot)
     """
     if rotation == '0':
-        return image, np_target, hv_target, nt_target
+        return image, np_target, hv_target, nt_target, inst_map
 
     elif rotation == '90':
         # Rotation 90° clockwise
         image_rot = np.rot90(image, k=-1, axes=(0, 1))
         np_rot = np.rot90(np_target, k=-1, axes=(0, 1))
         nt_rot = np.rot90(nt_target, k=-1, axes=(0, 1))
+        inst_map_rot = np.rot90(inst_map, k=-1, axes=(0, 1))
 
         # HV component swapping: H' = -V, V' = H
         # Rotation spatiale de chaque composante + échange avec signes inversés
@@ -333,26 +337,28 @@ def apply_rotation(
         v_rot = np.rot90(hv_target[0], k=-1, axes=(0, 1))   # V' = H
         hv_rot = np.stack([h_rot, v_rot], axis=0)
 
-        return image_rot, np_rot, hv_rot, nt_rot
+        return image_rot, np_rot, hv_rot, nt_rot, inst_map_rot
 
     elif rotation == '180':
         # Rotation 180°
         image_rot = np.rot90(image, k=2, axes=(0, 1))
         np_rot = np.rot90(np_target, k=2, axes=(0, 1))
         nt_rot = np.rot90(nt_target, k=2, axes=(0, 1))
+        inst_map_rot = np.rot90(inst_map, k=2, axes=(0, 1))
 
         # HV negation: H' = -H, V' = -V
         h_rot = -np.rot90(hv_target[0], k=2, axes=(0, 1))  # H' = -H
         v_rot = -np.rot90(hv_target[1], k=2, axes=(0, 1))  # V' = -V
         hv_rot = np.stack([h_rot, v_rot], axis=0)
 
-        return image_rot, np_rot, hv_rot, nt_rot
+        return image_rot, np_rot, hv_rot, nt_rot, inst_map_rot
 
     elif rotation == '270':
         # Rotation 270° clockwise (= 90° counter-clockwise)
         image_rot = np.rot90(image, k=1, axes=(0, 1))
         np_rot = np.rot90(np_target, k=1, axes=(0, 1))
         nt_rot = np.rot90(nt_target, k=1, axes=(0, 1))
+        inst_map_rot = np.rot90(inst_map, k=1, axes=(0, 1))
 
         # HV component swapping: H' = V, V' = -H
         # Rotation spatiale de chaque composante + échange (inverse de 90°)
@@ -360,20 +366,21 @@ def apply_rotation(
         v_rot = -np.rot90(hv_target[0], k=1, axes=(0, 1))  # V' = -H
         hv_rot = np.stack([h_rot, v_rot], axis=0)
 
-        return image_rot, np_rot, hv_rot, nt_rot
+        return image_rot, np_rot, hv_rot, nt_rot, inst_map_rot
 
     elif rotation == 'flip_h':
         # Flip horizontal
         image_rot = np.fliplr(image)
         np_rot = np.fliplr(np_target)
         nt_rot = np.fliplr(nt_target)
+        inst_map_rot = np.fliplr(inst_map)
 
         # HV flip: H' = -H, V' = V
         h_rot = -np.fliplr(hv_target[0])  # H' = -H (négué car flip horizontal)
         v_rot = np.fliplr(hv_target[1])   # V' = V (inchangé)
         hv_rot = np.stack([h_rot, v_rot], axis=0)
 
-        return image_rot, np_rot, hv_rot, nt_rot
+        return image_rot, np_rot, hv_rot, nt_rot, inst_map_rot
 
     else:
         raise ValueError(f"Unknown rotation: {rotation}")
@@ -477,6 +484,7 @@ def generate_smart_crops_from_pannuke(
             'np_targets': [],
             'hv_targets': [],
             'nt_targets': [],
+            'inst_maps': [],  # ✅ Instance maps cropés
             'source_image_ids': [],
             'crop_positions': [],
             'fold_ids': [],
@@ -522,11 +530,12 @@ def generate_smart_crops_from_pannuke(
                 # Appliquer la rotation spécifique à ce crop (1 seule rotation par crop)
                 rotation = CROP_ROTATION_MAPPING[pos_name]
 
-                img_rot, np_rot, hv_rot, nt_rot = apply_rotation(
+                img_rot, np_rot, hv_rot, nt_rot, inst_rot = apply_rotation(
                     crop['image'],
                     crop['np_target'],
                     crop['hv_target'],
                     crop['nt_target'],
+                    crop['inst_map'],
                     rotation
                 )
 
@@ -534,6 +543,7 @@ def generate_smart_crops_from_pannuke(
                 crops_data['np_targets'].append(np_rot)
                 crops_data['hv_targets'].append(hv_rot)
                 crops_data['nt_targets'].append(nt_rot)
+                crops_data['inst_maps'].append(inst_rot)
                 crops_data['source_image_ids'].append(source_id)
                 crops_data['crop_positions'].append(pos_name)
                 crops_data['fold_ids'].append(fold_id)
@@ -555,6 +565,7 @@ def generate_smart_crops_from_pannuke(
         np_targets_array = np.stack(crops_data['np_targets'], axis=0)
         hv_targets_array = np.stack(crops_data['hv_targets'], axis=0)
         nt_targets_array = np.stack(crops_data['nt_targets'], axis=0)
+        inst_maps_array = np.stack(crops_data['inst_maps'], axis=0)
         source_ids_array = np.array(crops_data['source_image_ids'], dtype=np.int32)
         crop_positions_array = np.array(crops_data['crop_positions'])
         fold_ids_array = np.array(crops_data['fold_ids'], dtype=np.int32)
@@ -567,6 +578,7 @@ def generate_smart_crops_from_pannuke(
             np_targets=np_targets_array,
             hv_targets=hv_targets_array,
             nt_targets=nt_targets_array,
+            inst_maps=inst_maps_array,  # ✅ Instance maps cropés avec HYBRID
             source_image_ids=source_ids_array,
             crop_positions=crop_positions_array,
             fold_ids=fold_ids_array,

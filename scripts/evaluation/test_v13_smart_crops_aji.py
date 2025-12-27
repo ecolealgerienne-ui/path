@@ -303,6 +303,7 @@ def main():
     images = val_data['images']  # (N_val, 224, 224, 3)
     np_targets = val_data['np_targets']  # (N_val, 224, 224)
     hv_targets = val_data['hv_targets']  # (N_val, 2, 224, 224)
+    inst_maps = val_data['inst_maps']  # ✅ (N_val, 224, 224) int32 - VRAIES instances!
     source_image_ids = val_data['source_image_ids']
 
     n_total = len(images)
@@ -310,23 +311,12 @@ def main():
 
     print(f"  → {n_total} validation crops available")
     print(f"  → Evaluating first {n_to_eval} samples")
+    print(f"  ✅ Using TRUE instance maps (not watershed reconstruction)")
 
-    # Create ground truth instance maps
-    print("\nCreating GT instance maps from targets...")
-    gt_instances = []
+    # Use true instance maps from data (cropés avec HYBRID approach)
+    gt_instances = inst_maps[:n_to_eval]
 
-    for i in tqdm(range(n_to_eval), desc="GT instances"):
-        np_gt = np_targets[i]
-        hv_gt = hv_targets[i]
-
-        # Use watershed on GT to create instance map
-        gt_inst = hv_guided_watershed(
-            np_gt,
-            hv_gt,
-            beta=args.beta,
-            min_size=args.min_size
-        )
-        gt_instances.append(gt_inst)
+    print(f"\n✅ GT instances loaded: {len(gt_instances)} samples")
 
     # Evaluation
     print("\n" + "=" * 80)
