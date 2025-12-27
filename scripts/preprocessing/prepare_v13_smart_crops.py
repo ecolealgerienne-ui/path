@@ -364,11 +364,11 @@ def main():
     print(f"Loading source data: {source_file}")
     data = np.load(source_file)
 
-    images_256 = data['images_224']  # Actually 256×256 before crop
+    images_256 = data['images']  # 256×256 images from prepare_family_data_FIXED.py
     np_targets_256 = data['np_targets']
     hv_targets_256 = data['hv_targets']
     nt_targets_256 = data['nt_targets']
-    source_image_ids = data.get('source_image_ids', np.arange(len(images_256)))
+    source_image_ids = data.get('image_ids', np.arange(len(images_256)))
 
     n_total = len(images_256)
     print(f"Loaded {n_total} samples for family '{args.family}'")
