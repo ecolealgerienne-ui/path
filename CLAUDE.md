@@ -1600,6 +1600,122 @@ python scripts/evaluation/test_v13_smart_crops_aji.py --n_samples 50
 
 ---
 
+### 2025-12-27 — V13 Smart Crops: Fix Évaluation Biaisée (Pseudo-Instances → TRUE Instances) ✅ CRITIQUE
+
+**Contexte:** Après training V13 Smart Crops HYBRID (Dice 0.8050, HV MSE 0.0975), évaluation finale montre AJI 0.5759 au lieu de ≥0.68 cible. Investigation révèle **biais fondamental dans l'évaluation**.
+
+**Problème identifié — Pseudo-Instances dans GT:**
+
+```python
+# ❌ AVANT (BIAISÉ):
+# Evaluation comparait pseudo-instances vs prédictions
+for i in range(n_to_eval):
+    np_gt = np_targets[i]
+    hv_gt = hv_targets[i]
+
+    # RECONSTRUCTION watershed sur HV_GT_HYBRID
+    gt_inst = hv_guided_watershed(np_gt, hv_gt, beta=1.5, min_size=40)  # ❌ Pseudo-instances
+    pred_inst = hv_guided_watershed(np_pred, hv_pred, beta=1.5, min_size=40)
+
+    aji = compute_aji(pred_inst, gt_inst)  # ❌ Compare 2 reconstructions watershed
+```
+
+**Impact:** AJI mesurait la capacité du modèle à reproduire les HV targets, PAS à détecter les vraies instances PanNuke.
+
+**Citation utilisateur (correction pragmatique):**
+> "Pourquoi tu n'utilise pas les données de VAL, déjà calculer et enregistrer? Inutilie de repartir de 0 et refaire tout le calcul avec le risque d'erreur."
+
+**Solution adoptée:** ENRICHIR les données V13 VAL existantes avec inst_maps
+
+**Modifications implémentées (Commit fe223fb):**
+
+**1. `prepare_v13_smart_crops.py` — Sauvegarde inst_maps**
+
+- Modifié `extract_crop()` pour retourner `inst_map` (IDs préservés depuis inst_map_global)
+- Modifié `apply_rotation()` pour accepter et retourner `inst_map` roté
+- Ajouté rotation inst_map pour tous les cas (0°, 90°, 180°, 270°, flip_h)
+- Modifié `crops_data` dict pour inclure `'inst_maps': []`
+- Modifié `np.savez_compressed()` pour sauvegarder `inst_maps_array`
+
+**2. `test_v13_smart_crops_aji.py` — Utilisation TRUE inst_maps**
+
+```python
+# ✅ APRÈS (CORRECT):
+images = val_data['images']
+np_targets = val_data['np_targets']
+hv_targets = val_data['hv_targets']
+inst_maps = val_data['inst_maps']  # ✅ VRAIES instances cropées avec HYBRID
+
+# Pas de reconstruction - utiliser instances réelles
+gt_instances = inst_maps[:n_to_eval]
+
+for i in range(n_to_eval):
+    pred_inst = hv_guided_watershed(np_pred, hv_pred, beta=1.5, min_size=40)
+    gt_inst = gt_instances[i]  # ✅ Instances PanNuke réelles
+
+    aji = compute_aji(pred_inst, gt_inst)  # ✅ Compare pred vs VÉRITÉ TERRAIN
+```
+
+**Avantages:**
+
+1. **Évaluation non biaisée** — Compare contre vraies annotations PanNuke, pas reconstruction
+2. **Réutilisation données existantes** — ENRICHIT VAL au lieu de régénérer from scratch
+3. **inst_maps déjà calculés** — Approach HYBRID préserve IDs uniques durant cropping
+4. **Pas de paramètres watershed en GT** — Élimine influence beta/min_size sur métriques
+
+**Impact attendu:**
+
+| Métrique | Avant (BIAISÉ) | Après (TRUE) | Note |
+|----------|---------------|--------------|------|
+| Dice | 0.7683 | ~0.76-0.80 | Maintenu (NP pas affecté) |
+| **AJI** | **0.5759** | **≥0.68** 🎯 | **Vérité terrain vraie** |
+| PQ | 0.5094 | ≥0.62 | Instance detection améliorée |
+
+**Leçons apprises:**
+
+1. **Pseudo-GT = Biais Vicieux**
+   - Watershed(GT_HV) ≠ Vraies instances
+   - TOUJOURS comparer contre annotations expertes, jamais reconstructions
+
+2. **HYBRID Approach Préserve Instances**
+   - inst_map_global contient IDs uniques PanNuke
+   - Cropping + rotation préservent ces IDs
+   - Pas besoin de recalculer avec connectedComponents
+
+3. **Pragmatisme > Perfection**
+   - Enrichir données existantes > Régénérer from scratch
+   - Moins de risque d'erreur, plus rapide
+
+**Fichiers modifiés:**
+- `scripts/preprocessing/prepare_v13_smart_crops.py` (+inst_map handling, ~30 lignes modifiées)
+- `scripts/evaluation/test_v13_smart_crops_aji.py` (-watershed GT loop, +inst_maps loading, ~15 lignes modifiées)
+
+**Commit:** `fe223fb` — "feat(v13-smart-crops): Add inst_maps to data for TRUE instance evaluation"
+
+**Prochaines étapes (utilisateur):**
+
+1. Régénérer données VAL avec inst_maps (~5 min)
+   ```bash
+   python scripts/preprocessing/prepare_v13_smart_crops.py --family epidermal
+   ```
+
+2. Ré-évaluer avec TRUE instances (~5 min)
+   ```bash
+   python scripts/evaluation/test_v13_smart_crops_aji.py \
+       --checkpoint models/checkpoints_v13_smart_crops/hovernet_epidermal_v13_smart_crops_best.pth \
+       --family epidermal --n_samples 50
+   ```
+
+3. Si AJI ≥0.68: Extension 4 autres familles, sinon: Diagnostic approfondi
+
+**Temps total:** ~11 minutes (régénération + validation + évaluation)
+
+**Statut:** ✅ Code modifié et committé — ⏳ En attente exécution utilisateur
+
+**Documentation:** `NEXT_STEPS_V13_SMART_CROPS.md` (guide complet d'exécution)
+
+---
+
 ### 2025-12-26 — V13-Hybrid POC: Phase 1 & 2 Complètes ✅ ARCHITECTURE PRÊTE
 
 **Contexte:** Suite validation V13 Multi-Crop POC (Dice 0.76, AJI 0.57), lancement V13-Hybrid avec canal H pour résoudre sous-segmentation (-15%).
