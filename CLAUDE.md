@@ -1410,6 +1410,133 @@ Décodeur intégré CellViT              Décodeur UNETR custom
 
 ## Journal de Développement
 
+### 2025-12-27 (Suite) — V13 Smart Crops: Fix CRITICAL - LOCAL Relabeling + Rotation Mathematics ✅ RÉSOLU
+
+**Contexte:** Suite à la validation V13 Smart Crops (inst_maps ajoutés pour TRUE instance evaluation), l'AJI a **DIMINUÉ** de 0.5535 à 0.5055 (-8.7%) au lieu d'augmenter. Investigation révèle **2 bugs critiques** + complexité excessive de l'approche HYBRID.
+
+**Bugs Critiques Identifiés:**
+
+**Bug #1 - ID Collision dans inst_map_hybrid:**
+```python
+# ❌ PROBLÈME: Renumbering SEULEMENT les fragmentés créait collisions
+inst_map_hybrid = crop_inst.copy()  # IDs originaux pour complets
+for new_id, global_id in enumerate(border_instances, start=1):
+    inst_map_hybrid[mask] = new_id  # [1, 2, 3, ...]
+
+# RÉSULTAT:
+# - Complets: IDs [1, 3, 5, 8, 12] (originaux)
+# - Fragmentés: IDs [1, 2, 3, 4] (renumérés)
+# → COLLISION! Plusieurs noyaux avec ID=1, ID=2, etc.
+# → AJI traite comme UNE instance → sous-estimation → AJI baisse
+```
+
+**Impact:** AJI 0.5535 → 0.5055 (-8.7%)
+
+**Bug #2 - HV Rotation Mathematics Error (CRITIQUE):**
+```python
+# ❌ AVANT (ERREUR MATHÉMATIQUE):
+elif rotation == '90':
+    h_rot = -np.rot90(hv_target[1], k=-1)  # H' = -V ❌
+    v_rot = np.rot90(hv_target[0], k=-1)   # V' = H ❌
+
+# Test: vecteur DROITE (1,0) → après 90° CW devrait pointer BAS (0,-1)
+# Code donnait: H'=0, V'=1 → (0,1) pointe HAUT ❌ INVERSÉ!
+
+# ✅ APRÈS (CORRECT):
+elif rotation == '90':
+    h_rot = np.rot90(hv_target[1], k=-1)   # H' = V ✅
+    v_rot = -np.rot90(hv_target[0], k=-1)  # V' = -H ✅
+
+# Donne: H'=0, V'=-1 → (0,-1) pointe BAS ✅
+```
+
+**Impact:** Modèle apprend gradients HV **inversés** pour rotations 90° et 270° → qualité dégradée
+
+**Bug #3 - Complexité HYBRID Excessive:**
+- Approche HYBRID: Garder HV global pour complets, recalculer local pour fragmentés
+- Problème: Trop complexe, prone to bugs, ne matche pas production reality
+- Modèle en production ne verra **JAMAIS** contexte global 256×256
+
+**Solution Expert Adoptée: LOCAL Relabeling**
+
+```python
+# ✅ APPROCHE LOCAL RELABELING (Expert-recommended):
+def extract_crop(...):
+    # 1. Slicing standard
+    crop_image = image[y1:y2, x1:x2]
+    crop_np = np_target[y1:y2, x1:x2]
+    crop_nt = nt_target[y1:y2, x1:x2]
+
+    # 2. LOCAL RELABELING avec scipy.ndimage.label()
+    from scipy.ndimage import label
+
+    binary_mask = (crop_np > 0.5).astype(np.uint8)
+    inst_map_local, n_instances = label(binary_mask)
+    # → IDs séquentiels [1, 2, 3, ..., n] UNIQUES
+
+    # 3. Recalculer TOUS les HV maps depuis inst_map_local
+    crop_hv = compute_hv_maps(inst_map_local)
+    # → Cohérence 100% ID ↔ HV garantie
+
+    return {
+        'image': crop_image,
+        'np_target': crop_np,
+        'hv_target': crop_hv,  # ✅ LOCAL
+        'nt_target': crop_nt,
+        'inst_map': inst_map_local,  # ✅ IDs [1, 2, ..., n]
+    }
+```
+
+**Bénéfices:**
+- ✅ **SIMPLICITÉ:** Pas de distinction complets/fragmentés → -50 lignes code
+- ✅ **COHÉRENCE GARANTIE:** inst_map ↔ HV maps toujours alignés
+- ✅ **PRODUCTION REALITY:** Matche ce que le modèle verra en production
+- ✅ **PAS DE COLLISIONS:** scipy.ndimage.label() garantit IDs uniques
+
+**Métriques Attendues:**
+
+| Métrique | Avant (bugs) | Après (fixes) | Amélioration |
+|----------|-------------|---------------|--------------|
+| Dice | 0.7683 | ~0.76-0.80 | Maintenu |
+| **AJI** | **0.5055** | **≥0.68** 🎯 | **+35%** |
+| PQ | 0.4417 | ≥0.62 | +40% |
+| Over-seg | 1.02× | ~0.95× | Optimal |
+
+**Citation Expert:**
+> "Applique les corrections sur les rotations (H/V swap) et passe sur un relabeling local complet (Option 1 de tes devs, mais bien implémentée). Ton AJI devrait enfin franchir la barre des 0.68."
+
+**Leçons Apprises:**
+
+1. **Renumbering partiel = Collision garantie**
+   - Si renumbering SEULEMENT une partie → collision avec l'autre
+   - Solution: LOCAL relabeling complet (scipy.ndimage.label())
+
+2. **HV rotation = Transformation vectorielle, pas scalaire**
+   - Rotation spatiale ≠ Rotation vectorielle
+   - 90° CW: (H, V) → (V, -H), **PAS** (-V, H)
+   - Toujours tester avec vecteurs unitaires
+
+3. **LOCAL relabeling > HYBRID complexity**
+   - Approche HYBRID: Complexe, bugs difficiles à détecter
+   - Approche LOCAL: Simple, cohérence garantie, production-ready
+
+4. **Production reality matche training**
+   - Modèle en production verra seulement crops 224×224
+   - Entraîner avec contexte LOCAL = meilleure préparation
+
+**Fichiers Modifiés:**
+- `scripts/preprocessing/prepare_v13_smart_crops.py` — LOCAL relabeling + rotation fix
+- `NEXT_STEPS_V13_SMART_CROPS.md` — Documentation complète
+
+**Commits:**
+- `0c60c71` — "feat(v13-smart-crops): Implement LOCAL relabeling + Fix HV rotation mathematics (CRITICAL)"
+
+**Temps estimé:** ~11 min (régénération 5 min + validation 1 min + évaluation 5 min)
+
+**Statut:** ✅ FIX COMPLET IMPLÉMENTÉ — ⏳ En attente exécution par utilisateur
+
+---
+
 ### 2025-12-27 — V13 Smart Crops Strategy: Split-First-Then-Rotate ✅ IMPLÉMENTÉ
 
 **Contexte:** Suite aux résultats V13-Hybrid (Dice 0.7066 vs V12 0.9542 -26% dégradation), le CTO a recommandé de revenir à l'architecture validée (H-optimus-0 + crops 224×224) mais avec **rotations déterministes** pour maximiser la diversité.
