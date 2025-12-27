@@ -271,6 +271,18 @@ def extract_crop(
         # Remplacer HV SEULEMENT pour pixels fragmentés
         crop_hv[:, mask_fragmented] = hv_fragmented[:, mask_fragmented]
 
+    # 5b. Créer inst_map_HYBRID cohérent avec les HV calculés
+    # CRITICAL: Les noyaux fragmentés doivent avoir les MÊMES IDs renumérés
+    # que ceux utilisés pour le calcul des HV maps (inst_map_fragmented)
+    inst_map_hybrid = crop_inst.copy()
+
+    if len(border_instances) > 0:
+        # Remplacer les IDs des noyaux fragmentés par les IDs renumérés
+        # (identiques à ceux utilisés pour compute_hv_maps)
+        for new_id, global_id in enumerate(border_instances, start=1):
+            mask = crop_inst == global_id
+            inst_map_hybrid[mask] = new_id  # Renumbering [1, 2, 3, ...]
+
     # 6. Validation
     assert crop_image.shape == (CROP_SIZE, CROP_SIZE, 3), f"Image shape: {crop_image.shape}"
     assert crop_np.shape == (CROP_SIZE, CROP_SIZE), f"NP shape: {crop_np.shape}"
@@ -286,7 +298,7 @@ def extract_crop(
         'np_target': crop_np,
         'hv_target': crop_hv,  # ✅ HYBRIDE: Complets (global) + Fragmentés (local)
         'nt_target': crop_nt,
-        'inst_map': crop_inst,  # ✅ Instance map cropé (IDs préservés)
+        'inst_map': inst_map_hybrid,  # ✅ HYBRIDE: Fragmentés renumérés (cohérent avec HV)
     }
 
 
