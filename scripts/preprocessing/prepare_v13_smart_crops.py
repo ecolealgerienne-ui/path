@@ -203,7 +203,7 @@ def apply_rotation(
     Args:
         image: (224, 224, 3)
         np_target: (224, 224)
-        hv_target: (2, 224, 224) - [V, H]
+        hv_target: (2, 224, 224) - [H, V] (Convention HoVer-Net)
         nt_target: (224, 224)
         rotation: '0', '90', '180', '270', 'flip_h'
 
@@ -220,10 +220,10 @@ def apply_rotation(
         nt_rot = np.rot90(nt_target, k=-1, axes=(0, 1))
 
         # HV component swapping: H' = V, V' = -H
-        v_old, h_old = hv_target[0], hv_target[1]
-        v_rot = -np.rot90(h_old, k=-1, axes=(0, 1))      # V' = -H
+        h_old, v_old = hv_target[0], hv_target[1]  # [H, V] convention
         h_rot = np.rot90(v_old, k=-1, axes=(0, 1))       # H' = V
-        hv_rot = np.stack([v_rot, h_rot], axis=0)
+        v_rot = -np.rot90(h_old, k=-1, axes=(0, 1))      # V' = -H
+        hv_rot = np.stack([h_rot, v_rot], axis=0)
 
         return image_rot, np_rot, hv_rot, nt_rot
 
@@ -234,9 +234,9 @@ def apply_rotation(
         nt_rot = np.rot90(nt_target, k=2, axes=(0, 1))
 
         # HV negation: H' = -H, V' = -V
-        v_rot = -np.rot90(hv_target[0], k=2, axes=(0, 1))
-        h_rot = -np.rot90(hv_target[1], k=2, axes=(0, 1))
-        hv_rot = np.stack([v_rot, h_rot], axis=0)
+        h_rot = -np.rot90(hv_target[0], k=2, axes=(0, 1))  # H' = -H
+        v_rot = -np.rot90(hv_target[1], k=2, axes=(0, 1))  # V' = -V
+        hv_rot = np.stack([h_rot, v_rot], axis=0)
 
         return image_rot, np_rot, hv_rot, nt_rot
 
@@ -247,10 +247,10 @@ def apply_rotation(
         nt_rot = np.rot90(nt_target, k=1, axes=(0, 1))
 
         # HV component swapping: H' = -V, V' = H
-        v_old, h_old = hv_target[0], hv_target[1]
-        v_rot = np.rot90(h_old, k=1, axes=(0, 1))        # V' = H
+        h_old, v_old = hv_target[0], hv_target[1]  # [H, V] convention
         h_rot = -np.rot90(v_old, k=1, axes=(0, 1))       # H' = -V
-        hv_rot = np.stack([v_rot, h_rot], axis=0)
+        v_rot = np.rot90(h_old, k=1, axes=(0, 1))        # V' = H
+        hv_rot = np.stack([h_rot, v_rot], axis=0)
 
         return image_rot, np_rot, hv_rot, nt_rot
 
@@ -261,9 +261,9 @@ def apply_rotation(
         nt_rot = np.fliplr(nt_target)
 
         # HV flip: H' = -H, V' = V
-        v_rot = np.fliplr(hv_target[0])
-        h_rot = -np.fliplr(hv_target[1])
-        hv_rot = np.stack([v_rot, h_rot], axis=0)
+        h_rot = -np.fliplr(hv_target[0])  # H' = -H (négué car flip horizontal)
+        v_rot = np.fliplr(hv_target[1])   # V' = V (inchangé)
+        hv_rot = np.stack([h_rot, v_rot], axis=0)
 
         return image_rot, np_rot, hv_rot, nt_rot
 
