@@ -366,7 +366,13 @@ def main():
     parser.add_argument("--lambda_np", type=float, default=1.0)
     parser.add_argument("--lambda_hv", type=float, default=2.0)
     parser.add_argument("--lambda_nt", type=float, default=1.0)
+    parser.add_argument("--lambda_magnitude", type=float, default=1.0,
+                       help="Poids magnitude loss (force gradients HV)")
+    parser.add_argument("--dropout", type=float, default=0.4,
+                       help="Dropout rate pour régularisation")
     parser.add_argument("--augment", action="store_true")
+    parser.add_argument("--adaptive_loss", action="store_true",
+                       help="Activer Uncertainty Weighting (poids appris)")
     parser.add_argument("--device", default="cuda", choices=["cuda", "cpu"])
     args = parser.parse_args()
 
@@ -381,8 +387,10 @@ def main():
     print(f"  Epochs: {args.epochs}")
     print(f"  Batch size: {args.batch_size}")
     print(f"  Learning rate: {args.lr}")
-    print(f"  Lambda (NP/HV/NT): {args.lambda_np}/{args.lambda_hv}/{args.lambda_nt}")
+    print(f"  Lambda (NP/HV/NT/Mag): {args.lambda_np}/{args.lambda_hv}/{args.lambda_nt}/{args.lambda_magnitude}")
+    print(f"  Dropout: {args.dropout}")
     print(f"  Augmentation: {args.augment}")
+    print(f"  Adaptive loss: {args.adaptive_loss}")
     print(f"  Device: {args.device}")
 
     # Datasets
@@ -426,7 +434,7 @@ def main():
     model = HoVerNetDecoder(
         embed_dim=1536,
         n_classes=n_classes,
-        dropout=0.1
+        dropout=args.dropout
     ).to(device)
 
     n_params = sum(p.numel() for p in model.parameters())
@@ -436,11 +444,24 @@ def main():
     criterion = HoVerNetLoss(
         lambda_np=args.lambda_np,
         lambda_hv=args.lambda_hv,
-        lambda_nt=args.lambda_nt
+        lambda_nt=args.lambda_nt,
+        lambda_magnitude=args.lambda_magnitude,
+        adaptive=args.adaptive_loss
     )
 
-    # Optimizer
-    optimizer = AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)
+    # Si adaptive loss, mettre criterion sur le device (contient des paramètres apprenables)
+    if args.adaptive_loss:
+        criterion.to(device)
+
+    # Optimizer (inclut les paramètres de loss si adaptive)
+    if args.adaptive_loss:
+        optimizer = AdamW(
+            list(model.parameters()) + list(criterion.parameters()),
+            lr=args.lr, weight_decay=1e-4
+        )
+    else:
+        optimizer = AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)
+
     scheduler = CosineAnnealingLR(optimizer, T_max=args.epochs, eta_min=1e-6)
 
     # Training
