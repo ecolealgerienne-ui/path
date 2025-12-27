@@ -24,12 +24,29 @@ Image PanNuke 256×256
     │
     ├─ Crop COIN Haut-Gauche (0, 0) → Rotation 90° clockwise
     │
-    ├─ Crop COIN Haut-Droit (0, 32) → Rotation 180°
+    ├─ Crop COIN Haut-Droit (32, 0) → Rotation 180°
     │
-    ├─ Crop COIN Bas-Gauche (32, 0) → Rotation 270° clockwise
+    ├─ Crop COIN Bas-Gauche (0, 32) → Rotation 270° clockwise
     │
     └─ Crop COIN Bas-Droit (32, 32) → Flip horizontal
 ```
+
+### Matrice de Correspondance Formelle
+
+**Standard Image:** $(x, y)$ où $(0, 0)$ = coin haut-gauche
+
+| Position du Crop | Coordonnées $(x_1, y_1)$ | Zone extraite 224×224 | Rotation à appliquer |
+|------------------|--------------------------|----------------------|---------------------|
+| **CENTRE** | $(16, 16)$ | $[16:240, 16:240]$ | **0°** (Original) |
+| **HAUT-GAUCHE** | $(0, 0)$ | $[0:224, 0:224]$ | **90° CW** |
+| **HAUT-DROIT** | $(32, 0)$ | $[32:256, 0:224]$ | **180°** |
+| **BAS-GAUCHE** | $(0, 32)$ | $[0:224, 32:256]$ | **270° CW** |
+| **BAS-DROIT** | $(32, 32)$ | $[32:256, 32:256]$ | **Flip Horizontal** |
+
+**Propriétés géométriques:**
+- Recouvrement intelligent: déplacement de 32 pixels couvre 100% des pixels du patch 256×256
+- Diversité orientation: chaque coin a une signature géométrique unique
+- Zero data leakage: split train/val AVANT extraction de crops
 
 ### Bénéfices Scientifiques
 

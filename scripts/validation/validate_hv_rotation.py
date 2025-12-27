@@ -182,7 +182,7 @@ def main():
     print(f"Loading: {args.data_file}")
     data = np.load(args.data_file)
 
-    images_224 = data['images_224']
+    images_224 = data['images']
     np_targets = data['np_targets']
     hv_targets = data['hv_targets']
 
@@ -217,12 +217,14 @@ def main():
     for i in range(min(args.n_samples, len(images_224) // 5)):
         fig, axes = plt.subplots(1, 5, figsize=(20, 4))
 
-        crop_names = [
+        # Stratégie V13 Smart Crops: 1 image source → 5 crops avec rotations spécifiques
+        # Indices i*5 à i*5+4 = les 5 crops de la même image source
+        crop_labels = [
             'Centre 0°',
             'Top-Left 90°',
             'Top-Right 180°',
             'Bottom-Left 270°',
-            'Bottom-Right Hflip'
+            'Bottom-Right Flip-H'
         ]
 
         start_idx = i * 5
@@ -233,7 +235,7 @@ def main():
                 images_224[idx],
                 np_targets[idx],
                 hv_targets[idx],
-                crop_names[j],
+                crop_labels[j],
                 axes[j],
                 subsample=16
             )
