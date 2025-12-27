@@ -436,8 +436,7 @@ def main():
     criterion = HoVerNetLoss(
         lambda_np=args.lambda_np,
         lambda_hv=args.lambda_hv,
-        lambda_nt=args.lambda_nt,
-        n_classes=n_classes
+        lambda_nt=args.lambda_nt
     )
 
     # Optimizer
