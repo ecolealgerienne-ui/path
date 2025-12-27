@@ -38,6 +38,86 @@ class UpsampleBlock(nn.Module):
         return self.conv(x)
 
 
+class PixelShuffleBlock(nn.Module):
+    """
+    Bloc d'upsampling avec PixelShuffle (Sub-Pixel Convolution).
+
+    Avantages vs Bilinear:
+    - Apprend l'upsampling (pas d'interpolation fixe)
+    - Produit des bords plus nets
+    - Utilisé dans les réseaux de super-résolution
+
+    Référence: "Real-Time Single Image and Video Super-Resolution" (Shi et al. 2016)
+    """
+
+    def __init__(self, in_channels: int, out_channels: int, scale_factor: int = 2):
+        super().__init__()
+        # Pour PixelShuffle(r), on a besoin de r² fois plus de canaux en entrée
+        mid_channels = out_channels * (scale_factor ** 2)
+
+        self.conv1 = nn.Sequential(
+            nn.Conv2d(in_channels, mid_channels, 3, padding=1, bias=False),
+            nn.BatchNorm2d(mid_channels),
+            nn.ReLU(inplace=True),
+        )
+        self.pixel_shuffle = nn.PixelShuffle(scale_factor)
+        self.conv2 = nn.Sequential(
+            nn.Conv2d(out_channels, out_channels, 3, padding=1, bias=False),
+            nn.BatchNorm2d(out_channels),
+            nn.ReLU(inplace=True),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = self.conv1(x)           # (B, out*4, H, W)
+        x = self.pixel_shuffle(x)   # (B, out, H*2, W*2)
+        x = self.conv2(x)           # (B, out, H*2, W*2)
+        return x
+
+
+class FocalLoss(nn.Module):
+    """
+    Focal Loss pour gérer le déséquilibre de classes.
+
+    Focal Loss = -α(1-p)^γ * log(p)
+
+    - Downweight les exemples faciles (background)
+    - Focus sur les exemples difficiles (bords des noyaux)
+
+    EXPERT FIX v12-Final-Gold (2025-12-25):
+    - Alpha: 0.5 (équilibré noyau/fond → modèle "ose" dessiner noyaux complets)
+    - Gamma: 3.0 (focus maximal sur les bordures difficiles)
+
+    Référence: "Focal Loss for Dense Object Detection" (Lin et al. 2017)
+    """
+
+    def __init__(self, alpha: float = 0.5, gamma: float = 3.0, reduction: str = 'mean'):
+        super().__init__()
+        self.alpha = alpha
+        self.gamma = gamma
+        self.reduction = reduction
+
+    def forward(self, inputs: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            inputs: (B, C, H, W) logits
+            targets: (B, H, W) class indices
+        """
+        ce_loss = F.cross_entropy(inputs, targets, reduction='none')
+        p = torch.exp(-ce_loss)  # Probabilité de la bonne classe
+        focal_weight = (1 - p) ** self.gamma
+
+        # Alpha weighting pour classe 1 (noyau)
+        alpha_weight = torch.where(targets == 1, self.alpha, 1 - self.alpha)
+
+        focal_loss = alpha_weight * focal_weight * ce_loss
+
+        if self.reduction == 'mean':
+            return focal_loss.mean()
+        elif self.reduction == 'sum':
+            return focal_loss.sum()
+        return focal_loss
+
+
 class DecoderHead(nn.Module):
     """
     Tête de décodage légère.
@@ -105,10 +185,11 @@ class HoVerNetDecoder(nn.Module):
 
         # ===== TRONC COMMUN (upsampling partagé) =====
         # 16x16 → 32 → 64 → 128 → 224
-        self.up1 = UpsampleBlock(bottleneck_dim, 128)   # 16→32, 256→128
-        self.up2 = UpsampleBlock(128, 64)               # 32→64, 128→64
-        self.up3 = UpsampleBlock(64, 64)                # 64→128, 64→64
-        self.up4 = UpsampleBlock(64, 64)                # 128→256, 64→64
+        # Expert: Remplacer bilinear par PixelShuffle pour bords nets
+        self.up1 = PixelShuffleBlock(bottleneck_dim, 128)  # 16→32, 256→128
+        self.up2 = PixelShuffleBlock(128, 64)              # 32→64, 128→64
+        self.up3 = PixelShuffleBlock(64, 64)               # 64→128, 64→64
+        self.up4 = PixelShuffleBlock(64, 64)               # 128→256, 64→64
 
         # Dropout entre les blocs d'upsampling
         self.dropout = nn.Dropout2d(dropout) if dropout > 0 else nn.Identity()
@@ -126,16 +207,32 @@ class HoVerNetDecoder(nn.Module):
         Reshape les tokens ViT en feature map spatiale.
 
         Args:
-            x: (B, N, D) avec N = 1 CLS + 256 patches + 4 registers = 261
+            x: (B, N, D) avec N = 1 CLS + 4 registers + 256 patches = 261
 
         Returns:
             (B, D, H, W) avec H=W=16
+
+        IMPORTANT - Structure H-optimus-0 (ViT-Giant/14 avec registres):
+            Index 0:     CLS token (classification globale)
+            Index 1-4:   Register tokens (mémoire, SANS info spatiale!)
+            Index 5-260: 256 patch tokens (grille 16×16 spatiale)
+
+        BUG CORRIGÉ (2025-12-25):
+            AVANT: x[:, 1:257, :] → Prenait Registers(1-4) + Patches(5-256)
+                   → Registers n'ont PAS d'info spatiale → bruit dans la grille
+                   → Manquait les 4 derniers patches (257-260)
+            APRÈS: x[:, 5:, :] → Prend uniquement Patches(5-260)
+                   → 256 tokens spatiaux corrects
         """
         B, N, D = x.shape
         n_patches = self.n_patches * self.n_patches  # 256
 
-        # Extraire seulement les patch tokens (ignorer CLS et registers)
-        if N > n_patches:
+        # Extraire UNIQUEMENT les patch tokens (ignorer CLS et registers)
+        if N == 261:
+            # H-optimus-0: [CLS(0), Registers(1-4), Patches(5-260)]
+            x = x[:, 5:, :]  # (B, 256, D) - CORRECTION: sauter les registers
+        elif N > n_patches:
+            # Fallback pour autres modèles (ViT standard sans registers)
             x = x[:, 1:n_patches+1, :]  # (B, 256, D)
 
         # Reshape en spatial
@@ -162,6 +259,43 @@ class HoVerNetDecoder(nn.Module):
 
         # Bottleneck partagé (économie VRAM: 1536 → 256, + dropout)
         x = self.bottleneck(x)  # (B, 256, 16, 16)
+
+        # =====================================================================
+        # TODO: V13 - Marquage Virtuel Hybride (H-Channel Injection)
+        # =====================================================================
+        #
+        # OBJECTIF: Améliorer la séparation d'instances en injectant l'info
+        # coloration Hématoxyline directement dans l'espace latent.
+        #
+        # RAISON SCIENTIFIQUE:
+        # - L'hématoxyline colore les noyaux en violet/bleu
+        # - Le canal H (Haematoxylin) du déconvolut couleur H&E contient
+        #   l'info de densité chromatinienne PURE
+        # - Injecter H dans les features force le modèle à "voir" les frontières
+        #   nucléaires même quand H-optimus-0 les a abstraites
+        #
+        # IMPLÉMENTATION PRÉVUE:
+        # 1. Extraire canal H depuis l'input RGB original (256×256)
+        #    → Utiliser déconvolution couleur Macenko ou matrice OD
+        # 2. Redimensionner canal H en 16×16 (même résolution que features)
+        #    → F.interpolate(h_channel, size=(16, 16), mode='bilinear')
+        # 3. Concaténer avec x: x = torch.cat([x, h_channel], dim=1)
+        #    → Nécessite ajuster bottleneck: 256 + 1 = 257 canaux en entrée up1
+        # 4. Passer au PixelShuffle (up1)
+        #
+        # MODIFICATION REQUISE:
+        # - Signature forward(): ajouter paramètre `rgb_input: torch.Tensor = None`
+        # - __init__(): ajuster up1 input channels (256 → 257)
+        # - Créer méthode `extract_h_channel()` avec matrice déconvolution
+        #
+        # GAIN ATTENDU:
+        # - AJI: +10-15% (séparation instances améliorée)
+        # - Particulièrement efficace sur tissus denses (Urologic, Epidermal)
+        #
+        # RÉFÉRENCE:
+        # - "Virtual Staining" (Rivenson et al., Nature BME 2019)
+        # - Macenko color normalization (Macenko et al., ISBI 2009)
+        # =====================================================================
 
         # Tronc commun (upsampling partagé avec dropout)
         x = self.up1(x)         # (B, 128, 32, 32)
@@ -224,8 +358,11 @@ class HoVerNetLoss(nn.Module):
         self.lambda_magnitude = lambda_magnitude
         self.adaptive = adaptive
 
-        self.bce = nn.CrossEntropyLoss()
-        self.smooth_l1 = nn.SmoothL1Loss()  # Remplace MSE - moins sensible aux outliers
+        # NP Loss: Focal + Dice (Phase 1 Phased Training)
+        # Expert: Focal Loss ignore le déséquilibre fond/noyau
+        # et se concentre sur les exemples difficiles (bords)
+        self.focal_loss = FocalLoss(alpha=0.25, gamma=2.0)
+        self.smooth_l1 = nn.SmoothL1Loss()
 
         # Uncertainty Weighting: log(σ²) pour chaque tâche (paramètres appris)
         # Initialisés à 0 → σ² = 1 → poids effectif = 1
@@ -382,10 +519,12 @@ class HoVerNetLoss(nn.Module):
         Returns:
             total_loss, dict avec losses individuelles
         """
-        # NP loss: BCE + Dice
-        np_bce = self.bce(np_pred, np_target.long())
+        # NP loss: Focal + Dice (Phase 1 Phased Training)
+        # Expert: Focal Loss gère le déséquilibre et focus sur les bords difficiles
+        # Dice Loss ignore le déséquilibre et se concentre sur l'overlap
+        np_focal = self.focal_loss(np_pred, np_target.long())
         np_dice = self.dice_loss(np_pred, np_target.float())
-        np_loss = np_bce + np_dice
+        np_loss = np_focal + np_dice
 
         # HV loss: MSE MASQUÉ (uniquement sur pixels de noyaux)
         # Littérature (Graham et al.): MSE doit être calculé UNIQUEMENT sur les noyaux
@@ -421,13 +560,32 @@ class HoVerNetLoss(nn.Module):
         #   - Lambda_magnitude=1.0 (ANCIEN 2025-12-24): masking bugué → magnitude 0.02
         #   - Lambda_magnitude=5.0 (EXPERT FIX 2025-12-24): masking corrigé → magnitude attendue 0.5+
         #
-        # EXPERT FIX 2025-12-24:
-        # - hv_gradient: 3.0× (force variations spatiales)
-        # - hv_magnitude: 5.0× (priorise amplitude forte) via self.lambda_magnitude
-        hv_loss = hv_l1 + 3.0 * hv_gradient + self.lambda_magnitude * hv_magnitude
+        # FIX 2025-12-25: Réduire multiplicateurs pour équilibrer avec NP
+        # Avant: 3.0×gradient + 5.0×magnitude → loss HV ~7.0 (dominait tout)
+        # Après: 1.0×gradient + 1.0×magnitude → loss HV ~1.0 (équilibré)
+        hv_loss = hv_l1 + 1.0 * hv_gradient + self.lambda_magnitude * hv_magnitude
 
-        # NT loss: CE (sur tous les pixels)
-        nt_loss = self.bce(nt_pred, nt_target.long())
+        # NT loss: CE MASQUÉ (uniquement sur pixels de noyaux)
+        # FIX CRITIQUE 2025-12-25: Avant, calculé sur TOUS pixels → 85% background
+        # → Modèle apprenait "prédire classe 0 partout = 85% accuracy"
+        # → NT Acc était 0.0002% (catastrophique)
+        # SOLUTION: Masquer comme HV loss (Graham et al. 2019)
+        if mask.sum() > 0:
+            # Flatten: (B, C, H, W) → (B*H*W, C) et (B, H, W) → (B*H*W,)
+            B, C, H, W = nt_pred.shape
+            nt_pred_flat = nt_pred.permute(0, 2, 3, 1).reshape(-1, C)  # (B*H*W, n_classes)
+            nt_target_flat = nt_target.reshape(-1)  # (B*H*W,)
+            mask_flat = mask.squeeze(1).reshape(-1)  # (B*H*W,)
+
+            # Sélectionner uniquement les pixels de noyaux
+            nuclear_indices = mask_flat > 0.5
+            nt_pred_masked = nt_pred_flat[nuclear_indices]  # (N_nuclear, n_classes)
+            nt_target_masked = nt_target_flat[nuclear_indices]  # (N_nuclear,)
+
+            # CrossEntropyLoss sur pixels de noyaux uniquement
+            nt_loss = F.cross_entropy(nt_pred_masked, nt_target_masked.long())
+        else:
+            nt_loss = torch.tensor(0.0, device=nt_pred.device)
 
         # Calcul du total selon le mode
         if self.adaptive:
@@ -447,6 +605,8 @@ class HoVerNetLoss(nn.Module):
 
             return total, {
                 'np': np_loss.item(),
+                'np_focal': np_focal.item(),
+                'np_dice': np_dice.item(),
                 'hv': hv_loss.item(),
                 'hv_l1': hv_l1.item(),
                 'hv_gradient': hv_gradient.item(),
@@ -462,6 +622,8 @@ class HoVerNetLoss(nn.Module):
 
             return total, {
                 'np': np_loss.item(),
+                'np_focal': np_focal.item(),
+                'np_dice': np_dice.item(),
                 'hv': hv_loss.item(),
                 'hv_l1': hv_l1.item(),
                 'hv_gradient': hv_gradient.item(),

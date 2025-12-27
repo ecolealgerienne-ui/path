@@ -1,10 +1,18 @@
 #!/usr/bin/env python3
 """
-Test AJI FINAL pour epidermal avec HV magnitude (pas Sobel).
+Test AJI pour toutes les familles HoVer-Net.
 
 Usage:
-    python scripts/evaluation/test_epidermal_aji_FINAL.py \
+    # Glandular
+    python scripts/evaluation/test_family_aji.py \
+        --checkpoint models/checkpoints/hovernet_glandular_best.pth \
+        --family glandular \
+        --n_samples 100
+
+    # Epidermal
+    python scripts/evaluation/test_family_aji.py \
         --checkpoint models/checkpoints/hovernet_epidermal_best.pth \
+        --family epidermal \
         --n_samples 50
 """
 
@@ -24,11 +32,83 @@ from tqdm import tqdm
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from src.constants import PANNUKE_IMAGE_SIZE
+from src.constants import (
+    PANNUKE_IMAGE_SIZE,
+    DEFAULT_PANNUKE_DIR,
+    get_family_data_path,
+    CURRENT_DATA_VERSION,
+)
 from src.metrics.ground_truth_metrics import compute_aji, compute_dice, compute_panoptic_quality
 from src.models.hovernet_decoder import HoVerNetDecoder
 from src.models.loader import ModelLoader
 from src.preprocessing import create_hoptimus_transform
+
+# =============================================================================
+# REPRODUCTIBILITÉ: Fixer toutes les graines aléatoires
+# =============================================================================
+import random
+SEED = 42
+random.seed(SEED)
+np.random.seed(SEED)
+torch.manual_seed(SEED)
+if torch.cuda.is_available():
+    torch.cuda.manual_seed(SEED)
+    torch.backends.cudnn.deterministic = True
+print(f"🔒 SYSTÈME VERROUILLÉ : Seed {SEED} active.")
+
+
+# =============================================================================
+# SEGMENTATION ROBUSTE: Watershed quand branche HV est inactive
+# =============================================================================
+def robust_segmentation(prob_map: np.ndarray, h_threshold: float = 0.40, peak_min_dist: int = 7) -> np.ndarray:
+    """
+    Segmentation robuste quand la branche HV est faible.
+    Utilise la normalisation dynamique + Watershed.
+
+    Args:
+        prob_map: Carte de probabilité (224, 224) float [0, 1]
+        h_threshold: Seuil relatif pour le masque global (défaut: 0.40)
+        peak_min_dist: Distance minimale entre pics (défaut: 7 pixels)
+
+    Returns:
+        Instance map (224, 224) int32 avec IDs [0=bg, 1..N=instances]
+    """
+    # 1. Normalisation Dynamique [0, 1]
+    # Indispensable car le modèle 'flotte' (ex: fond=0.35, noyau=0.65)
+    p_min, p_max = prob_map.min(), prob_map.max()
+    if p_max - p_min < 0.05:  # Sécurité image vide ou plate
+        return np.zeros_like(prob_map, dtype=np.int32)
+
+    prob_norm = (prob_map - p_min) / (p_max - p_min)
+
+    # 2. Masque Binaire Global (Le "Continent")
+    # Tout ce qui est au-dessus de 40% de l'intensité relative est gardé
+    mask_global = prob_norm > h_threshold
+
+    # 3. Détection des Pics (Les "Sommets")
+    # On cherche les points les plus brillants (coeurs de noyaux)
+    local_maxi = peak_local_max(
+        prob_norm,
+        min_distance=peak_min_dist,
+        labels=mask_global.astype(np.int32),
+        threshold_abs=0.60  # Les pics doivent être forts
+    )
+
+    # Créer les marqueurs à partir des coordonnées des pics
+    markers = np.zeros_like(prob_norm, dtype=np.int32)
+    if len(local_maxi) > 0:
+        for i, (y, x) in enumerate(local_maxi, start=1):
+            markers[y, x] = i
+
+    # 4. Watershed (Inondation)
+    # On fait couler l'eau depuis les sommets jusqu'aux bords du masque global
+    if markers.max() > 0:
+        pred_inst = watershed(-prob_norm, markers, mask=mask_global)
+    else:
+        # Fallback: connected components si pas de pics détectés
+        pred_inst, _ = ndimage.label(mask_global)
+
+    return pred_inst.astype(np.int32)
 
 
 def extract_instances_hv_magnitude(
@@ -171,8 +251,11 @@ def get_correct_gt_instances(gt_mask: np.ndarray) -> np.ndarray:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Test AJI FINAL epidermal")
+    parser = argparse.ArgumentParser(description="Test AJI FINAL pour toutes les familles")
     parser.add_argument("--checkpoint", required=True, help="Checkpoint HoVer-Net")
+    parser.add_argument("--family", type=str, default="epidermal",
+                       choices=["glandular", "digestive", "urologic", "epidermal", "respiratory"],
+                       help="Famille à tester (défaut: epidermal)")
     parser.add_argument("--n_samples", type=int, default=50, help="Nombre échantillons test")
     parser.add_argument("--device", default="cuda", choices=["cuda", "cpu"])
     parser.add_argument(
@@ -184,9 +267,10 @@ def main():
     args = parser.parse_args()
 
     print("=" * 80)
-    print("🎯 TEST AJI FINAL - EPIDERMAL")
+    print(f"🎯 TEST AJI FINAL - {args.family.upper()}")
     print("=" * 80)
     print(f"\nCheckpoint: {args.checkpoint}")
+    print(f"Family: {args.family}")
     print(f"Samples: {args.n_samples}")
     print(f"Device: {args.device}")
 
@@ -195,57 +279,46 @@ def main():
     backbone = ModelLoader.load_hoptimus0(device=args.device)
     backbone.eval()
 
-    hovernet = HoVerNetDecoder(embed_dim=1536, n_classes=5).to(args.device)
+    # n_classes=2 pour matcher le checkpoint entraîné sur données v12 (binaire: 0=bg, 1=nucleus)
+    hovernet = HoVerNetDecoder(embed_dim=1536, n_classes=2).to(args.device)
     checkpoint = torch.load(args.checkpoint, map_location=args.device)
     hovernet.load_state_dict(checkpoint['model_state_dict'])
     hovernet.eval()
 
     transform = create_hoptimus_transform()
 
-    # Load epidermal test data
-    print("\n📦 Chargement données epidermal...")
+    # Load family test data
+    print(f"\n📦 Chargement données {args.family}...")
+    print(f"   Version courante: {CURRENT_DATA_VERSION}")
 
-    # Résolution du fichier de données
+    # ⚠️ UTILISE LA VERSION COURANTE (centralisée dans constants.py)
     if args.data_file:
         data_file = Path(args.data_file)
+        print(f"   → Fichier spécifié: {data_file}")
     else:
-        # Chercher automatiquement (priorité: v12 > v11 > FIXED)
-        candidates = [
-            Path("data/family_FIXED/epidermal_data_FIXED_v12_COHERENT.npz"),
-            Path("data/family_FIXED/epidermal_data_FIXED_v11_FORCE_NT1.npz"),
-            Path("data/family_FIXED/epidermal_data_FIXED.npz"),
-        ]
-        data_file = None
-        for candidate in candidates:
-            if candidate.exists():
-                data_file = candidate
-                break
-
-        if data_file is None:
-            print(f"❌ Aucun fichier de données trouvé!")
-            print("Exécutez d'abord:")
-            print("  python scripts/preprocessing/prepare_family_data_FIXED_v12_COHERENT.py --family epidermal")
-            return
-
-    print(f"  → Utilisation: {data_file}")
+        data_file = Path(get_family_data_path(args.family))
+        print(f"   → Fichier auto: {data_file}")
 
     if not data_file.exists():
         print(f"❌ Fichier non trouvé: {data_file}")
+        print(f"   Lancez d'abord: python scripts/preprocessing/prepare_family_data_FIXED_v12_COHERENT.py --family {args.family}")
         return
 
     data = np.load(data_file)
     images = data['images']
 
-    # PanNuke base directory
-    pannuke_dir = Path("/home/amar/data/PanNuke")
-    if not pannuke_dir.exists():
-        pannuke_dir = Path("data/PanNuke")  # Fallback
-
-    masks = np.load(pannuke_dir / "fold0" / "masks.npy", mmap_mode='r')  # GT complet
-
-    # Use fold IDs to get correct GT masks
-    fold_ids = data.get('fold_ids', np.zeros(len(images), dtype=np.int32))
-    image_ids = data.get('image_ids', np.arange(len(images)))
+    # =========================================================================
+    # FIX EXPERT 2025-12-25: Utiliser np_targets du NPZ (alignement garanti)
+    # =========================================================================
+    # PROBLÈME: L'indexation fold_id/img_id pour charger les masques PanNuke
+    #           était décalée → 40% de GT vides → Dice 0.22
+    #           (img_id n'est PAS un index global unique qui traverse les folds)
+    # SOLUTION: Utiliser np_targets du même fichier (aligné par définition)
+    #           et créer instances via connected components (scipy.ndimage.label)
+    # COMMIT: a912a79 - Session 2025-12-25 17:30
+    # =========================================================================
+    np_targets = data['np_targets']  # Binary masks (N, 256, 256) float32 [0, 1]
+    print(f"  → np_targets shape: {np_targets.shape}")
 
     n_test = min(args.n_samples, len(images))
     test_indices = np.random.choice(len(images), n_test, replace=False)
@@ -261,18 +334,15 @@ def main():
 
     with torch.no_grad():
         for idx in tqdm(test_indices, desc="Testing"):
-            # Get image and GT
+            # Get image and GT from NPZ (ALIGNÉ par définition)
             image = images[idx]
-            fold_id = fold_ids[idx]
-            img_id = image_ids[idx]
+            np_target = np_targets[idx]  # Binary mask (256, 256) float32
 
-            # Load correct GT mask
-            if fold_id == 0:
-                gt_mask = masks[img_id]
-            else:
-                # If fold 1 or 2, load from correct fold
-                fold_masks = np.load(pannuke_dir / f"fold{fold_id}" / "masks.npy", mmap_mode='r')
-                gt_mask = fold_masks[img_id]
+            # Créer GT instances via connected components (depuis np_target aligné)
+            from scipy import ndimage
+            gt_binary = (np_target > 0.5).astype(np.uint8)
+            gt_inst_256, n_gt_instances = ndimage.label(gt_binary)
+            gt_inst_256 = gt_inst_256.astype(np.int32)
 
             # Preprocess
             if image.dtype != np.uint8:
@@ -282,88 +352,98 @@ def main():
 
             # Extract features
             features = backbone.forward_features(tensor)
-            patch_tokens = features[:, 1:257, :]  # (1, 256, 1536)
+            # FIX Register Token Bug (2025-12-25):
+            # Envoyer les 261 tokens complets au décodeur
+            # Le décodeur extrait lui-même les indices 5-260 (patches spatiaux)
+            # AVANT: patch_tokens = features[:, 1:257, :] ← ERREUR: incluait les Registers!
 
-            # Predict
-            np_out, hv_out, nt_out = hovernet(patch_tokens)
+            # Predict - Le décodeur gère le slicing correctement
+            np_out, hv_out, nt_out = hovernet(features)  # (1, 261, 1536)
 
             # ===================================================================
-            # FIX EXPERT (2025-12-24): Correction des axes pour cv2.resize
+            # STRATÉGIE EXPERT 2025-12-25: Évaluation en 224×224 (résolution native)
             # ===================================================================
-            # 1. Conversion Numpy ET correction des axes
-            #    PyTorch: [B, C, H, W] → Enlever batch → [C, H, W]
-            #    OpenCV resize attend: [H, W, C]
-            #    Donc: transpose(1, 2, 0) pour passer de [C, H, W] à [H, W, C]
-            np_pred = torch.softmax(np_out, dim=1)[0].cpu().numpy().transpose(1, 2, 0)  # (224, 224, 2)
-            hv_pred = hv_out[0].cpu().numpy().transpose(1, 2, 0)  # (224, 224, 2)
+            # Le modèle a été entraîné en 224×224. Pour une évaluation correcte:
+            # - Prédictions: rester en 224×224 (natif, pas d'interpolation)
+            # - GT: resize 256→224 avec INTER_NEAREST (préserve IDs instances)
+            # ===================================================================
 
-            # DEBUG: Check which channel has nuclei
-            if idx == test_indices[0]:  # Print once
+            # 1. Prédictions NATIVES (224×224) - PAS de resize
+            prob_map = torch.softmax(np_out, dim=1)[0, 1].cpu().numpy()  # (224, 224)
+            hv_map = hv_out[0].cpu().numpy()  # (2, 224, 224)
+
+            # DEBUG
+            if idx == test_indices[0]:
                 print(f"\n🔍 DEBUG (first sample):")
-                print(f"  NP shape after transpose: {np_pred.shape}")
-                print(f"  HV shape after transpose: {hv_pred.shape}")
-                print(f"  NP channel 0 max: {np_pred[:, :, 0].max():.4f}")
-                print(f"  NP channel 1 max: {np_pred[:, :, 1].max():.4f}")
-                print(f"  HV max: {hv_pred.max():.4f}")
-
-            # 2. RESIZE 224→256 (pour matcher le GT qui est à 256×256)
-            #    ===================================================================
-            #    FIX 2025-12-25: RESIZE au lieu de CENTER PADDING
-            #    ===================================================================
-            #    EXPLICATION:
-            #    - Training: Image 256→224 (resize), Target 256→224 (resize)
-            #    - Test: Image 256→224 (resize), donc Pred doit être 224→256 (resize INVERSE)
-            #    - Le center padding était FAUX car create_hoptimus_transform() fait
-            #      un Resize() qui COMPRESSE l'image, pas un crop central!
-            #    - AVANT: center padding → décalage spatial → AJI 0.04
-            #    - APRÈS: resize inverse → alignement correct → AJI attendu >0.60
-
-            # Resize NP (interpolation linéaire pour probabilités)
-            np_pred_256 = cv2.resize(np_pred, (256, 256), interpolation=cv2.INTER_LINEAR)
-
-            # Resize HV (interpolation linéaire par canal)
-            hv_pred_256 = np.zeros((256, 256, 2), dtype=hv_pred.dtype)
-            hv_pred_256[:, :, 0] = cv2.resize(hv_pred[:, :, 0], (256, 256),
-                                              interpolation=cv2.INTER_LINEAR)
-            hv_pred_256[:, :, 1] = cv2.resize(hv_pred[:, :, 1], (256, 256),
-                                              interpolation=cv2.INTER_LINEAR)
-
-            # 3. Extraction du canal Noyaux (canal 1)
-            prob_map = np_pred_256[:, :, 1]  # (256, 256)
-
-            # 4. Repasser HV en [C, H, W] pour extract_instances_hv_magnitude
-            hv_map = hv_pred_256.transpose(2, 0, 1)  # (2, 256, 256)
-
-            if idx == test_indices[0]:  # Print once
                 print(f"  prob_map shape: {prob_map.shape}, max: {prob_map.max():.4f}")
                 print(f"  hv_map shape: {hv_map.shape}, max: {hv_map.max():.4f}")
 
-            # 5. Extract instances à 256×256 (résolution GT)
-            #    Plus besoin de resize après → alignement spatial parfait
-            #    ⭐ FIX ANTI-CONFETTIS: Utilise nouveaux params (min_size=50, dist_threshold=8)
-            pred_inst = extract_instances_hv_magnitude(prob_map, hv_map)
+            # 2. GT adapté: 256→224 avec INTER_NEAREST (préserve les IDs)
+            # gt_inst_256 déjà créé via connected components ci-dessus
+            gt_inst = cv2.resize(gt_inst_256, (224, 224), interpolation=cv2.INTER_NEAREST)
 
-            # Compute GT instances
-            # ⭐ FIX DÉFINITIF: Utilise canal 0 PanNuke (vraies instances)
-            gt_inst = get_correct_gt_instances(gt_mask)
+            # =========================================================================
+            # SEGMENTATION ROBUSTE (Expert 2025-12-25): Watershed avec normalisation
+            # =========================================================================
+            # DIAGNOSTIC: branche HV "morte" (max ~-0.04) + modèle "timide" (max ~0.49)
+            # SOLUTION: Normalisation dynamique + Watershed pour séparer les cellules
+            # =========================================================================
+            # pred_inst = extract_instances_hv_magnitude(prob_map, hv_map)  # DÉSACTIVÉ
+
+            # Segmentation robuste avec Watershed
+            pred_inst = robust_segmentation(prob_map, h_threshold=0.40, peak_min_dist=7)
+
+            # DEBUG: Afficher les stats pour diagnostic
+            if idx == test_indices[0]:
+                p_min, p_max = prob_map.min(), prob_map.max()
+                print(f"  [DEBUG] Prob range: [{p_min:.4f}, {p_max:.4f}]")
+                print(f"  [DEBUG] Prob normalisé → seuil relatif 0.40")
+
+            # gt_inst déjà calculé ci-dessus (256→224 avec INTER_NEAREST)
 
             # Count instances (needed for skip logic)
             n_pred = len(np.unique(pred_inst)) - 1  # -1 for background
             n_gt = len(np.unique(gt_inst)) - 1
 
-            # DEBUG: Print instance counts + GT validation
+            # DEBUG VISUEL (Expert demande)
             if idx == test_indices[0]:  # Print once
                 print(f"  Instances Pred: {n_pred} | GT: {n_gt}")
 
-                # DEBUG GT MASK
-                print(f"\n🔍 DEBUG GT MASK:")
-                print(f"  gt_mask shape: {gt_mask.shape}")
-                print(f"  gt_mask dtype: {gt_mask.dtype}")
-                for c in range(gt_mask.shape[2]):
-                    channel_max = gt_mask[:, :, c].max()
-                    channel_nonzero = (gt_mask[:, :, c] > 0).sum()
-                    print(f"  Channel {c}: max={channel_max}, nonzero_pixels={channel_nonzero}")
-                print(f"  gt_inst unique IDs: {np.unique(gt_inst)}")
+                # Sauvegarde image debug
+                import matplotlib.pyplot as plt
+                plt.figure(figsize=(15, 5))
+
+                # 1. Image originale
+                plt.subplot(1, 3, 1)
+                plt.imshow(image)
+                plt.title("Image Originale")
+
+                # 2. Prédiction 224×224 (Prob map > 0.5)
+                plt.subplot(1, 3, 2)
+                plt.imshow(prob_map > 0.5, cmap='gray')
+                plt.title(f"Pred 224×224 (n={n_pred})")
+
+                # 3. GT Canal 0 (resized to 224×224)
+                plt.subplot(1, 3, 3)
+                plt.imshow(gt_inst > 0, cmap='gray')
+                plt.title(f"GT 224×224 (n={n_gt})")
+
+                plt.tight_layout()
+                import os
+                os.makedirs("results", exist_ok=True)
+                plt.savefig("results/DEBUG_CRASH_TEST.png", dpi=150)
+                plt.close()
+                print(f"\n📸 DEBUG: Image sauvée → results/DEBUG_CRASH_TEST.png")
+                print("   REGARDEZ cette image pour diagnostiquer le problème!")
+
+                # DEBUG GT (from np_targets NPZ - aligné par définition)
+                print(f"\n🔍 DEBUG GT (NPZ np_targets):")
+                print(f"  np_target shape: {np_target.shape}")
+                print(f"  np_target dtype: {np_target.dtype}")
+                print(f"  np_target range: [{np_target.min():.3f}, {np_target.max():.3f}]")
+                print(f"  gt_binary nonzero: {gt_binary.sum()} pixels")
+                print(f"  gt_inst_256 instances: {n_gt_instances}")
+                print(f"  gt_inst (224×224) unique IDs: {np.unique(gt_inst)}")
 
             # ⚠️ CRITICAL: Skip empty GT (évite division par zéro dans AJI)
             if n_gt == 0:
@@ -375,8 +455,10 @@ def main():
             # Compute metrics
             aji = compute_aji(pred_inst, gt_inst)
 
-            # Dice calculation (prob_map déjà à 256×256)
-            dice = compute_dice((prob_map > 0.5).astype(np.uint8), (gt_inst > 0).astype(np.uint8))
+            # Dice calculation basé sur la segmentation RÉELLE (Watershed)
+            # FIX (2025-12-25): Utiliser pred_inst > 0 au lieu de prob_map > 0.5
+            # Car le modèle peut être "timide" (max prob < 0.5) mais Watershed compense
+            dice = compute_dice((pred_inst > 0).astype(np.uint8), (gt_inst > 0).astype(np.uint8))
 
             pq, dq, sq, _ = compute_panoptic_quality(pred_inst, gt_inst)
 

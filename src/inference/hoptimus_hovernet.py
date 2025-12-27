@@ -264,7 +264,8 @@ class HOptimusHoVerNetInference:
             nt_probs_hwc = np.transpose(nt_probs, (1, 2, 0))  # (H, W, 5)
 
             # Embeddings pour OOD (moyenne des patch tokens)
-            embeddings = features[0, 1:257, :].mean(dim=0).cpu().numpy()  # (1536,)
+            # FIX Register Token (2025-12-25): indices 5-261 = patches spatiaux
+            embeddings = features[0, 5:261, :].mean(dim=0).cpu().numpy()  # (1536,)
 
             uncertainty_result = self.uncertainty_estimator.estimate(
                 np_probs=np_probs_hwc,
