@@ -129,11 +129,13 @@ def compute_hv_maps(inst_map: np.ndarray) -> np.ndarray:
         max_dist_x = max(abs(x_coords - cx).max(), 1e-6)
 
         # Vecteurs centripètes normalisés [-1, 1]
-        v_map = (y_coords - cy) / max_dist_y
-        h_map = (x_coords - cx) / max_dist_x
+        # Convention HoVer-Net: vecteurs pointent VERS le centre
+        h_map = (cx - x_coords) / max_dist_x  # Horizontal (X)
+        v_map = (cy - y_coords) / max_dist_y  # Vertical (Y)
 
-        hv_map[0, y_coords, x_coords] = v_map  # Vertical
-        hv_map[1, y_coords, x_coords] = h_map  # Horizontal
+        # Convention HoVer-Net: H à index 0, V à index 1
+        hv_map[0, y_coords, x_coords] = h_map  # Horizontal
+        hv_map[1, y_coords, x_coords] = v_map  # Vertical
 
     return hv_map
 
