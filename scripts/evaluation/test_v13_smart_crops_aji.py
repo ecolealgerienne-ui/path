@@ -281,7 +281,7 @@ def main():
 
     # Load H-optimus-0 backbone
     print("\nLoading H-optimus-0 backbone...")
-    backbone = ModelLoader.load_hoptimus0(device=device)
+    backbone = ModelLoader.load_hoptimus0(device=args.device)  # Pass string, not torch.device
     backbone.eval()
     print("  ✅ Backbone loaded")
 
