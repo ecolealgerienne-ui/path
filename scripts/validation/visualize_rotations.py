@@ -5,6 +5,10 @@ Script de validation visuelle des rotations HV.
 Affiche une image PanNuke avec ses 5 rotations (0°, 90°, 180°, 270°, flip_h)
 et les noyaux encerclés selon les masques tournés.
 
+IMPORTANT: Utilise compute_np_target() et compute_nt_target() depuis
+prepare_v13_smart_crops.py pour garantir la cohérence exacte avec le pipeline
+de génération des données. Ne PAS recréer manuellement ces targets.
+
 Usage:
     python scripts/validation/visualize_rotations.py
     python scripts/validation/visualize_rotations.py --image_idx 42
