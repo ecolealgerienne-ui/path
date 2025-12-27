@@ -23,6 +23,10 @@ import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 from typing import Tuple, List
 import argparse
+import warnings
+
+# Supprimer les warnings matplotlib pour glyphes manquants
+warnings.filterwarnings('ignore', message='.*Glyph.*missing from current font.*')
 
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))

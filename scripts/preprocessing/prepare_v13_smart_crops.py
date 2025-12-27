@@ -219,12 +219,10 @@ def apply_rotation(
         np_rot = np.rot90(np_target, k=-1, axes=(0, 1))
         nt_rot = np.rot90(nt_target, k=-1, axes=(0, 1))
 
-        # HV component swapping: H' = V, V' = -H
-        # Étape 1 : Rotation spatiale de la carte HV complète
-        hv_spatial_rot = np.rot90(hv_target, k=-1, axes=(1, 2))
-        # Étape 2 : Échange des composantes (après rotation spatiale)
-        h_rot = hv_spatial_rot[1]   # H' = V (après rotation spatiale)
-        v_rot = -hv_spatial_rot[0]  # V' = -H (après rotation spatiale)
+        # HV component swapping: H' = -V, V' = H
+        # Rotation spatiale de chaque composante + échange avec signes inversés
+        h_rot = -np.rot90(hv_target[1], k=-1, axes=(0, 1))  # H' = -V
+        v_rot = np.rot90(hv_target[0], k=-1, axes=(0, 1))   # V' = H
         hv_rot = np.stack([h_rot, v_rot], axis=0)
 
         return image_rot, np_rot, hv_rot, nt_rot
@@ -248,12 +246,10 @@ def apply_rotation(
         np_rot = np.rot90(np_target, k=1, axes=(0, 1))
         nt_rot = np.rot90(nt_target, k=1, axes=(0, 1))
 
-        # HV component swapping: H' = -V, V' = H
-        # Étape 1 : Rotation spatiale de la carte HV complète
-        hv_spatial_rot = np.rot90(hv_target, k=1, axes=(1, 2))
-        # Étape 2 : Échange des composantes (après rotation spatiale)
-        h_rot = -hv_spatial_rot[1]  # H' = -V (après rotation spatiale)
-        v_rot = hv_spatial_rot[0]   # V' = H (après rotation spatiale)
+        # HV component swapping: H' = V, V' = -H
+        # Rotation spatiale de chaque composante + échange (inverse de 90°)
+        h_rot = np.rot90(hv_target[1], k=1, axes=(0, 1))   # H' = V
+        v_rot = -np.rot90(hv_target[0], k=1, axes=(0, 1))  # V' = -H
         hv_rot = np.stack([h_rot, v_rot], axis=0)
 
         return image_rot, np_rot, hv_rot, nt_rot
