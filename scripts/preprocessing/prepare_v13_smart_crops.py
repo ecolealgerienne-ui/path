@@ -184,41 +184,94 @@ def compute_nt_target(mask: np.ndarray) -> np.ndarray:
 
 def extract_crop(
     image: np.ndarray,
+    inst_map_global: np.ndarray,
+    hv_global: np.ndarray,
     np_target: np.ndarray,
-    hv_target: np.ndarray,  # Ignored, will be recalculated
     nt_target: np.ndarray,
     x1: int, y1: int, x2: int, y2: int
 ) -> Dict[str, np.ndarray]:
     """
-    Extrait un crop 224×224 et RECALCULE les HV targets pour centres locaux.
+    Extrait un crop 224×224 avec approche HYBRIDE pour HV targets.
 
-    ⚠️ CRITICAL FIX: Lorsqu'un crop coupe des noyaux, les HV targets doivent pointer
-    vers les centres LOCAUX (dans le référentiel 224×224), pas les centres globaux
-    (dans le référentiel 256×256).
+    ⚠️ APPROCHE HYBRIDE (Rigoureuse):
 
-    Solution (validée CTO):
-    1. Binarize crop NP mask
-    2. Relabel avec scipy.ndimage.label() → new local instance IDs
-    3. Calculate centroids from visible pixels only
-    4. Generate HV maps pointing to local centers
+    PROBLÈME IDENTIFIÉ (Bug de Fusion 8→5):
+    - Binarisation du crop → perte des frontières d'instances
+    - Relabeling local → fusion de noyaux distincts (ex: #42 et #108 deviennent 1)
+    - Résultat: 8 centres globaux → 5 centres locaux (PERTE D'INSTANCES)
 
-    Principe "Train as you fight": Le modèle doit apprendre sur noyaux fragmentés
-    car en production les patches 224×224 peuvent couper des noyaux.
+    SOLUTION HYBRIDE:
+    1. Extraire inst_map_global (GARDE IDs UNIQUES: #42, #108, etc.)
+    2. Identifier noyaux FRAGMENTÉS (touchent bordure du crop)
+    3. NOYAUX COMPLETS (intérieurs):
+       - Garder HV targets globaux (offset automatique via slicing)
+       - Préserve précision des centres calculés sur 256×256
+    4. NOYAUX FRAGMENTÉS (bordures):
+       - Recalculer centres locaux pour partie visible uniquement
+       - Évite vecteurs HV pointant hors-cadre
+
+    BÉNÉFICES:
+    - Précision chirurgicale: Pas de fusion accidentelle (8 centres → 8 centres)
+    - Robustesse bords: Gestion propre noyaux coupés
+    - Prépare V13-Hybrid: Base propre pour fusion H-Channel
+
+    Args:
+        image: Image RGB 256×256
+        inst_map_global: Instance map 256×256 (IDs uniques PanNuke)
+        hv_global: HV maps globaux (2, 256, 256)
+        np_target: Masque binaire 256×256
+        nt_target: Types cellulaires 256×256
+        x1, y1, x2, y2: Coordonnées crop
+
+    Returns:
+        Dict avec image, np_target, hv_target (HYBRIDE), nt_target
     """
-    # 1. Extract crop (simple slicing)
+    # 1. Extraire crop (GARDE IDs UNIQUES)
     crop_image = image[y1:y2, x1:x2]
+    crop_inst = inst_map_global[y1:y2, x1:x2]  # ✅ IDs préservés: #42, #108, etc.
     crop_np = np_target[y1:y2, x1:x2]
     crop_nt = nt_target[y1:y2, x1:x2]
+    crop_hv_global = hv_global[:, y1:y2, x1:x2]  # HV global (référence)
 
-    # 2. ⚠️ FIX BUG CENTRES GLOBAUX: Relabeler instances LOCALES (pas globales)
-    # Structure np.ones((3,3)) permet de lier pixels en diagonale
-    binary_mask = (crop_np > 0.5).astype(np.uint8)
-    local_inst_map, _ = ndimage.label(binary_mask, structure=np.ones((3, 3)))
+    h, w = crop_inst.shape  # 224, 224
 
-    # 3. Recalculer HV targets pointant vers centres locaux du crop
-    crop_hv = compute_hv_maps(local_inst_map)
+    # 2. Identifier noyaux fragmentés (touchent bordure du crop)
+    border_mask = np.zeros((h, w), dtype=bool)
+    border_mask[0, :] = True   # Bordure haute
+    border_mask[-1, :] = True  # Bordure basse
+    border_mask[:, 0] = True   # Bordure gauche
+    border_mask[:, -1] = True  # Bordure droite
 
-    # Validation
+    border_instances = np.unique(crop_inst[border_mask])
+    border_instances = border_instances[border_instances > 0]  # Exclure background
+
+    # 3. Séparer noyaux complets vs fragmentés
+    mask_fragmented = np.isin(crop_inst, border_instances)
+    mask_complete = (crop_inst > 0) & ~mask_fragmented
+
+    # 4. NOYAUX COMPLETS: Garder HV globaux (offset automatique via slicing)
+    crop_hv = crop_hv_global.copy()
+
+    # Note: Le slicing [y1:y2, x1:x2] applique automatiquement l'offset.
+    # Les vecteurs HV dans crop_hv_global pointent déjà vers les bonnes coordonnées
+    # dans le référentiel local 224×224.
+
+    # 5. NOYAUX FRAGMENTÉS: Recalculer centres locaux uniquement
+    if len(border_instances) > 0:
+        # Créer instance map locale pour noyaux fragmentés uniquement
+        inst_map_fragmented = np.zeros_like(crop_inst, dtype=np.int32)
+
+        for new_id, global_id in enumerate(border_instances, start=1):
+            mask = crop_inst == global_id
+            inst_map_fragmented[mask] = new_id
+
+        # Recalculer HV pour noyaux fragmentés
+        hv_fragmented = compute_hv_maps(inst_map_fragmented)
+
+        # Remplacer HV SEULEMENT pour pixels fragmentés
+        crop_hv[:, mask_fragmented] = hv_fragmented[:, mask_fragmented]
+
+    # 6. Validation
     assert crop_image.shape == (CROP_SIZE, CROP_SIZE, 3), f"Image shape: {crop_image.shape}"
     assert crop_np.shape == (CROP_SIZE, CROP_SIZE), f"NP shape: {crop_np.shape}"
     assert crop_hv.shape == (2, CROP_SIZE, CROP_SIZE), f"HV shape: {crop_hv.shape}"
@@ -231,7 +284,7 @@ def extract_crop(
     return {
         'image': crop_image,
         'np_target': crop_np,
-        'hv_target': crop_hv,  # ✅ FIXED: Points to LOCAL centers
+        'hv_target': crop_hv,  # ✅ HYBRIDE: Complets (global) + Fragmentés (local)
         'nt_target': crop_nt,
     }
 
@@ -454,7 +507,10 @@ def generate_smart_crops_from_pannuke(
 
             # Générer 5 crops avec rotations spécifiques (stratégie V13 Smart Crops)
             for pos_name, (x1, y1, x2, y2) in CROP_POSITIONS.items():
-                crop = extract_crop(image, np_target, hv_target, nt_target, x1, y1, x2, y2)
+                crop = extract_crop(
+                    image, inst_map, hv_target, np_target, nt_target,
+                    x1, y1, x2, y2
+                )
 
                 # Filtrer si GT vide
                 is_valid, _ = is_valid_crop(crop['np_target'], crop['nt_target'])
