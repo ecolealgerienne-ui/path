@@ -164,7 +164,7 @@ step_1_prepare_data() {
 
     python "${PROJECT_ROOT}/scripts/preprocessing/prepare_v13_smart_crops.py" \
         --family "${FAMILY}" \
-        --source_dir "${DATA_DIR}" \
+        --source_data_dir "${DATA_DIR}" \
         --output_dir "${OUTPUT_DIR}"
 
     log_success "Data preparation completed"
