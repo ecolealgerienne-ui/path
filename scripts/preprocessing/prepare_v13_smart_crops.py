@@ -219,8 +219,8 @@ def apply_rotation(
 
         # HV component swapping: H' = V, V' = -H
         v_old, h_old = hv_target[0], hv_target[1]
-        v_rot = np.rot90(h_old, k=-1, axes=(0, 1))       # V' = H
-        h_rot = -np.rot90(v_old, k=-1, axes=(0, 1))      # H' = -V
+        v_rot = -np.rot90(h_old, k=-1, axes=(0, 1))      # V' = -H
+        h_rot = np.rot90(v_old, k=-1, axes=(0, 1))       # H' = V
         hv_rot = np.stack([v_rot, h_rot], axis=0)
 
         return image_rot, np_rot, hv_rot, nt_rot
