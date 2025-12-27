@@ -185,15 +185,38 @@ def compute_nt_target(mask: np.ndarray) -> np.ndarray:
 def extract_crop(
     image: np.ndarray,
     np_target: np.ndarray,
-    hv_target: np.ndarray,
+    hv_target: np.ndarray,  # Ignored, will be recalculated
     nt_target: np.ndarray,
     x1: int, y1: int, x2: int, y2: int
 ) -> Dict[str, np.ndarray]:
-    """Extrait un crop 224×224 et ses targets."""
+    """
+    Extrait un crop 224×224 et RECALCULE les HV targets pour centres locaux.
+
+    ⚠️ CRITICAL FIX: Lorsqu'un crop coupe des noyaux, les HV targets doivent pointer
+    vers les centres LOCAUX (dans le référentiel 224×224), pas les centres globaux
+    (dans le référentiel 256×256).
+
+    Solution (validée CTO):
+    1. Binarize crop NP mask
+    2. Relabel avec scipy.ndimage.label() → new local instance IDs
+    3. Calculate centroids from visible pixels only
+    4. Generate HV maps pointing to local centers
+
+    Principe "Train as you fight": Le modèle doit apprendre sur noyaux fragmentés
+    car en production les patches 224×224 peuvent couper des noyaux.
+    """
+    # 1. Extract crop (simple slicing)
     crop_image = image[y1:y2, x1:x2]
     crop_np = np_target[y1:y2, x1:x2]
-    crop_hv = hv_target[:, y1:y2, x1:x2]
     crop_nt = nt_target[y1:y2, x1:x2]
+
+    # 2. ⚠️ FIX BUG CENTRES GLOBAUX: Relabeler instances LOCALES (pas globales)
+    # Structure np.ones((3,3)) permet de lier pixels en diagonale
+    binary_mask = (crop_np > 0.5).astype(np.uint8)
+    local_inst_map, _ = ndimage.label(binary_mask, structure=np.ones((3, 3)))
+
+    # 3. Recalculer HV targets pointant vers centres locaux du crop
+    crop_hv = compute_hv_maps(local_inst_map)
 
     # Validation
     assert crop_image.shape == (CROP_SIZE, CROP_SIZE, 3), f"Image shape: {crop_image.shape}"
@@ -201,10 +224,14 @@ def extract_crop(
     assert crop_hv.shape == (2, CROP_SIZE, CROP_SIZE), f"HV shape: {crop_hv.shape}"
     assert crop_nt.shape == (CROP_SIZE, CROP_SIZE), f"NT shape: {crop_nt.shape}"
 
+    # Validation HV range [-1, 1]
+    assert crop_hv.min() >= -1.0 and crop_hv.max() <= 1.0, \
+        f"HV range invalid: [{crop_hv.min():.3f}, {crop_hv.max():.3f}]"
+
     return {
         'image': crop_image,
         'np_target': crop_np,
-        'hv_target': crop_hv,
+        'hv_target': crop_hv,  # ✅ FIXED: Points to LOCAL centers
         'nt_target': crop_nt,
     }
 
