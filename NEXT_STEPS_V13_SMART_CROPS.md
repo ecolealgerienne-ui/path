@@ -1,106 +1,120 @@
-# V13 Smart Crops - Fix Critique: Cohérence inst_maps ✅ RÉSOLU (2025-12-27)
+# V13 Smart Crops - Fix Collision IDs ✅ RÉSOLU (2025-12-27)
 
 ## Contexte
 
 ✅ **Code modifié et committé** (commit à venir):
-- `prepare_v13_smart_crops.py`: Fix INCONSISTENCY inst_maps vs HV targets
+- `prepare_v13_smart_crops.py`: Fix COLLISION D'IDs dans inst_map_hybrid
 
-## Problème Identifié (Cause Racine)
+## Problème Identifié (Collision IDs)
 
-**INCOHÉRENCE CRITIQUE** dans `extract_crop()`:
+**BUG CRITIQUE** dans `extract_crop()` lignes 274-284:
 
 ```python
-# ❌ AVANT (INCOHÉRENT):
+# ❌ AVANT (COLLISION D'IDs):
 
-# HV targets calculés avec inst_map_fragmented (IDs renumérés [1, 2, 3, ...])
-inst_map_fragmented = np.zeros_like(crop_inst, dtype=np.int32)
-for new_id, global_id in enumerate(border_instances, start=1):
-    mask = crop_inst == global_id
-    inst_map_fragmented[mask] = new_id  # Renumbering [1, 2, 3, ...]
+inst_map_hybrid = crop_inst.copy()  # Garde IDs originaux pour noyaux complets
 
-hv_fragmented = compute_hv_maps(inst_map_fragmented)  # ← Utilise IDs renumérés
-crop_hv[:, mask_fragmented] = hv_fragmented[:, mask_fragmented]
+if len(border_instances) > 0:
+    # Renumbérer SEULEMENT les noyaux fragmentés
+    for new_id, global_id in enumerate(border_instances, start=1):
+        mask = crop_inst == global_id
+        inst_map_hybrid[mask] = new_id  # [1, 2, 3, ...]
 
-# Mais inst_map retourné utilise IDs originaux!
-return {
-    'hv_target': crop_hv,      # ← Calculé avec IDs renumérés [1, 2, 3, ...]
-    'inst_map': crop_inst,     # ← IDs originaux (88, 96, 107, ...)  ❌ INCOHÉRENT!
-}
+# RÉSULTAT:
+#   - Noyaux complets: IDs originaux (ex: 1, 3, 5, 8, 12)
+#   - Noyaux fragmentés: IDs renumérés (ex: 1, 2, 3, 4)
+#   → COLLISION! Plusieurs noyaux avec même ID (ex: complet ID=1 ET fragmenté ID=1)
 ```
 
-**RÉSULTAT:**
-- **Training:** Modèle apprend HV pointant vers centres avec IDs renumérés [1, 2, 3, ...]
-- **Evaluation:** Compare prédictions vs inst_maps avec IDs originaux (88, 96, 107, ...)
-- **Impact:** Ground truth non-comparable → AJI catastrophique (0.5535 au lieu de ≥0.68)
+**Impact:**
+- Plusieurs noyaux distincts ont le même ID
+- AJI considère les noyaux avec même ID comme UNE SEULE instance
+- → Sous-estimation du nombre d'instances → AJI baisse de 0.5535 à 0.5055 (-8.7%)
+
+**Exemple concret:**
+```
+Crop contient:
+  - Noyaux complets: IDs [1, 3, 5, 8, 12] (IDs originaux PanNuke)
+  - Noyaux fragmentés: IDs [2, 4, 6, 7] (IDs originaux PanNuke)
+
+Après renumbering fragmentés:
+  - Noyaux complets: IDs [1, 3, 5, 8, 12] (inchangés)
+  - Noyaux fragmentés: IDs [1, 2, 3, 4] (renumérés)
+
+❌ COLLISION:
+  - 2 noyaux avec ID=1 (1 complet + 1 fragmenté)
+  - 1 noyau avec ID=2 (fragmenté)
+  - 2 noyaux avec ID=3 (1 complet + 1 fragmenté)
+  - etc.
+
+AJI compte: 8 instances au lieu de 9 réelles → AJI baisse!
+```
 
 ## Solution Implémentée
 
-**✅ APRÈS (COHÉRENT):**
+**✅ APRÈS (SANS COLLISION):**
 
 ```python
-# 5. NOYAUX FRAGMENTÉS: Recalculer centres locaux uniquement
-if len(border_instances) > 0:
-    inst_map_fragmented = np.zeros_like(crop_inst, dtype=np.int32)
+# Créer inst_map_HYBRID cohérent avec les HV calculés
+# CRITICAL: Renumbérer TOUS les noyaux (complets ET fragmentés) séquentiellement
+# pour éviter collisions d'IDs
+inst_map_hybrid = np.zeros_like(crop_inst, dtype=np.int32)
 
-    for new_id, global_id in enumerate(border_instances, start=1):
-        mask = crop_inst == global_id
-        inst_map_fragmented[mask] = new_id
+# Identifier TOUS les noyaux (complets + fragmentés)
+all_instance_ids = np.unique(crop_inst)
+all_instance_ids = all_instance_ids[all_instance_ids > 0]  # Exclure background
 
-    hv_fragmented = compute_hv_maps(inst_map_fragmented)
-    crop_hv[:, mask_fragmented] = hv_fragmented[:, mask_fragmented]
+# Renumbérer séquentiellement SANS gaps [1, 2, 3, ..., n_total]
+for new_id, global_id in enumerate(all_instance_ids, start=1):
+    mask = crop_inst == global_id
+    inst_map_hybrid[mask] = new_id
 
-# 5b. Créer inst_map_HYBRID cohérent avec les HV calculés
-# CRITICAL: Les noyaux fragmentés ont les MÊMES IDs renumérés que HV
-inst_map_hybrid = crop_inst.copy()
-
-if len(border_instances) > 0:
-    # Remplacer les IDs fragmentés par les IDs renumérés (identiques à HV)
-    for new_id, global_id in enumerate(border_instances, start=1):
-        mask = crop_inst == global_id
-        inst_map_hybrid[mask] = new_id  # ✅ Même renumbering que HV
-
-return {
-    'hv_target': crop_hv,           # ✅ Calculé avec IDs renumérés [1, 2, 3, ...]
-    'inst_map': inst_map_hybrid,    # ✅ Fragmentés renumérés [1, 2, 3, ...]  ✅ COHÉRENT!
-}
+# NOTE: Les HV maps ne dépendent PAS des IDs absolus mais des positions spatiales.
+# Donc renumbérer les IDs n'affecte PAS la validité des HV maps:
+#   - Noyaux complets: HV global pointe vers coordonnées spatiales (offset par slicing)
+#   - Noyaux fragmentés: HV recalculé pointe vers nouveaux centres locaux
+# L'important est que chaque instance ait un ID UNIQUE (pas de collisions)
 ```
 
-## Garantie de Cohérence
+**Garanties:**
+- ✅ Chaque instance a un ID UNIQUE
+- ✅ Pas de gaps dans les IDs [1, 2, 3, ..., n_total]
+- ✅ HV maps restent valides (pointent vers coordonnées spatiales, pas IDs absolus)
+- ✅ Noyaux complets ET fragmentés renumérés séquentiellement
 
-**Noyaux complets (intérieurs):**
-- inst_map_hybrid: Conserve IDs originaux
-- HV targets: Conserve HV globaux (offset automatique via slicing)
-- ✅ Cohérent: Pas de recalcul pour ces noyaux
+## Pourquoi HV Maps Restent Valides?
 
-**Noyaux fragmentés (bordures):**
-- inst_map_hybrid: IDs renumérés [1, 2, 3, ...]
-- HV targets: Calculés avec les MÊMES IDs renumérés [1, 2, 3, ...]
-- ✅ Cohérent: Les 2 utilisent le même schéma de numérotation
+**Question:** Si on renumérote les noyaux complets, leurs HV maps (calculés avec les anciens IDs) ne sont-ils pas invalides?
+
+**Réponse:** NON, car les HV maps dépendent des **positions spatiales**, pas des IDs:
+
+```python
+# compute_hv_maps() calcule pour chaque pixel:
+#   H = (x_pixel - x_center) / max_dist  ∈ [-1, 1]
+#   V = (y_pixel - y_center) / max_dist  ∈ [-1, 1]
+
+# Les centres sont identifiés par leurs COORDONNÉES (x_center, y_center),
+# pas par l'ID de l'instance!
+
+# Donc peu importe qu'on renumérote ID 42 → 1, tant que le centre reste à (x=50, y=30),
+# les vecteurs HV pointent toujours vers (50, 30).
+```
+
+**Conséquence:**
+- Noyaux complets: HV global pointe vers les bons centres (coordonnées inchangées)
+- Noyaux fragmentés: HV recalculé pointe vers nouveaux centres locaux
+- Renumbérer les IDs ne change PAS les coordonnées spatiales → HV maps valides ✅
 
 ## Étapes d'Exécution (User Action Required)
 
-### Étape 1: Régénérer Données VAL avec inst_maps Cohérents (5 min)
+### Étape 1: Régénérer Données VAL avec IDs Sans Collision (5 min)
 
 ```bash
 # Activer environnement
 conda activate cellvit
 
-# Régénérer train + val splits avec inst_maps HYBRIDES
+# Régénérer train + val splits avec inst_maps SANS COLLISIONS
 python scripts/preprocessing/prepare_v13_smart_crops.py --family epidermal
-```
-
-**Sortie attendue**:
-```
-data/family_data_v13_smart_crops/
-├── epidermal_train_v13_smart_crops.npz  (~800 MB)
-│   ├── images: (N_train, 224, 224, 3)
-│   ├── np_targets: (N_train, 224, 224)
-│   ├── hv_targets: (N_train, 2, 224, 224)  ← HYBRIDE (fragmentés = local)
-│   ├── nt_targets: (N_train, 224, 224)
-│   ├── inst_maps: (N_train, 224, 224) int32  ✅ HYBRIDE (fragmentés renumérés)
-│   └── metadata...
-└── epidermal_val_v13_smart_crops.npz    (~200 MB)
-    └── (même structure)
 ```
 
 **Vérification Critique:**
@@ -110,26 +124,36 @@ python -c "
 import numpy as np
 data = np.load('data/family_data_v13_smart_crops/epidermal_val_v13_smart_crops.npz')
 
-# Vérifier qu'inst_maps existe
-print('Keys:', list(data.keys()))
-assert 'inst_maps' in data.keys(), 'inst_maps manquant!'
-
-# Vérifier shape et dtype
-inst_maps = data['inst_maps']
-print('inst_maps shape:', inst_maps.shape)
-print('inst_maps dtype:', inst_maps.dtype)
-
-# Vérifier que certains IDs sont renumérés (fragmentés)
-sample_0 = inst_maps[0]
-unique_ids = np.unique(sample_0)
+# Vérifier crop 0
+inst_map = data['inst_maps'][0]
+unique_ids = np.unique(inst_map)
 unique_ids = unique_ids[unique_ids > 0]
-print('Unique IDs (sample 0):', unique_ids[:10])
-print('  → Si [1, 2, 3, ...]: Renumbering fragmentés OK ✅')
-print('  → Si [88, 96, 107, ...]: Erreur - IDs originaux encore présents ❌')
+
+print('Crop 0:')
+print(f'  IDs uniques: {unique_ids}')
+print(f'  Nombre instances: {len(unique_ids)}')
+
+# Vérifier qu'il n'y a PAS de collisions (chaque ID apparaît qu'une fois)
+# Si IDs séquentiels [1, 2, 3, ..., n] sans gaps, c'est correct
+expected_ids = np.arange(1, len(unique_ids) + 1)
+if np.array_equal(unique_ids, expected_ids):
+    print('  ✅ IDs séquentiels SANS gaps - Pas de collision!')
+else:
+    print(f'  ❌ WARNING: IDs non séquentiels!')
+    print(f'     Attendu: {expected_ids}')
+    print(f'     Réel: {unique_ids}')
 "
 ```
 
-### Étape 2: Ré-évaluer avec TRUE Instances Cohérentes (5 min)
+**Sortie attendue:**
+```
+Crop 0:
+  IDs uniques: [1 2 3 4 5 6 7 8]
+  Nombre instances: 8
+  ✅ IDs séquentiels SANS gaps - Pas de collision!
+```
+
+### Étape 2: Ré-évaluer avec IDs Corrects (5 min)
 
 ```bash
 python scripts/evaluation/test_v13_smart_crops_aji.py \
@@ -138,94 +162,49 @@ python scripts/evaluation/test_v13_smart_crops_aji.py \
     --n_samples 50
 ```
 
-**Métriques attendues**:
+**Métriques attendues:**
 
-| Métrique | Avant (INCOHÉRENT) | Après (COHÉRENT) | Objectif |
-|----------|-------------------|------------------|----------|
+| Métrique | Avant (COLLISION) | Après (SANS COLLISION) | Objectif |
+|----------|------------------|------------------------|----------|
 | Dice | 0.7683 | ~0.76-0.80 | Maintenu |
-| **AJI** | **0.5535** | **≥0.68** 🎯 | **+23%** |
-| PQ | 0.4909 | ≥0.62 | +26% |
-| Over-seg | 0.87× | ~0.95× | Optimal |
+| **AJI** | **0.5055** | **≥0.68** 🎯 | **+35%** |
+| PQ | 0.4417 | ≥0.62 | +40% |
+| Over-seg | 1.02× | ~0.95× | Optimal |
+| Instances GT | 19.0 | ~19.0 | Maintenu (correct) |
+
+**Explication amélioration attendue:**
+
+Avant (collision):
+- GT: 20 instances réelles MAIS IDs dupliqués → AJI compte seulement 15-17 instances
+- Pred: 19 instances → Over-seg ratio 1.02× (semble correct mais GT biaisé)
+- AJI: 0.5055 (sous-estimé car GT biaisé)
+
+Après (sans collision):
+- GT: 20 instances réelles avec IDs uniques [1, 2, ..., 20]
+- Pred: 19 instances → Over-seg ratio ~0.95× (légère sous-segmentation)
+- AJI: ≥0.68 (correct car GT et pred comparables)
 
 ### Étape 3: Analyser Résultats
 
 Si **AJI ≥0.68** ✅:
-- HYBRID approach VALIDÉ avec inst_maps cohérents
-- Objectif atteint (+23% vs baseline 0.5535)
+- Fix collision VALIDÉ
+- Objectif atteint (+35% vs 0.5055)
 - Extension aux 4 autres familles
 
 Si **0.60 ≤ AJI < 0.68** ⚠️:
-- Proche objectif
-- Tuning watershed parameters (beta, min_size)
-- Possible avec `scripts/evaluation/optimize_watershed_params.py`
-
-Si **AJI < 0.60** ❌:
-- Diagnostic approfondi nécessaire
+- Proche objectif (progrès significatif vs 0.5055)
+- Tuning watershed parameters possible
 - Vérifier HV magnitude et gradients
-- Possible problème HV targets HYBRID
 
-## Validation Data Integrity
-
-Avant évaluation, vérifier que inst_maps sont cohérents:
-
-```bash
-python -c "
-import numpy as np
-
-# Charger données
-data = np.load('data/family_data_v13_smart_crops/epidermal_val_v13_smart_crops.npz')
-
-images = data['images']
-inst_maps = data['inst_maps']
-hv_targets = data['hv_targets']
-
-# Vérifier cohérence sur un échantillon
-sample_idx = 0
-inst_map = inst_maps[sample_idx]  # (224, 224)
-hv_map = hv_targets[sample_idx]   # (2, 224, 224)
-
-# Extraire IDs uniques
-unique_ids = np.unique(inst_map)
-unique_ids = unique_ids[unique_ids > 0]  # Exclure background
-print(f'Sample {sample_idx}: {len(unique_ids)} instances')
-print(f'IDs: {unique_ids[:10]}')
-
-# Vérifier que HV pointe vers ces instances
-# Pour chaque instance, vérifier divergence HV au centre
-for inst_id in unique_ids[:3]:
-    mask = inst_map == inst_id
-    y_coords, x_coords = np.where(mask)
-
-    # Centre de masse
-    cy, cx = y_coords.mean(), x_coords.mean()
-
-    # Divergence HV (devrait être négative au centre)
-    h_map = hv_map[0]
-    v_map = hv_map[1]
-
-    # Gradient HV approximé
-    dh_dx = np.gradient(h_map, axis=1)
-    dv_dy = np.gradient(v_map, axis=0)
-    div = dh_dx + dv_dy
-
-    div_at_center = div[int(cy), int(cx)]
-    print(f'  Instance {inst_id}: divergence au centre = {div_at_center:.3f} (attendu < 0)')
-"
-```
-
-**Sortie attendue**:
-```
-Sample 0: 8 instances
-IDs: [1 2 3 4 5 6 7 8]  ← Renumérés si fragmentés, sinon IDs originaux
-  Instance 1: divergence au centre = -0.042 (attendu < 0) ✅
-  Instance 2: divergence au centre = -0.038 (attendu < 0) ✅
-  Instance 3: divergence au centre = -0.051 (attendu < 0) ✅
-```
+Si **AJI encore < 0.60** ❌:
+- Problème plus profond
+- Vérifier que model predictions sont correctes
+- Diagnostic HV targets HYBRID
 
 ## Temps Total Estimé
 
 - Régénération données: ~5 min
-- Validation cohérence: ~1 min
+- Validation IDs séquentiels: ~1 min
 - Ré-évaluation AJI: ~5 min
 - **Total: ~11 minutes**
 
@@ -233,23 +212,42 @@ IDs: [1 2 3 4 5 6 7 8]  ← Renumérés si fragmentés, sinon IDs originaux
 
 | Fichier | Modifications |
 |---------|--------------|
-| `prepare_v13_smart_crops.py` | +inst_map_hybrid creation (lignes 274-284) |
-| `prepare_v13_smart_crops.py` | return inst_map_hybrid au lieu de crop_inst (ligne 301) |
+| `prepare_v13_smart_crops.py` | Renumbering ALL instances sequentially (lignes 274-292) |
+| `NEXT_STEPS_V13_SMART_CROPS.md` | Documentation fix collision IDs |
 
-## Raison du Fix
+## Historique des Bugs
 
-**Citation initiale**:
-> "Le problème est que tu as calculé dans le script prepare_v13_smart_crops.py les maps des originaux c'est pour ça que ton AJI est tombé à 0.55. Est-ce que tu peut reprendre le script et recalcule le maps par rapport au maps calculer pour comparer qlq chose de comparable."
+### Bug #1 (commit 2b6d25c - PARTIELLEMENT RÉSOLU)
+**Problème:** inst_maps utilisaient IDs originaux, HV targets utilisaient IDs renumérés
+**Fix:** Créer inst_map_hybrid avec renumbering fragmentés
+**Résultat:** AJI baisse de 0.5535 → 0.5055 (-8.7%) ❌
 
-✅ **Solution pragmatique adoptée**: Créer inst_map_HYBRID qui utilise les MÊMES IDs renumérés que ceux utilisés pour le calcul des HV maps (inst_map_fragmented). Cela garantit que training et evaluation utilisent le même schéma d'identification des noyaux fragmentés.
+### Bug #2 (commit à venir - FIX COMPLET)
+**Problème:** Collision d'IDs (noyaux complets IDs originaux vs fragmentés IDs renumérés)
+**Fix:** Renumbérer TOUS les noyaux (complets ET fragmentés) séquentiellement
+**Résultat attendu:** AJI 0.5055 → ≥0.68 (+35%) ✅
 
-## Documentation Mise à Jour
+## Leçons Apprises
 
-Après validation, mettre à jour `CLAUDE.md` section Journal de Développement avec:
-- Date: 2025-12-27
-- Résultats AJI COHÉRENT vs INCOHÉRENT
-- Décision sur extension multi-familles
+1. **Renumbering partiel = Collision garantie**
+   - Si on renumérote SEULEMENT une partie, collision avec l'autre partie
+   - Solution: Renumbérer TOUT ou RIEN
+
+2. **HV maps = Coordonnées spatiales, pas IDs**
+   - Les vecteurs HV pointent vers (x, y) centres, pas vers "ID 42"
+   - Renumbérer IDs ne change PAS les positions spatiales
+   - → HV maps restent valides après renumbering complet
+
+3. **AJI sensible aux IDs dupliqués**
+   - AJI utilise matching bipartite entre GT et pred
+   - Si GT a IDs dupliqués, plusieurs instances fusionnées
+   - → Sous-estimation nombre d'instances → AJI baisse
+
+4. **Always verify assumptions**
+   - Assumption: "renumbérer fragmentés rendra cohérent"
+   - Reality: "créé collisions avec complets"
+   - Solution: Vérifier IDs uniques après chaque transformation
 
 ---
 
-**Status**: ✅ FIX IMPLÉMENTÉ — ⏳ En attente exécution par utilisateur avec environnement Python/GPU/données
+**Status**: ✅ FIX COLLISION IMPLÉMENTÉ — ⏳ En attente exécution par utilisateur

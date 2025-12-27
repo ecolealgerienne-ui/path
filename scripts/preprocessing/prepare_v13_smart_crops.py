@@ -272,16 +272,24 @@ def extract_crop(
         crop_hv[:, mask_fragmented] = hv_fragmented[:, mask_fragmented]
 
     # 5b. Créer inst_map_HYBRID cohérent avec les HV calculés
-    # CRITICAL: Les noyaux fragmentés doivent avoir les MÊMES IDs renumérés
-    # que ceux utilisés pour le calcul des HV maps (inst_map_fragmented)
-    inst_map_hybrid = crop_inst.copy()
+    # CRITICAL: Renumbérer TOUS les noyaux (complets ET fragmentés) séquentiellement
+    # pour éviter collisions d'IDs (ex: noyau complet ID=1 vs fragmenté renumbered ID=1)
+    inst_map_hybrid = np.zeros_like(crop_inst, dtype=np.int32)
 
-    if len(border_instances) > 0:
-        # Remplacer les IDs des noyaux fragmentés par les IDs renumérés
-        # (identiques à ceux utilisés pour compute_hv_maps)
-        for new_id, global_id in enumerate(border_instances, start=1):
-            mask = crop_inst == global_id
-            inst_map_hybrid[mask] = new_id  # Renumbering [1, 2, 3, ...]
+    # Identifier TOUS les noyaux (complets + fragmentés)
+    all_instance_ids = np.unique(crop_inst)
+    all_instance_ids = all_instance_ids[all_instance_ids > 0]  # Exclure background
+
+    # Renumbérer séquentiellement SANS gaps [1, 2, 3, ..., n_total]
+    for new_id, global_id in enumerate(all_instance_ids, start=1):
+        mask = crop_inst == global_id
+        inst_map_hybrid[mask] = new_id
+
+    # NOTE: Les HV maps ne dépendent PAS des IDs absolus mais des positions spatiales.
+    # Donc renumbérer les IDs n'affecte PAS la validité des HV maps:
+    #   - Noyaux complets: HV global pointe vers coordonnées spatiales (offset par slicing)
+    #   - Noyaux fragmentés: HV recalculé pointe vers nouveaux centres locaux
+    # L'important est que chaque instance ait un ID UNIQUE (pas de collisions)
 
     # 6. Validation
     assert crop_image.shape == (CROP_SIZE, CROP_SIZE, 3), f"Image shape: {crop_image.shape}"
