@@ -157,10 +157,28 @@ def compute_np_target(mask: np.ndarray) -> np.ndarray:
 
 
 def compute_nt_target(mask: np.ndarray) -> np.ndarray:
-    """Génère target NT (Nuclear Type) binaire simplifié."""
-    nuclei_mask = mask[:, :, :5].sum(axis=-1) > 0
+    """
+    Génère target NT (Nuclear Type) multiclass.
+
+    Args:
+        mask: PanNuke mask (H, W, 6) avec canaux:
+            - Canal 0: Background (ignoré)
+            - Canal 1: Neoplastic → classe 0
+            - Canal 2: Inflammatory → classe 1
+            - Canal 3: Connective → classe 2
+            - Canal 4: Dead → classe 3
+            - Canal 5: Epithelial → classe 4
+
+    Returns:
+        nt_target: (H, W) int64 avec valeurs 0-4 pour les 5 types cellulaires
+    """
     nt_target = np.zeros(mask.shape[:2], dtype=np.int64)
-    nt_target[nuclei_mask] = 1
+
+    # Assigner chaque type cellulaire (priorité: dernier canal écrase précédents si overlap)
+    for c in range(5):
+        type_mask = mask[:, :, c + 1] > 0
+        nt_target[type_mask] = c
+
     return nt_target
 
 
