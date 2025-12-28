@@ -512,9 +512,14 @@ class HoVerNetLoss(nn.Module):
         np_target: torch.Tensor,
         hv_target: torch.Tensor,
         nt_target: torch.Tensor,
+        weight_map: torch.Tensor = None,
     ) -> Tuple[torch.Tensor, dict]:
         """
         Calcule la loss totale.
+
+        Args:
+            weight_map: Carte de poids Ronneberger (B, H, W) pour sur-pondérer
+                       les frontières inter-cellulaires. Si None, poids uniforme.
 
         Returns:
             total_loss, dict avec losses individuelles
@@ -522,7 +527,18 @@ class HoVerNetLoss(nn.Module):
         # NP loss: Focal + Dice (Phase 1 Phased Training)
         # Expert: Focal Loss gère le déséquilibre et focus sur les bords difficiles
         # Dice Loss ignore le déséquilibre et se concentre sur l'overlap
-        np_focal = self.focal_loss(np_pred, np_target.long())
+        #
+        # ✅ AJOUT Tech Lead 2025-12-28: Pondération spatiale Ronneberger
+        # Les pixels aux frontières inter-cellulaires reçoivent un poids 10× plus élevé
+        # pour forcer le modèle à apprendre des séparations nettes.
+        if weight_map is not None:
+            # Focal loss avec pondération spatiale
+            # On utilise reduction='none' pour obtenir loss par pixel
+            np_focal_raw = F.cross_entropy(np_pred, np_target.long(), reduction='none')
+            np_focal = (np_focal_raw * weight_map).mean()
+        else:
+            np_focal = self.focal_loss(np_pred, np_target.long())
+
         np_dice = self.dice_loss(np_pred, np_target.float())
         np_loss = np_focal + np_dice
 

@@ -46,13 +46,13 @@ from src.models.organ_families import FAMILIES, get_organs, FAMILY_DESCRIPTIONS
 
 
 class FeatureAugmentation:
-    """Augmentation pour features H-optimus-0 et targets."""
+    """Augmentation pour features H-optimus-0, targets et weight_map."""
 
     def __init__(self, p_flip: float = 0.5, p_rot90: float = 0.5):
         self.p_flip = p_flip
         self.p_rot90 = p_rot90
 
-    def __call__(self, features, np_target, hv_target, nt_target):
+    def __call__(self, features, np_target, hv_target, nt_target, weight_map=None):
         # Structure H-optimus-0: [CLS, Registers(4), Patches(256)]
         cls_token = features[0:1]
         registers = features[1:5]
@@ -68,6 +68,8 @@ class FeatureAugmentation:
             hv_target = np.flip(hv_target, axis=2).copy()
             hv_target[0] = -hv_target[0]  # Inverser composante H (index 0)
             nt_target = np.flip(nt_target, axis=1).copy()
+            if weight_map is not None:
+                weight_map = np.flip(weight_map, axis=1).copy()
 
         # Rotation 90° (HV component swapping)
         if np.random.random() < self.p_rot90:
@@ -76,6 +78,8 @@ class FeatureAugmentation:
             np_target = np.rot90(np_target, k).copy()
             hv_target = np.rot90(hv_target, k, axes=(1, 2)).copy()
             nt_target = np.rot90(nt_target, k).copy()
+            if weight_map is not None:
+                weight_map = np.rot90(weight_map, k).copy()
 
             # Component swapping selon rotation
             if k == 1:  # 90° anti-horaire
@@ -88,7 +92,7 @@ class FeatureAugmentation:
         patches = patches_grid.reshape(256, -1)
         features = np.concatenate([cls_token, registers, patches], axis=0)
 
-        return features, np_target, hv_target, nt_target
+        return features, np_target, hv_target, nt_target, weight_map
 
 
 class V13SmartCropsDataset(Dataset):
@@ -163,6 +167,15 @@ class V13SmartCropsDataset(Dataset):
         self.hv_targets = targets_data['hv_targets']  # (N_crops, 2, 224, 224)
         self.nt_targets = targets_data['nt_targets']  # (N_crops, 224, 224)
 
+        # Weight maps (Ronneberger) - optionnel, pour sur-pondérer frontières
+        if 'weight_maps' in targets_data:
+            self.weight_maps = targets_data['weight_maps']  # (N_crops, 224, 224)
+            print(f"  ✅ Weight maps chargées: shape {self.weight_maps.shape}")
+            print(f"     Range: [{self.weight_maps.min():.2f}, {self.weight_maps.max():.2f}]")
+        else:
+            self.weight_maps = None
+            print(f"  ⚠️  Weight maps non trouvées - utilisation poids uniforme")
+
         # Validation HV
         print(f"\nValidation HV targets:")
         print(f"  Dtype: {self.hv_targets.dtype}")
@@ -189,19 +202,26 @@ class V13SmartCropsDataset(Dataset):
         hv_target = self.hv_targets[idx].copy()
         nt_target = self.nt_targets[idx].copy()
 
+        # Weight map (Ronneberger) - optionnel
+        if self.weight_maps is not None:
+            weight_map = self.weight_maps[idx].copy()
+        else:
+            weight_map = np.ones_like(np_target, dtype=np.float32)
+
         # Pas de resize nécessaire (déjà à 224×224)
 
         if self.augmenter is not None and self.split == "train":
-            features, np_target, hv_target, nt_target = self.augmenter(
-                features, np_target, hv_target, nt_target
+            features, np_target, hv_target, nt_target, weight_map = self.augmenter(
+                features, np_target, hv_target, nt_target, weight_map
             )
 
         features = torch.from_numpy(features)
         np_target = torch.from_numpy(np_target.copy())
         hv_target = torch.from_numpy(hv_target.copy())
         nt_target = torch.from_numpy(nt_target.copy()).long()
+        weight_map = torch.from_numpy(weight_map.copy())
 
-        return features, np_target, hv_target, nt_target
+        return features, np_target, hv_target, nt_target, weight_map
 
 
 def compute_dice(pred: torch.Tensor, target: torch.Tensor) -> float:
@@ -263,19 +283,21 @@ def train_one_epoch(
     n_batches = 0
 
     pbar = tqdm(dataloader, desc=f"Epoch {epoch}")
-    for features, np_target, hv_target, nt_target in pbar:
+    for features, np_target, hv_target, nt_target, weight_map in pbar:
         features = features.to(device)
         np_target = np_target.to(device)
         hv_target = hv_target.to(device)
         nt_target = nt_target.to(device)
+        weight_map = weight_map.to(device)
 
         # Forward
         np_out, hv_out, nt_out = model(features)
 
-        # Loss
+        # Loss avec pondération spatiale Ronneberger
         loss, loss_dict = criterion(
             np_out, hv_out, nt_out,
-            np_target, hv_target, nt_target
+            np_target, hv_target, nt_target,
+            weight_map=weight_map
         )
 
         # Backward
@@ -320,19 +342,21 @@ def validate(model, dataloader, criterion, device, n_classes):
     total_nt_acc = 0.0
     n_batches = 0
 
-    for features, np_target, hv_target, nt_target in tqdm(dataloader, desc="Validation"):
+    for features, np_target, hv_target, nt_target, weight_map in tqdm(dataloader, desc="Validation"):
         features = features.to(device)
         np_target = np_target.to(device)
         hv_target = hv_target.to(device)
         nt_target = nt_target.to(device)
+        weight_map = weight_map.to(device)
 
         # Forward
         np_out, hv_out, nt_out = model(features)
 
-        # Loss
+        # Loss avec pondération spatiale Ronneberger
         loss, loss_dict = criterion(
             np_out, hv_out, nt_out,
-            np_target, hv_target, nt_target
+            np_target, hv_target, nt_target,
+            weight_map=weight_map
         )
 
         # Métriques

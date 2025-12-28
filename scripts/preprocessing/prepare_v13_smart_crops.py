@@ -179,6 +179,63 @@ def compute_hv_maps(inst_map: np.ndarray) -> np.ndarray:
     return hv_map
 
 
+def compute_spatial_weight_map(inst_map: np.ndarray, w0: float = 10.0, sigma: float = 5.0) -> np.ndarray:
+    """
+    Génère une carte de poids pour sur-pondérer les bordures entre noyaux.
+
+    Méthode Ronneberger (U-Net 2015): Les pixels aux frontières inter-cellulaires
+    reçoivent un poids plus élevé pour forcer le modèle à apprendre des séparations nettes.
+
+    Formule: weight = 1 + w0 * exp(-(d1 + d2)² / (2 * sigma²))
+
+    où d1 = distance au noyau le plus proche
+       d2 = distance au deuxième noyau le plus proche
+
+    Args:
+        inst_map: Instance map (H, W) int32
+        w0: Poids additionnel pour les zones de contact (défaut: 10x)
+        sigma: Étendue de l'influence du poids en pixels (défaut: 5)
+
+    Returns:
+        weight_map: (H, W) float32, valeurs >= 1.0
+    """
+    from scipy.ndimage import distance_transform_edt
+
+    # Si moins de 2 noyaux, pas besoin de pondération spéciale
+    inst_ids = np.unique(inst_map)
+    inst_ids = inst_ids[inst_ids > 0]
+
+    if len(inst_ids) < 2:
+        return np.ones(inst_map.shape, dtype=np.float32)
+
+    h, w = inst_map.shape
+
+    # Calculer la distance à chaque instance séparément
+    all_distances = []
+    for inst_id in inst_ids:
+        mask = (inst_map == inst_id)
+        # Distance depuis l'EXTÉRIEUR du noyau vers le noyau
+        dist = distance_transform_edt(~mask)
+        all_distances.append(dist)
+
+    all_distances = np.stack(all_distances, axis=0)  # (N_instances, H, W)
+    all_distances = np.sort(all_distances, axis=0)   # Trier par distance
+
+    # d1: distance au noyau le plus proche
+    # d2: distance au deuxième noyau le plus proche
+    d1 = all_distances[0]
+    d2 = all_distances[1]
+
+    # Formule de Ronneberger : poids élevé là où (d1 + d2) est petit
+    # = zones entre deux noyaux proches
+    weight_map = w0 * np.exp(-((d1 + d2) ** 2) / (2 * sigma ** 2))
+
+    # Ajouter 1 pour garder un poids normal partout ailleurs
+    weight_map = (1.0 + weight_map).astype(np.float32)
+
+    return weight_map
+
+
 def compute_np_target(mask: np.ndarray) -> np.ndarray:
     """Génère target NP (Nuclear Presence) binaire."""
     nuclei_mask = mask[:, :, :5].sum(axis=-1) > 0
@@ -313,13 +370,16 @@ def finalize_crop_after_rotation(
     image: np.ndarray,
     np_target: np.ndarray,
     nt_target: np.ndarray
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, bool]:
     """
-    Finalise un crop APRÈS rotation: label() + compute_hv_maps().
+    Finalise un crop APRÈS rotation: label() + compute_hv_maps() + weight_map.
 
     ✅ FIX Expert 2025-12-28: Cette fonction est appelée APRÈS rotation
     pour garantir que les IDs d'instances suivent l'ordre spatial naturel
     dans l'image FINALE (rotée).
+
+    ✅ AJOUT Tech Lead 2025-12-28: Génère aussi la weight_map (Ronneberger)
+    pour sur-pondérer les frontières inter-cellulaires.
 
     Args:
         image: Image rotée (224, 224, 3)
@@ -327,7 +387,7 @@ def finalize_crop_after_rotation(
         nt_target: Types cellulaires rotés (224, 224)
 
     Returns:
-        (hv_target, inst_map, n_instances, is_valid)
+        (hv_target, inst_map, weight_map, n_instances, is_valid)
     """
     from scipy.ndimage import label
 
@@ -339,9 +399,10 @@ def finalize_crop_after_rotation(
     is_valid = n_instances > 0
 
     if not is_valid:
-        # Retourner HV vide si pas de noyaux
+        # Retourner HV et weight_map vides si pas de noyaux
         hv_target = np.zeros((2, CROP_SIZE, CROP_SIZE), dtype=np.float32)
-        return hv_target, inst_map, n_instances, False
+        weight_map = np.ones((CROP_SIZE, CROP_SIZE), dtype=np.float32)
+        return hv_target, inst_map, weight_map, n_instances, False
 
     # Calculer HV sur image ROTÉE → vecteurs pointent vers bons centres
     hv_target = compute_hv_maps(inst_map)
@@ -350,7 +411,10 @@ def finalize_crop_after_rotation(
     assert hv_target.min() >= -1.0 and hv_target.max() <= 1.0, \
         f"HV range invalid: [{hv_target.min():.3f}, {hv_target.max():.3f}]"
 
-    return hv_target, inst_map, n_instances, True
+    # Calculer weight_map (Ronneberger) pour sur-pondérer les frontières
+    weight_map = compute_spatial_weight_map(inst_map, w0=10.0, sigma=5.0)
+
+    return hv_target, inst_map, weight_map, n_instances, is_valid
 
 
 def is_valid_crop(np_target: np.ndarray, nt_target: np.ndarray) -> Tuple[bool, int]:
@@ -553,6 +617,7 @@ def generate_smart_crops_from_pannuke(
             'hv_targets': [],
             'nt_targets': [],
             'inst_maps': [],  # ✅ Instance maps cropés
+            'weight_maps': [],  # ✅ Weight maps Ronneberger pour frontières
             'source_image_ids': [],
             'crop_positions': [],
             'fold_ids': [],
@@ -600,7 +665,8 @@ def generate_smart_crops_from_pannuke(
 
                 # ÉTAPE 3: Finaliser APRÈS rotation - c'est ici que label() est fait!
                 # ⚠️ FIX CRITIQUE: label() sur image ROTÉE = ordre spatial cohérent
-                hv_rot, inst_rot, n_instances, is_valid = finalize_crop_after_rotation(
+                # ✅ AJOUT: weight_map Ronneberger pour sur-pondérer frontières
+                hv_rot, inst_rot, weight_rot, n_instances, is_valid = finalize_crop_after_rotation(
                     img_rot, np_rot, nt_rot
                 )
 
@@ -614,6 +680,7 @@ def generate_smart_crops_from_pannuke(
                 crops_data['hv_targets'].append(hv_rot)
                 crops_data['nt_targets'].append(nt_rot)
                 crops_data['inst_maps'].append(inst_rot)
+                crops_data['weight_maps'].append(weight_rot)
                 crops_data['source_image_ids'].append(source_id)
                 crops_data['crop_positions'].append(pos_name)
                 crops_data['fold_ids'].append(fold_id)
@@ -636,6 +703,7 @@ def generate_smart_crops_from_pannuke(
         hv_targets_array = np.stack(crops_data['hv_targets'], axis=0)
         nt_targets_array = np.stack(crops_data['nt_targets'], axis=0)
         inst_maps_array = np.stack(crops_data['inst_maps'], axis=0)
+        weight_maps_array = np.stack(crops_data['weight_maps'], axis=0)
         source_ids_array = np.array(crops_data['source_image_ids'], dtype=np.int32)
         crop_positions_array = np.array(crops_data['crop_positions'])
         fold_ids_array = np.array(crops_data['fold_ids'], dtype=np.int32)
@@ -648,7 +716,8 @@ def generate_smart_crops_from_pannuke(
             np_targets=np_targets_array,
             hv_targets=hv_targets_array,
             nt_targets=nt_targets_array,
-            inst_maps=inst_maps_array,  # ✅ Instance maps cropés avec HYBRID
+            inst_maps=inst_maps_array,  # ✅ Instance maps cropés
+            weight_maps=weight_maps_array,  # ✅ Weight maps Ronneberger
             source_image_ids=source_ids_array,
             crop_positions=crop_positions_array,
             fold_ids=fold_ids_array,
