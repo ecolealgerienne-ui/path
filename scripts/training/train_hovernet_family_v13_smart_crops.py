@@ -273,7 +273,12 @@ def compute_nt_accuracy(nt_pred: torch.Tensor, nt_target: torch.Tensor, np_targe
 def train_one_epoch(
     model, dataloader, criterion, optimizer, device, epoch, n_classes
 ):
-    """Train pour une epoch."""
+    """
+    Train pour une epoch AVEC pondération spatiale Ronneberger.
+
+    Les Weight Maps sur-pénalisent les erreurs aux frontières inter-cellulaires
+    pour forcer le modèle à apprendre des séparations nettes.
+    """
     model.train()
 
     total_loss = 0.0
@@ -333,7 +338,15 @@ def train_one_epoch(
 
 @torch.no_grad()
 def validate(model, dataloader, criterion, device, n_classes):
-    """Validation."""
+    """
+    Validation SANS pondération spatiale.
+
+    IMPORTANT (Tech Lead 2025-12-28):
+    - Weight Maps = outil d'apprentissage (guide le gradient en TRAIN)
+    - VAL doit mesurer l'erreur RÉELLE (conditions d'inférence)
+    - Sinon: Loss VAL artificiellement gonflée → overfitting difficile à détecter
+    - AJI/Dice ne sont JAMAIS pondérés (comparaison masques binaires purs)
+    """
     model.eval()
 
     total_loss = 0.0
@@ -347,16 +360,16 @@ def validate(model, dataloader, criterion, device, n_classes):
         np_target = np_target.to(device)
         hv_target = hv_target.to(device)
         nt_target = nt_target.to(device)
-        weight_map = weight_map.to(device)
+        # weight_map ignoré en validation - poids uniforme implicite (weight_map=None)
 
         # Forward
         np_out, hv_out, nt_out = model(features)
 
-        # Loss avec pondération spatiale Ronneberger
+        # Loss SANS pondération (conditions réelles d'inférence)
         loss, loss_dict = criterion(
             np_out, hv_out, nt_out,
             np_target, hv_target, nt_target,
-            weight_map=weight_map
+            weight_map=None  # ← Poids uniforme pour VAL
         )
 
         # Métriques
