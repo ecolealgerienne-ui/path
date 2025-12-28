@@ -66,7 +66,7 @@ class FeatureAugmentation:
             patches_grid = np.flip(patches_grid, axis=1).copy()
             np_target = np.flip(np_target, axis=1).copy()
             hv_target = np.flip(hv_target, axis=2).copy()
-            hv_target[1] = -hv_target[1]  # Inverser composante H
+            hv_target[0] = -hv_target[0]  # Inverser composante H (index 0)
             nt_target = np.flip(nt_target, axis=1).copy()
 
         # Rotation 90° (HV component swapping)
