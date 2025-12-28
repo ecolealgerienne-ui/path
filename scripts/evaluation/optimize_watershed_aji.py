@@ -203,11 +203,12 @@ def load_model_and_data(checkpoint_path: str, family: str, device: str = "cuda")
     # Load checkpoint
     checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
 
-    # Get use_hybrid from checkpoint metadata (like test_v13_smart_crops_aji.py does)
+    # Get use_hybrid and use_fpn_chimique from checkpoint metadata
     use_hybrid = checkpoint.get('use_hybrid', False)
+    use_fpn_chimique = checkpoint.get('use_fpn_chimique', False)
     state_dict = checkpoint.get('model_state_dict', checkpoint)
 
-    print(f"  Checkpoint metadata: use_hybrid={use_hybrid}")
+    print(f"  Checkpoint metadata: use_hybrid={use_hybrid}, use_fpn_chimique={use_fpn_chimique}")
 
     # Also check head dimensions for additional info
     if 'np_head.head.0.weight' in state_dict:
@@ -218,13 +219,16 @@ def load_model_and_data(checkpoint_path: str, family: str, device: str = "cuda")
         embed_dim=1536,
         n_classes=5,
         dropout=0.1,
-        use_hybrid=use_hybrid
+        use_hybrid=use_hybrid,
+        use_fpn_chimique=use_fpn_chimique
     ).to(device)
 
     model.load_state_dict(state_dict)
     model.eval()
 
-    if use_hybrid:
+    if use_fpn_chimique:
+        print(f"  ✅ Mode FPN CHIMIQUE activé: injection H-channel multi-échelle (5 niveaux)")
+    elif use_hybrid:
         print(f"  ✅ Mode HYBRID activé: injection H-channel via RuifrokExtractor")
 
     # Load validation data
