@@ -250,9 +250,16 @@ def run_inference(model, rgb_features, images, idx, device, use_hybrid):
     with torch.no_grad():
         outputs = model(features, images_rgb=image_tensor)
 
-    # Extract predictions
-    np_pred = torch.sigmoid(outputs['np']).cpu().numpy()[0, 0]
-    hv_pred = outputs['hv'].cpu().numpy()[0]
+    # Extract predictions - handle both dict and tuple returns
+    if isinstance(outputs, dict):
+        np_out = outputs['np']
+        hv_out = outputs['hv']
+    else:
+        # Tuple: (np_out, hv_out, nt_out)
+        np_out, hv_out, nt_out = outputs
+
+    np_pred = torch.sigmoid(np_out).cpu().numpy()[0, 0]
+    hv_pred = hv_out.cpu().numpy()[0]
 
     return np_pred, hv_pred
 
