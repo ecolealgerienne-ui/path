@@ -385,10 +385,11 @@ def apply_rotation(
         nt_rot = np.rot90(nt_target, k=1, axes=(0, 1))
         inst_map_rot = np.rot90(inst_map, k=1, axes=(0, 1))
 
-        # HV component swapping: H' = V, V' = -H
-        # Rotation spatiale de chaque composante + échange (inverse de 90°)
-        h_rot = np.rot90(hv_target[1], k=1, axes=(0, 1))   # H' = V
-        v_rot = -np.rot90(hv_target[0], k=1, axes=(0, 1))  # V' = -H
+        # HV component swapping for 270° CW: H' = -V, V' = H
+        # Test: vecteur (1,0) droite → (0,1) haut après 270° CW
+        # Code: H' = -V = 0, V' = H = 1 → (0, 1) ✓
+        h_rot = -np.rot90(hv_target[1], k=1, axes=(0, 1))  # H' = -V
+        v_rot = np.rot90(hv_target[0], k=1, axes=(0, 1))   # V' = H
         hv_rot = np.stack([h_rot, v_rot], axis=0)
 
         return image_rot, np_rot, hv_rot, nt_rot, inst_map_rot
