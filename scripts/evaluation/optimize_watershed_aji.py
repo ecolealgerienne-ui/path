@@ -38,70 +38,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from src.models.hovernet_decoder import HoVerNetDecoder
-
-
-def compute_aji(pred_inst: np.ndarray, gt_inst: np.ndarray) -> float:
-    """
-    Compute Aggregated Jaccard Index (AJI).
-
-    AJI = sum(|P_i ∩ G_σ(i)|) / sum(|P_i ∪ G_σ(i)|) + sum(|G_j - ∪P|)
-
-    Where σ(i) is the GT instance with maximum IoU for prediction i.
-    """
-    pred_ids = np.unique(pred_inst)
-    pred_ids = pred_ids[pred_ids > 0]
-
-    gt_ids = np.unique(gt_inst)
-    gt_ids = gt_ids[gt_ids > 0]
-
-    if len(gt_ids) == 0:
-        return 1.0 if len(pred_ids) == 0 else 0.0
-
-    if len(pred_ids) == 0:
-        return 0.0
-
-    # For each prediction, find best matching GT
-    used_gt = set()
-    inter_sum = 0
-    union_sum = 0
-
-    for pred_id in pred_ids:
-        pred_mask = pred_inst == pred_id
-
-        best_iou = 0
-        best_gt_id = None
-        best_inter = 0
-        best_union = 0
-
-        for gt_id in gt_ids:
-            if gt_id in used_gt:
-                continue
-            gt_mask = gt_inst == gt_id
-            inter = np.logical_and(pred_mask, gt_mask).sum()
-            union = np.logical_or(pred_mask, gt_mask).sum()
-            iou = inter / union if union > 0 else 0
-
-            if iou > best_iou:
-                best_iou = iou
-                best_gt_id = gt_id
-                best_inter = inter
-                best_union = union
-
-        if best_gt_id is not None:
-            used_gt.add(best_gt_id)
-            inter_sum += best_inter
-            union_sum += best_union
-        else:
-            # No match - add pred to union only
-            union_sum += pred_mask.sum()
-
-    # Add unmatched GT instances
-    for gt_id in gt_ids:
-        if gt_id not in used_gt:
-            gt_mask = gt_inst == gt_id
-            union_sum += gt_mask.sum()
-
-    return inter_sum / union_sum if union_sum > 0 else 0.0
+from src.metrics.ground_truth_metrics import compute_aji  # Use centralized AJI (GT-centric)
 
 
 def hv_to_instances(
