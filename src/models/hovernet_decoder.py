@@ -7,15 +7,21 @@ Architecture corrigée avec bottleneck partagé (tronc commun):
 - Tronc commun partagé entre les 3 branches
 - 3 branches parallèles: NP, HV, NT
 
+Mode Hybrid (V13):
+- Injection du canal H (Hématoxyline) via déconvolution Ruifrok
+- Le canal H fournit l'info de densité chromatinienne PURE
+- Concaténé aux features après bottleneck → 257 canaux
+
 Basé sur:
 - HoVer-Net: https://github.com/vqdang/hover_net
 - CellViT: https://github.com/TIO-IKIM/CellViT
+- Ruifrok deconvolution: Ruifrok & Johnston, Anal Quant Cytol Histol 2001
 """
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from typing import Tuple
+from typing import Tuple, Optional
 
 
 class UpsampleBlock(nn.Module):
@@ -122,6 +128,70 @@ class FocalLoss(nn.Module):
         return focal_loss
 
 
+class RuifrokExtractor(nn.Module):
+    """
+    Extracteur de canal Hématoxyline par déconvolution couleur Ruifrok.
+
+    Utilise la matrice de staining standard H&E pour extraire le canal H
+    (Hématoxyline) qui contient l'information de densité chromatinienne.
+
+    L'hématoxyline colore les noyaux en violet/bleu → le canal H est
+    idéal pour détecter les frontières nucléaires.
+
+    Référence: Ruifrok & Johnston, Anal Quant Cytol Histol 2001
+
+    Usage:
+        extractor = RuifrokExtractor()
+        h_channel = extractor(rgb_image)  # (B, 1, 16, 16)
+    """
+
+    def __init__(self):
+        super().__init__()
+        # Matrice staining H&E standard (composante H uniquement)
+        # RGB → OD → H-channel via projection sur vecteur Hématoxyline
+        # [0.650, 0.704, 0.286] = vecteur Hématoxyline normalisé
+        self.register_buffer(
+            'stain_matrix',
+            torch.tensor([0.650, 0.704, 0.286]).view(1, 3, 1, 1)
+        )
+
+    def forward(
+        self,
+        rgb_input: torch.Tensor,
+        target_size: int = 16
+    ) -> torch.Tensor:
+        """
+        Extrait le canal H de l'image RGB.
+
+        Args:
+            rgb_input: Image RGB (B, 3, H, W) en [0, 255] uint8-like
+            target_size: Taille de sortie pour matcher la grille ViT (default: 16)
+
+        Returns:
+            H-channel (B, 1, target_size, target_size) en OD normalisé
+        """
+        # Clamp pour éviter log(0) et valeurs négatives
+        rgb_input = rgb_input.clamp(1e-6, 255.0)
+
+        # RGB → Optical Density (OD)
+        # OD = -log10(I / I0) avec I0 = 255 (blanc de référence)
+        od = -torch.log10(rgb_input / 255.0 + 1e-6)
+
+        # Projection sur vecteur Hématoxyline
+        # h_channel = od · stain_vector
+        h_channel = torch.sum(od * self.stain_matrix, dim=1, keepdim=True)
+
+        # Resize vers grille ViT (16×16)
+        h_channel = F.interpolate(
+            h_channel,
+            size=(target_size, target_size),
+            mode='bilinear',
+            align_corners=False
+        )
+
+        return h_channel
+
+
 class DecoderHead(nn.Module):
     """
     Tête de décodage légère.
@@ -146,7 +216,7 @@ class HoVerNetDecoder(nn.Module):
     """
     Décodeur HoVer-Net pour H-optimus-0 avec bottleneck partagé.
 
-    Architecture:
+    Architecture standard:
         H-optimus-0 features (16x16 @ 1536)
                     ↓
         Bottleneck 1x1 (1536 → 256)  ← Économie VRAM!
@@ -158,10 +228,30 @@ class HoVerNetDecoder(nn.Module):
           NP       HV       NT
         (binaire) (H+V)  (5 classes)
 
+    Architecture Hybrid (use_hybrid=True):
+        H-optimus-0 features     +     RGB image
+              ↓                          ↓
+        Bottleneck (256)         RuifrokExtractor (1)
+              ↓                          ↓
+              └──────── concat ──────────┘
+                          ↓
+                    257 canaux
+                          ↓
+                  Tronc commun (upsampling)
+                          ↓
+                    NP / HV / NT
+
+    Le canal H (Hématoxyline) fournit l'info de densité chromatinienne
+    pour améliorer la séparation d'instances (AJI cible +18%).
+
     Usage:
+        # Standard mode
         decoder = HoVerNetDecoder()
-        features = backbone.forward_features(images)  # (B, 261, 1536)
         np_out, hv_out, nt_out = decoder(features)
+
+        # Hybrid mode
+        decoder = HoVerNetDecoder(use_hybrid=True)
+        np_out, hv_out, nt_out = decoder(features, images_rgb=images)
     """
 
     def __init__(
@@ -172,12 +262,14 @@ class HoVerNetDecoder(nn.Module):
         img_size: int = 224,
         n_classes: int = 5,
         dropout: float = 0.1,  # Dropout pour régularisation
+        use_hybrid: bool = False,  # Activer injection H-channel
     ):
         super().__init__()
 
         self.patch_size = patch_size
         self.img_size = img_size
         self.n_patches = img_size // patch_size  # 16 pour 224/14
+        self.use_hybrid = use_hybrid
 
         # ===== BOTTLENECK PARTAGÉ (économie VRAM) =====
         self.bottleneck = nn.Sequential(
@@ -187,13 +279,21 @@ class HoVerNetDecoder(nn.Module):
             nn.Dropout2d(dropout) if dropout > 0 else nn.Identity(),
         )
 
+        # ===== MODE HYBRID: Extracteur H-channel =====
+        if use_hybrid:
+            self.ruifrok = RuifrokExtractor()
+            up1_in_channels = bottleneck_dim + 1  # 256 + 1 = 257
+        else:
+            self.ruifrok = None
+            up1_in_channels = bottleneck_dim  # 256
+
         # ===== TRONC COMMUN (upsampling partagé) =====
         # 16x16 → 32 → 64 → 128 → 224
         # Expert: Remplacer bilinear par PixelShuffle pour bords nets
-        self.up1 = PixelShuffleBlock(bottleneck_dim, 128)  # 16→32, 256→128
-        self.up2 = PixelShuffleBlock(128, 64)              # 32→64, 128→64
-        self.up3 = PixelShuffleBlock(64, 64)               # 64→128, 64→64
-        self.up4 = PixelShuffleBlock(64, 64)               # 128→256, 64→64
+        self.up1 = PixelShuffleBlock(up1_in_channels, 128)  # 16→32, (256 ou 257)→128
+        self.up2 = PixelShuffleBlock(128, 64)               # 32→64, 128→64
+        self.up3 = PixelShuffleBlock(64, 64)                # 64→128, 64→64
+        self.up4 = PixelShuffleBlock(64, 64)                # 128→256, 64→64
 
         # Dropout entre les blocs d'upsampling
         self.dropout = nn.Dropout2d(dropout) if dropout > 0 else nn.Identity()
@@ -248,10 +348,12 @@ class HoVerNetDecoder(nn.Module):
     def forward(
         self,
         features: torch.Tensor,
+        images_rgb: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Args:
             features: (B, N, D) tokens du ViT (dernière couche)
+            images_rgb: (B, 3, H, W) images RGB en [0, 255] (requis si use_hybrid=True)
 
         Returns:
             np_logits: (B, 2, H, W) - probabilités noyau/background
@@ -265,41 +367,31 @@ class HoVerNetDecoder(nn.Module):
         x = self.bottleneck(x)  # (B, 256, 16, 16)
 
         # =====================================================================
-        # TODO: V13 - Marquage Virtuel Hybride (H-Channel Injection)
+        # V13-HYBRID: Injection canal H (Hématoxyline)
         # =====================================================================
         #
-        # OBJECTIF: Améliorer la séparation d'instances en injectant l'info
-        # coloration Hématoxyline directement dans l'espace latent.
+        # Le canal H (extrait par déconvolution Ruifrok) contient l'info de
+        # densité chromatinienne PURE. Cela aide le modèle à mieux détecter
+        # les frontières nucléaires, surtout dans les tissus denses.
         #
-        # RAISON SCIENTIFIQUE:
-        # - L'hématoxyline colore les noyaux en violet/bleu
-        # - Le canal H (Haematoxylin) du déconvolut couleur H&E contient
-        #   l'info de densité chromatinienne PURE
-        # - Injecter H dans les features force le modèle à "voir" les frontières
-        #   nucléaires même quand H-optimus-0 les a abstraites
-        #
-        # IMPLÉMENTATION PRÉVUE:
-        # 1. Extraire canal H depuis l'input RGB original (256×256)
-        #    → Utiliser déconvolution couleur Macenko ou matrice OD
-        # 2. Redimensionner canal H en 16×16 (même résolution que features)
-        #    → F.interpolate(h_channel, size=(16, 16), mode='bilinear')
-        # 3. Concaténer avec x: x = torch.cat([x, h_channel], dim=1)
-        #    → Nécessite ajuster bottleneck: 256 + 1 = 257 canaux en entrée up1
-        # 4. Passer au PixelShuffle (up1)
-        #
-        # MODIFICATION REQUISE:
-        # - Signature forward(): ajouter paramètre `rgb_input: torch.Tensor = None`
-        # - __init__(): ajuster up1 input channels (256 → 257)
-        # - Créer méthode `extract_h_channel()` avec matrice déconvolution
-        #
-        # GAIN ATTENDU:
-        # - AJI: +10-15% (séparation instances améliorée)
-        # - Particulièrement efficace sur tissus denses (Urologic, Epidermal)
-        #
-        # RÉFÉRENCE:
-        # - "Virtual Staining" (Rivenson et al., Nature BME 2019)
-        # - Macenko color normalization (Macenko et al., ISBI 2009)
+        # GAIN ATTENDU: AJI +10-18% (séparation instances améliorée)
         # =====================================================================
+        if self.use_hybrid:
+            if images_rgb is None:
+                raise ValueError(
+                    "images_rgb est requis quand use_hybrid=True. "
+                    "Passez les images RGB (B, 3, H, W) au forward()."
+                )
+
+            # Extraire canal H via déconvolution Ruifrok
+            # IMPORTANT: detach() pour éviter que les gradients ne remontent
+            # vers l'image RGB (pas de fine-tuning de l'extraction couleur)
+            with torch.no_grad():
+                h_channel = self.ruifrok(images_rgb, target_size=self.n_patches)
+                # h_channel: (B, 1, 16, 16)
+
+            # Concaténer avec features bottleneck
+            x = torch.cat([x, h_channel], dim=1)  # (B, 257, 16, 16)
 
         # Tronc commun (upsampling partagé avec dropout)
         x = self.up1(x)         # (B, 128, 32, 32)

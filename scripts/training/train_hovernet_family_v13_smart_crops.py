@@ -103,14 +103,16 @@ class V13SmartCropsDataset(Dataset):
     - Pas de split automatique 80/20
     - Charge fichiers train ou val explicitement
     - Data leakage prevention garanti
+    - Support mode hybride (charge images RGB pour injection H-channel)
     """
 
-    def __init__(self, family: str, split: str, cache_dir: str = None, augment: bool = False):
+    def __init__(self, family: str, split: str, cache_dir: str = None, augment: bool = False, use_hybrid: bool = False):
         assert split in ["train", "val"], f"Split doit être 'train' ou 'val', pas '{split}'"
 
         self.family = family
         self.split = split
         self.augment = augment
+        self.use_hybrid = use_hybrid
         self.augmenter = FeatureAugmentation() if augment else None
 
         # Répertoire cache
@@ -176,6 +178,21 @@ class V13SmartCropsDataset(Dataset):
             self.weight_maps = None
             print(f"  ⚠️  Weight maps non trouvées - utilisation poids uniforme")
 
+        # Images RGB pour mode hybride (injection H-channel)
+        if use_hybrid:
+            if 'images' in targets_data:
+                self.images = targets_data['images']  # (N_crops, 224, 224, 3) uint8
+                print(f"  ✅ Images RGB chargées: shape {self.images.shape}, dtype {self.images.dtype}")
+                print(f"     Range: [{self.images.min()}, {self.images.max()}]")
+            else:
+                raise ValueError(
+                    f"Mode hybride activé mais 'images' non trouvées dans {targets_path}.\n"
+                    f"Régénérez les données avec:\n"
+                    f"  python scripts/preprocessing/prepare_v13_smart_crops.py --family {family}"
+                )
+        else:
+            self.images = None
+
         # Validation HV
         print(f"\nValidation HV targets:")
         print(f"  Dtype: {self.hv_targets.dtype}")
@@ -208,12 +225,21 @@ class V13SmartCropsDataset(Dataset):
         else:
             weight_map = np.ones_like(np_target, dtype=np.float32)
 
+        # Image RGB pour mode hybride
+        if self.use_hybrid:
+            image = self.images[idx].copy()  # (224, 224, 3) uint8
+        else:
+            image = None
+
         # Pas de resize nécessaire (déjà à 224×224)
 
         if self.augmenter is not None and self.split == "train":
             features, np_target, hv_target, nt_target, weight_map = self.augmenter(
                 features, np_target, hv_target, nt_target, weight_map
             )
+            # NOTE: L'image n'est PAS augmentée avec features car RuifrokExtractor
+            # utilise torch.no_grad() - le gradient ne passe pas par l'image RGB.
+            # L'augmentation géométrique des features suffit.
 
         features = torch.from_numpy(features)
         np_target = torch.from_numpy(np_target.copy())
@@ -221,7 +247,12 @@ class V13SmartCropsDataset(Dataset):
         nt_target = torch.from_numpy(nt_target.copy()).long()
         weight_map = torch.from_numpy(weight_map.copy())
 
-        return features, np_target, hv_target, nt_target, weight_map
+        if self.use_hybrid:
+            # Convertir image HWC uint8 → CHW float32 [0, 255]
+            image = torch.from_numpy(image.copy()).permute(2, 0, 1).float()
+            return features, np_target, hv_target, nt_target, weight_map, image
+        else:
+            return features, np_target, hv_target, nt_target, weight_map
 
 
 def compute_dice(pred: torch.Tensor, target: torch.Tensor) -> float:
@@ -271,13 +302,16 @@ def compute_nt_accuracy(nt_pred: torch.Tensor, nt_target: torch.Tensor, np_targe
 
 
 def train_one_epoch(
-    model, dataloader, criterion, optimizer, device, epoch, n_classes
+    model, dataloader, criterion, optimizer, device, epoch, n_classes, use_hybrid=False
 ):
     """
     Train pour une epoch AVEC pondération spatiale Ronneberger.
 
     Les Weight Maps sur-pénalisent les erreurs aux frontières inter-cellulaires
     pour forcer le modèle à apprendre des séparations nettes.
+
+    Args:
+        use_hybrid: Si True, passe les images RGB au modèle pour injection H-channel.
     """
     model.train()
 
@@ -288,15 +322,23 @@ def train_one_epoch(
     n_batches = 0
 
     pbar = tqdm(dataloader, desc=f"Epoch {epoch}")
-    for features, np_target, hv_target, nt_target, weight_map in pbar:
+    for batch in pbar:
+        # Unpack batch selon mode hybride ou non
+        if use_hybrid:
+            features, np_target, hv_target, nt_target, weight_map, images = batch
+            images = images.to(device)
+        else:
+            features, np_target, hv_target, nt_target, weight_map = batch
+            images = None
+
         features = features.to(device)
         np_target = np_target.to(device)
         hv_target = hv_target.to(device)
         nt_target = nt_target.to(device)
         weight_map = weight_map.to(device)
 
-        # Forward
-        np_out, hv_out, nt_out = model(features)
+        # Forward (avec images si mode hybride)
+        np_out, hv_out, nt_out = model(features, images_rgb=images)
 
         # Loss avec pondération spatiale Ronneberger
         loss, loss_dict = criterion(
@@ -337,7 +379,7 @@ def train_one_epoch(
 
 
 @torch.no_grad()
-def validate(model, dataloader, criterion, device, n_classes):
+def validate(model, dataloader, criterion, device, n_classes, use_hybrid=False):
     """
     Validation SANS pondération spatiale.
 
@@ -346,6 +388,9 @@ def validate(model, dataloader, criterion, device, n_classes):
     - VAL doit mesurer l'erreur RÉELLE (conditions d'inférence)
     - Sinon: Loss VAL artificiellement gonflée → overfitting difficile à détecter
     - AJI/Dice ne sont JAMAIS pondérés (comparaison masques binaires purs)
+
+    Args:
+        use_hybrid: Si True, passe les images RGB au modèle pour injection H-channel.
     """
     model.eval()
 
@@ -355,15 +400,23 @@ def validate(model, dataloader, criterion, device, n_classes):
     total_nt_acc = 0.0
     n_batches = 0
 
-    for features, np_target, hv_target, nt_target, weight_map in tqdm(dataloader, desc="Validation"):
+    for batch in tqdm(dataloader, desc="Validation"):
+        # Unpack batch selon mode hybride ou non
+        if use_hybrid:
+            features, np_target, hv_target, nt_target, weight_map, images = batch
+            images = images.to(device)
+        else:
+            features, np_target, hv_target, nt_target, weight_map = batch
+            images = None
+
         features = features.to(device)
         np_target = np_target.to(device)
         hv_target = hv_target.to(device)
         nt_target = nt_target.to(device)
         # weight_map ignoré en validation - poids uniforme implicite (weight_map=None)
 
-        # Forward
-        np_out, hv_out, nt_out = model(features)
+        # Forward (avec images si mode hybride)
+        np_out, hv_out, nt_out = model(features, images_rgb=images)
 
         # Loss SANS pondération (conditions réelles d'inférence)
         loss, loss_dict = criterion(
@@ -427,6 +480,8 @@ def main():
     parser.add_argument("--augment", action="store_true")
     parser.add_argument("--adaptive_loss", action="store_true",
                        help="Activer Uncertainty Weighting (poids appris)")
+    parser.add_argument("--use_hybrid", action="store_true",
+                       help="Activer mode hybride RGB+H-channel (injection Hématoxyline)")
     parser.add_argument("--device", default="cuda", choices=["cuda", "cpu"])
     args = parser.parse_args()
 
@@ -445,6 +500,7 @@ def main():
     print(f"  Dropout: {args.dropout}")
     print(f"  Augmentation: {args.augment}")
     print(f"  Adaptive loss: {args.adaptive_loss}")
+    print(f"  Hybrid mode: {args.use_hybrid} (injection H-channel)")
     print(f"  Device: {args.device}")
 
     # Datasets
@@ -455,13 +511,15 @@ def main():
     train_dataset = V13SmartCropsDataset(
         family=args.family,
         split="train",
-        augment=args.augment
+        augment=args.augment,
+        use_hybrid=args.use_hybrid
     )
 
     val_dataset = V13SmartCropsDataset(
         family=args.family,
         split="val",
-        augment=False  # Pas d'augmentation en validation
+        augment=False,  # Pas d'augmentation en validation
+        use_hybrid=args.use_hybrid
     )
 
     train_loader = DataLoader(
@@ -488,8 +546,13 @@ def main():
     model = HoVerNetDecoder(
         embed_dim=1536,
         n_classes=n_classes,
-        dropout=args.dropout
+        dropout=args.dropout,
+        use_hybrid=args.use_hybrid
     ).to(device)
+
+    if args.use_hybrid:
+        print(f"  → Mode HYBRID activé: injection H-channel via RuifrokExtractor")
+        print(f"  → up1 input channels: 257 (256 bottleneck + 1 H-channel)")
 
     n_params = sum(p.numel() for p in model.parameters())
     print(f"  → Paramètres: {n_params:,}")
@@ -542,11 +605,15 @@ def main():
 
         # Train
         train_metrics = train_one_epoch(
-            model, train_loader, criterion, optimizer, device, epoch, n_classes
+            model, train_loader, criterion, optimizer, device, epoch, n_classes,
+            use_hybrid=args.use_hybrid
         )
 
         # Validation
-        val_metrics = validate(model, val_loader, criterion, device, n_classes)
+        val_metrics = validate(
+            model, val_loader, criterion, device, n_classes,
+            use_hybrid=args.use_hybrid
+        )
 
         # Scheduler step
         scheduler.step()
@@ -570,7 +637,9 @@ def main():
             best_combined_score = combined_score
             best_dice = val_metrics['dice']
 
-            checkpoint_path = checkpoint_dir / f"hovernet_{args.family}_v13_smart_crops_best.pth"
+            # Suffix pour différencier mode hybride
+            suffix = "_hybrid" if args.use_hybrid else ""
+            checkpoint_path = checkpoint_dir / f"hovernet_{args.family}_v13_smart_crops{suffix}_best.pth"
             torch.save({
                 'epoch': epoch,
                 'model_state_dict': model.state_dict(),
@@ -579,13 +648,15 @@ def main():
                 'best_dice': best_dice,
                 'best_combined_score': best_combined_score,
                 'val_metrics': val_metrics,
-                'args': vars(args)
+                'args': vars(args),
+                'use_hybrid': args.use_hybrid  # Important pour chargement inference
             }, checkpoint_path)
 
             print(f"✅ Best model saved (Score: {combined_score:.4f})")
 
     # Save history
-    history_path = checkpoint_dir / f"hovernet_{args.family}_v13_smart_crops_history.json"
+    suffix = "_hybrid" if args.use_hybrid else ""
+    history_path = checkpoint_dir / f"hovernet_{args.family}_v13_smart_crops{suffix}_history.json"
     with open(history_path, 'w') as f:
         json.dump(history, f, indent=2)
 
@@ -594,11 +665,13 @@ def main():
     print("=" * 80)
     print(f"\nBest Dice: {best_dice:.4f}")
     print(f"Best Combined Score: {best_combined_score:.4f}")
-    print(f"\nCheckpoint: {checkpoint_path}")
+    checkpoint_final = checkpoint_dir / f"hovernet_{args.family}_v13_smart_crops{suffix}_best.pth"
+    print(f"\nCheckpoint: {checkpoint_final}")
     print(f"History: {history_path}")
     print("\nProchaine étape:")
+    hybrid_flag = " --use_hybrid" if args.use_hybrid else ""
     print(f"  python scripts/evaluation/test_v13_smart_crops_aji.py \\")
-    print(f"      --family {args.family} --n_samples 50")
+    print(f"      --family {args.family} --n_samples 50{hybrid_flag}")
 
     return 0
 

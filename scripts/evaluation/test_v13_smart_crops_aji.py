@@ -257,6 +257,11 @@ def main():
         default="cuda",
         choices=["cuda", "cpu"]
     )
+    parser.add_argument(
+        "--use_hybrid",
+        action="store_true",
+        help="Use hybrid mode (RGB+H-channel injection)"
+    )
     args = parser.parse_args()
 
     device = torch.device(args.device)
@@ -273,6 +278,7 @@ def main():
     print(f"  Watershed beta: {args.beta}")
     print(f"  Watershed min_size: {args.min_size}")
     print(f"  Watershed min_distance: {args.min_distance}")
+    print(f"  Hybrid mode: {args.use_hybrid} (H-channel injection)")
     print(f"  Device: {args.device}")
 
     # Load model
@@ -280,18 +286,30 @@ def main():
     print("LOADING MODEL")
     print("=" * 80)
 
+    # Check checkpoint for hybrid mode consistency
+    checkpoint = torch.load(args.checkpoint, map_location=device)
+    checkpoint_use_hybrid = checkpoint.get('use_hybrid', False)
+
+    if args.use_hybrid != checkpoint_use_hybrid:
+        print(f"  ⚠️  WARNING: Checkpoint trained with use_hybrid={checkpoint_use_hybrid}")
+        print(f"  ⚠️  But evaluation requested use_hybrid={args.use_hybrid}")
+        print(f"  ⚠️  Using checkpoint setting: use_hybrid={checkpoint_use_hybrid}")
+        args.use_hybrid = checkpoint_use_hybrid
+
     model = HoVerNetDecoder(
         embed_dim=1536,
         n_classes=n_classes,
-        dropout=0.1
+        dropout=0.1,
+        use_hybrid=args.use_hybrid
     ).to(device)
 
-    checkpoint = torch.load(args.checkpoint, map_location=device)
     model.load_state_dict(checkpoint['model_state_dict'])
     model.eval()
 
     print(f"  ✅ Checkpoint loaded (epoch {checkpoint['epoch']})")
     print(f"  Best Dice: {checkpoint.get('best_dice', 'N/A')}")
+    if args.use_hybrid:
+        print(f"  ✅ Mode HYBRID activé: injection H-channel via RuifrokExtractor")
 
     # Load validation data (targets + inst_maps)
     print("\n" + "=" * 80)
@@ -311,6 +329,18 @@ def main():
     np_targets = val_data['np_targets']  # (N_val, 224, 224)
     hv_targets = val_data['hv_targets']  # (N_val, 2, 224, 224)
     inst_maps = val_data['inst_maps']  # ✅ (N_val, 224, 224) int32 - VRAIES instances!
+
+    # Images RGB pour mode hybride (injection H-channel)
+    if args.use_hybrid:
+        if 'images' in val_data:
+            all_images = val_data['images']  # (N_val, 224, 224, 3) uint8
+            print(f"  ✅ Images RGB chargées: shape {all_images.shape}, dtype {all_images.dtype}")
+        else:
+            print(f"❌ ERROR: Mode hybride activé mais 'images' non trouvées dans {val_data_path}")
+            print(f"  Régénérez les données avec prepare_v13_smart_crops.py")
+            return 1
+    else:
+        all_images = None
 
     # Load PRE-EXTRACTED features (same as training!)
     features_path = Path(f"data/cache/family_data/{args.family}_rgb_features_v13_smart_crops_val.npz")
@@ -354,9 +384,16 @@ def main():
         # Use PRE-EXTRACTED features (same as training!)
         features = torch.from_numpy(all_features[i]).unsqueeze(0).float().to(device)  # (1, 261, 1536)
 
+        # Image RGB pour mode hybride
+        if args.use_hybrid:
+            # Convertir image HWC uint8 → CHW float32 [0, 255]
+            image = torch.from_numpy(all_images[i]).permute(2, 0, 1).unsqueeze(0).float().to(device)
+        else:
+            image = None
+
         # Forward through decoder
         with torch.no_grad():
-            np_out, hv_out, nt_out = model(features)  # (1, 2, 224, 224), (1, 2, 224, 224), (1, 5, 224, 224)
+            np_out, hv_out, nt_out = model(features, images_rgb=image)  # (1, 2, 224, 224), (1, 2, 224, 224), (1, 5, 224, 224)
 
             # Convert to numpy - USE SOFTMAX (not sigmoid!) for CrossEntropyLoss
             np_probs = torch.softmax(np_out, dim=1).cpu().numpy()[0]  # (2, 224, 224)
@@ -434,6 +471,7 @@ def main():
         "checkpoint": str(args.checkpoint),
         "family": args.family,
         "n_samples": n_to_eval,
+        "use_hybrid": args.use_hybrid,
         "watershed_params": {
             "np_threshold": args.np_threshold,
             "beta": args.beta,
@@ -460,7 +498,8 @@ def main():
     results_dir = Path("results/v13_smart_crops")
     results_dir.mkdir(parents=True, exist_ok=True)
 
-    results_file = results_dir / f"{args.family}_aji_evaluation_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+    suffix = "_hybrid" if args.use_hybrid else ""
+    results_file = results_dir / f"{args.family}{suffix}_aji_evaluation_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
     with open(results_file, 'w') as f:
         json.dump(results, f, indent=2)
 
