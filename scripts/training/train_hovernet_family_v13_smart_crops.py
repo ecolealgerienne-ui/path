@@ -417,11 +417,13 @@ def train_one_epoch(
         # Forward (avec images si mode hybride)
         np_out, hv_out, nt_out = model(features, images_rgb=images)
 
-        # Loss avec pondération spatiale Ronneberger
+        # Loss avec pondération spatiale Ronneberger + Edge-Aware Loss
+        # Edge-Aware Loss (Expert 2025-12-28): Sobel(H-channel) aligne HV magnitude
         loss, loss_dict = criterion(
             np_out, hv_out, nt_out,
             np_target, hv_target, nt_target,
-            weight_map=weight_map
+            weight_map=weight_map,
+            images_rgb=images  # Pour Edge-Aware Loss (extraction H-channel via Ruifrok)
         )
 
         # Backward
@@ -572,10 +574,12 @@ def validate(model, dataloader, criterion, device, n_classes, use_hybrid=False):
         np_out, hv_out, nt_out = model(features, images_rgb=images)
 
         # Loss SANS pondération (conditions réelles d'inférence)
+        # Note: Edge-Aware Loss toujours active pour évaluation cohérente
         loss, loss_dict = criterion(
             np_out, hv_out, nt_out,
             np_target, hv_target, nt_target,
-            weight_map=None  # ← Poids uniforme pour VAL
+            weight_map=None,  # ← Poids uniforme pour VAL
+            images_rgb=images  # Pour Edge-Aware Loss
         )
 
         # Métriques
@@ -633,6 +637,8 @@ def main():
     parser.add_argument("--lambda_nt", type=float, default=1.0)
     parser.add_argument("--lambda_magnitude", type=float, default=1.0,
                        help="Poids magnitude loss (force gradients HV)")
+    parser.add_argument("--lambda_edge", type=float, default=0.5,
+                       help="Poids Edge-Aware Loss (Sobel sur H-channel) - Expert 2025-12-28")
     parser.add_argument("--dropout", type=float, default=0.4,
                        help="Dropout rate pour régularisation")
     parser.add_argument("--augment", action="store_true")
@@ -654,7 +660,7 @@ def main():
     print(f"  Epochs: {args.epochs}")
     print(f"  Batch size: {args.batch_size}")
     print(f"  Learning rate: {args.lr}")
-    print(f"  Lambda (NP/HV/NT/Mag): {args.lambda_np}/{args.lambda_hv}/{args.lambda_nt}/{args.lambda_magnitude}")
+    print(f"  Lambda (NP/HV/NT/Mag/Edge): {args.lambda_np}/{args.lambda_hv}/{args.lambda_nt}/{args.lambda_magnitude}/{args.lambda_edge}")
     print(f"  Lambda HV scheduler: {args.lambda_hv} (epochs 1-{args.lambda_hv_boost_epoch-1}) → {args.lambda_hv_boost} (epochs {args.lambda_hv_boost_epoch}+)")
     print(f"  Dropout: {args.dropout}")
     print(f"  Augmentation: {args.augment}")
@@ -722,6 +728,7 @@ def main():
         lambda_hv=args.lambda_hv,
         lambda_nt=args.lambda_nt,
         lambda_magnitude=args.lambda_magnitude,
+        lambda_edge=args.lambda_edge,  # Edge-Aware Loss (Expert 2025-12-28)
         adaptive=args.adaptive_loss
     )
 

@@ -487,6 +487,7 @@ class HoVerNetLoss(nn.Module):
         lambda_hv: float = 5.0,
         lambda_nt: float = 1.0,
         lambda_magnitude: float = 5.0,
+        lambda_edge: float = 0.5,
         adaptive: bool = False,
     ):
         """
@@ -495,6 +496,7 @@ class HoVerNetLoss(nn.Module):
             lambda_hv: Poids branche HV (séparation instances) - 5.0 pour V13-Hybrid V2
             lambda_nt: Poids branche NT (typage cellulaire)
             lambda_magnitude: Poids magnitude loss (Expert: 5.0 pour forcer gradients forts)
+            lambda_edge: Poids Edge-Aware loss (Expert 2025-12-28: force compréhension contours H)
             adaptive: Si True, utilise Uncertainty Weighting (poids appris)
         """
         super().__init__()
@@ -502,6 +504,7 @@ class HoVerNetLoss(nn.Module):
         self.lambda_hv = lambda_hv
         self.lambda_nt = lambda_nt
         self.lambda_magnitude = lambda_magnitude
+        self.lambda_edge = lambda_edge
         self.adaptive = adaptive
 
         # NP Loss: Focal + Dice (Phase 1 Phased Training)
@@ -509,6 +512,16 @@ class HoVerNetLoss(nn.Module):
         # et se concentre sur les exemples difficiles (bords)
         self.focal_loss = FocalLoss(alpha=0.25, gamma=2.0)
         self.smooth_l1 = nn.SmoothL1Loss()
+
+        # Sobel kernels pour Edge-Aware Loss (Expert 2025-12-28)
+        # Force le modèle à "comprendre" les contours du H-channel, pas juste les "regarder"
+        sobel_x = torch.tensor([[-1, 0, 1], [-2, 0, 2], [-1, 0, 1]], dtype=torch.float32)
+        sobel_y = torch.tensor([[-1, -2, -1], [0, 0, 0], [1, 2, 1]], dtype=torch.float32)
+        self.register_buffer('sobel_x', sobel_x.view(1, 1, 3, 3))
+        self.register_buffer('sobel_y', sobel_y.view(1, 1, 3, 3))
+
+        # Matrice staining Ruifrok pour extraction H-channel (même que RuifrokExtractor)
+        self.register_buffer('stain_h', torch.tensor([0.650, 0.704, 0.286]).view(1, 3, 1, 1))
 
         # Uncertainty Weighting: log(σ²) pour chaque tâche (paramètres appris)
         # Initialisés à 0 → σ² = 1 → poids effectif = 1
@@ -650,6 +663,70 @@ class HoVerNetLoss(nn.Module):
             # Fallback sans masque (ne devrait jamais arriver en pratique)
             return loss.mean()
 
+    def edge_aware_loss(
+        self,
+        hv_pred: torch.Tensor,
+        images_rgb: torch.Tensor,
+        mask: torch.Tensor = None
+    ) -> torch.Tensor:
+        """
+        Edge-Aware Loss: Force le modèle à "comprendre" les contours du H-channel.
+
+        EXPERT RECOMMENDATION (2025-12-28):
+        "Actuellement, le modèle 'regarde' le canal H. Avec cette perte, il doit
+        'comprendre' les bords du canal H. C'est le signal ultime pour l'AJI."
+
+        Concept:
+        1. Sobel sur H-channel → edges "idéales" (contours chromatine réelle)
+        2. HV magnitude → edges prédites par le modèle
+        3. MSE entre les deux → force alignement précis des frontières
+
+        Le H-channel (Hématoxyline) contient l'information de densité chromatinienne.
+        Les transitions abruptes de H indiquent les vraies frontières entre noyaux.
+        En forçant HV_magnitude ≈ Sobel(H), le modèle apprend des frontières
+        anatomiquement correctes.
+
+        Args:
+            hv_pred: Prédictions HV (B, 2, H, W) - float [-1, 1]
+            images_rgb: Images RGB originales (B, 3, H, W) - uint8-like [0, 255]
+            mask: Masque noyaux (B, 1, H, W) - binary [0, 1]
+
+        Returns:
+            Scalar loss (MSE entre HV magnitude et Sobel(H-channel))
+
+        Impact attendu: AJI +10% (Expert estimate)
+        """
+        # 1. Extraire H-channel via déconvolution Ruifrok
+        #    RGB → Optical Density → projection sur vecteur Hématoxyline
+        images_rgb = images_rgb.clamp(1e-6, 255.0)
+        od = -torch.log10(images_rgb / 255.0 + 1e-6)  # RGB → OD
+        h_channel = torch.sum(od * self.stain_h, dim=1, keepdim=True)  # (B, 1, H, W)
+
+        # 2. Sobel sur H-channel → edges "idéales"
+        #    Les gradients forts de H indiquent les vraies frontières chromatine
+        h_grad_x = F.conv2d(h_channel, self.sobel_x, padding=1)
+        h_grad_y = F.conv2d(h_channel, self.sobel_y, padding=1)
+        h_edges = torch.sqrt(h_grad_x**2 + h_grad_y**2 + 1e-6)  # (B, 1, H, W)
+
+        # Normaliser h_edges pour être dans une plage comparable à HV magnitude
+        # HV magnitude typique: [0, sqrt(2)] ≈ [0, 1.4]
+        # Sobel(H) brut peut être beaucoup plus grand
+        h_edges = h_edges / (h_edges.max() + 1e-6)  # Normaliser à [0, 1]
+
+        # 3. HV magnitude prédite
+        hv_magnitude = torch.sqrt(hv_pred[:, 0:1]**2 + hv_pred[:, 1:2]**2 + 1e-6)  # (B, 1, H, W)
+
+        # Normaliser aussi HV magnitude (important pour MSE équitable)
+        hv_magnitude_norm = hv_magnitude / (hv_magnitude.max() + 1e-6)
+
+        # 4. MSE entre les deux (masqué sur noyaux)
+        if mask is not None and mask.sum() > 0:
+            # MSE uniquement sur pixels de noyaux
+            loss = ((hv_magnitude_norm - h_edges) ** 2) * mask
+            return loss.sum() / (mask.sum() + 1e-6)
+        else:
+            return F.mse_loss(hv_magnitude_norm, h_edges)
+
     def forward(
         self,
         np_pred: torch.Tensor,
@@ -659,6 +736,7 @@ class HoVerNetLoss(nn.Module):
         hv_target: torch.Tensor,
         nt_target: torch.Tensor,
         weight_map: torch.Tensor = None,
+        images_rgb: torch.Tensor = None,
     ) -> Tuple[torch.Tensor, dict]:
         """
         Calcule la loss totale.
@@ -666,6 +744,8 @@ class HoVerNetLoss(nn.Module):
         Args:
             weight_map: Carte de poids Ronneberger (B, H, W) pour sur-pondérer
                        les frontières inter-cellulaires. Si None, poids uniforme.
+            images_rgb: Images RGB originales (B, 3, H, W) pour Edge-Aware Loss.
+                       Si None, Edge-Aware Loss n'est pas calculée.
 
         Returns:
             total_loss, dict avec losses individuelles
@@ -763,6 +843,15 @@ class HoVerNetLoss(nn.Module):
         else:
             nt_loss = torch.tensor(0.0, device=nt_pred.device)
 
+        # Edge-Aware Loss (Expert 2025-12-28): Force le modèle à aligner HV magnitude
+        # avec les edges réelles du canal Hématoxyline (Sobel sur H-channel).
+        # Le H-channel montre la vraie chromatine → vraies frontières nucléaires.
+        # GAIN ATTENDU: +10% AJI en forçant l'alignement anatomique des prédictions.
+        if images_rgb is not None and self.lambda_edge > 0:
+            edge_loss = self.edge_aware_loss(hv_pred, images_rgb, mask=mask)
+        else:
+            edge_loss = torch.tensor(0.0, device=hv_pred.device)
+
         # Calcul du total selon le mode
         if self.adaptive:
             # Uncertainty Weighting: L = L_i / (2σ²_i) + log(σ_i)
@@ -773,6 +862,8 @@ class HoVerNetLoss(nn.Module):
                 torch.exp(-self.log_var_hv) * hv_loss + self.log_var_hv +
                 torch.exp(-self.log_var_nt) * nt_loss + self.log_var_nt
             )
+            # Ajouter Edge Loss (pas en mode adaptive, poids fixe)
+            total = total + self.lambda_edge * edge_loss
 
             # Calculer les poids effectifs pour monitoring
             w_np = torch.exp(-self.log_var_np).item()
@@ -787,6 +878,7 @@ class HoVerNetLoss(nn.Module):
                 'hv_l1': hv_l1.item(),
                 'hv_gradient': hv_gradient.item(),
                 'hv_magnitude': hv_magnitude.item(),
+                'edge': edge_loss.item(),
                 'nt': nt_loss.item(),
                 'w_np': w_np,
                 'w_hv': w_hv,
@@ -794,7 +886,12 @@ class HoVerNetLoss(nn.Module):
             }
         else:
             # Poids fixes
-            total = self.lambda_np * np_loss + self.lambda_hv * hv_loss + self.lambda_nt * nt_loss
+            total = (
+                self.lambda_np * np_loss +
+                self.lambda_hv * hv_loss +
+                self.lambda_nt * nt_loss +
+                self.lambda_edge * edge_loss
+            )
 
             return total, {
                 'np': np_loss.item(),
@@ -804,6 +901,7 @@ class HoVerNetLoss(nn.Module):
                 'hv_l1': hv_l1.item(),
                 'hv_gradient': hv_gradient.item(),
                 'hv_magnitude': hv_magnitude.item(),
+                'edge': edge_loss.item(),
                 'nt': nt_loss.item(),
             }
 
