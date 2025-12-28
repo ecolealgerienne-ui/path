@@ -304,15 +304,23 @@ class HoVerNetDecoder(nn.Module):
             nn.Dropout2d(dropout) if dropout > 0 else nn.Identity(),
         )
 
-        # ===== MODE HYBRID V2: Extracteur H-channel (injection haute résolution) =====
+        # ===== MODE HYBRID V3: Extracteur H-channel AMPLIFIÉ =====
+        # V2 Problem: H-channel (1 canal) noyé par features (64 canaux) → 1.5% contribution
+        # V3 Solution: Projeter H-channel sur 16 canaux → 16/(64+16) = 20% contribution
+        self.h_projection_dim = 16  # Nombre de canaux pour H-channel amplifié
         if use_hybrid:
             self.ruifrok = RuifrokExtractor()
-            # V2: up1 garde 256 canaux (pas d'injection au bottleneck)
+            # Projection 1 → 16 canaux avec conv 1x1 (learnable)
+            self.h_projection = nn.Sequential(
+                nn.Conv2d(1, self.h_projection_dim, kernel_size=1),
+                nn.ReLU(inplace=True),
+            )
             up1_in_channels = bottleneck_dim  # 256
             # L'injection se fait APRÈS up4, au niveau 224×224
-            head_in_channels = 64 + 1  # 65 = features(64) + H-channel(1)
+            head_in_channels = 64 + self.h_projection_dim  # 80 = features(64) + H-channel(16)
         else:
             self.ruifrok = None
+            self.h_projection = None
             up1_in_channels = bottleneck_dim  # 256
             head_in_channels = 64
 
@@ -439,11 +447,17 @@ class HoVerNetDecoder(nn.Module):
             h_channel = self.ruifrok(images_rgb, target_size=self.img_size)
             # h_channel: (B, 1, 224, 224) ← HAUTE RÉSOLUTION, normalisé N(0,1)
 
+            # V3: Amplifier H-channel de 1 → 16 canaux pour augmenter son influence
+            # Avant: 1/(64+1) = 1.5% contribution → noyé par features
+            # Après: 16/(64+16) = 20% contribution → influence significative
+            h_channel = self.h_projection(h_channel)
+            # h_channel: (B, 16, 224, 224) ← AMPLIFIÉ
+
             # Concaténer avec features décodées (skip-connection chimique)
-            x = torch.cat([x, h_channel], dim=1)  # (B, 65, 224, 224)
+            x = torch.cat([x, h_channel], dim=1)  # (B, 80, 224, 224)
 
         # Têtes spécialisées (légères, partagent les features du tronc)
-        # V2 Hybrid: prennent 65 canaux (64 features + 1 H-channel)
+        # V3 Hybrid: prennent 80 canaux (64 features + 16 H-channel amplifié)
         np_out = self.np_head(x)
         hv_out = self.hv_head(x)
         nt_out = self.nt_head(x)

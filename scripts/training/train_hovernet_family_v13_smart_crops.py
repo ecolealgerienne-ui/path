@@ -450,13 +450,24 @@ def train_one_epoch(
             else:
                 feat_grad = 0.0
 
-            # Gradient sur InstanceNorm du H-channel (si mode hybride)
-            # Note: L'attribut est 'ruifrok' dans HoVerNetDecoder, pas 'h_extractor'
-            h_norm_grad = 0.0  # Initialiser par défaut
-            if use_hybrid and hasattr(model, 'ruifrok') and hasattr(model.ruifrok, 'instance_norm'):
-                if model.ruifrok.instance_norm.weight is not None and model.ruifrok.instance_norm.weight.grad is not None:
-                    h_norm_grad = model.ruifrok.instance_norm.weight.grad.norm().item()
-                h_grad_magnitudes.append(h_norm_grad)
+            # Gradient sur H-channel (si mode hybride)
+            # V3: Monitorer à la fois InstanceNorm et h_projection
+            h_norm_grad = 0.0
+            h_proj_grad = 0.0
+            if use_hybrid:
+                # InstanceNorm dans RuifrokExtractor
+                if hasattr(model, 'ruifrok') and hasattr(model.ruifrok, 'instance_norm'):
+                    if model.ruifrok.instance_norm.weight is not None and model.ruifrok.instance_norm.weight.grad is not None:
+                        h_norm_grad = model.ruifrok.instance_norm.weight.grad.norm().item()
+
+                # Projection 1→16 canaux (V3)
+                if hasattr(model, 'h_projection') and model.h_projection is not None:
+                    # h_projection est un Sequential, prendre le premier Conv2d
+                    if hasattr(model.h_projection[0], 'weight') and model.h_projection[0].weight.grad is not None:
+                        h_proj_grad = model.h_projection[0].weight.grad.norm().item()
+
+                h_total_grad = h_norm_grad + h_proj_grad
+                h_grad_magnitudes.append(h_total_grad)
 
             feature_grad_magnitudes.append(feat_grad)
 
@@ -466,12 +477,14 @@ def train_one_epoch(
                 print(f"   Bottleneck grad norm:    {feat_grad:.6f}")
                 if use_hybrid:
                     print(f"   H-channel InstanceNorm:  {h_norm_grad:.6f}")
-                    if h_norm_grad < 1e-6:
+                    print(f"   H-channel Projection:    {h_proj_grad:.6f}")
+                    h_total = h_norm_grad + h_proj_grad
+                    if h_total < 1e-6:
                         print(f"   ⚠️  ALERTE: H-channel gradient ≈ 0 → Passager Clandestin!")
-                    elif h_norm_grad < feat_grad * 0.01:
-                        print(f"   ⚠️  ALERTE: H-channel gradient < 1% features → sous-exploité")
+                    elif h_total < feat_grad * 0.05:
+                        print(f"   ⚠️  ALERTE: H-channel gradient < 5% features → sous-exploité")
                     else:
-                        print(f"   ✅ H-channel gradient OK (ratio: {h_norm_grad/feat_grad:.2%})")
+                        print(f"   ✅ H-channel gradient OK (ratio: {h_total/feat_grad:.2%})")
 
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
         optimizer.step()
