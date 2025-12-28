@@ -696,16 +696,22 @@ class HoVerNetLoss(nn.Module):
 
         Impact attendu: AJI +10% (Expert estimate)
         """
+        # Déplacer buffers sur le même device que les images
+        device = images_rgb.device
+        stain_h = self.stain_h.to(device)
+        sobel_x = self.sobel_x.to(device)
+        sobel_y = self.sobel_y.to(device)
+
         # 1. Extraire H-channel via déconvolution Ruifrok
         #    RGB → Optical Density → projection sur vecteur Hématoxyline
         images_rgb = images_rgb.clamp(1e-6, 255.0)
         od = -torch.log10(images_rgb / 255.0 + 1e-6)  # RGB → OD
-        h_channel = torch.sum(od * self.stain_h, dim=1, keepdim=True)  # (B, 1, H, W)
+        h_channel = torch.sum(od * stain_h, dim=1, keepdim=True)  # (B, 1, H, W)
 
         # 2. Sobel sur H-channel → edges "idéales"
         #    Les gradients forts de H indiquent les vraies frontières chromatine
-        h_grad_x = F.conv2d(h_channel, self.sobel_x, padding=1)
-        h_grad_y = F.conv2d(h_channel, self.sobel_y, padding=1)
+        h_grad_x = F.conv2d(h_channel, sobel_x, padding=1)
+        h_grad_y = F.conv2d(h_channel, sobel_y, padding=1)
         h_edges = torch.sqrt(h_grad_x**2 + h_grad_y**2 + 1e-6)  # (B, 1, H, W)
 
         # Normaliser h_edges pour être dans une plage comparable à HV magnitude
