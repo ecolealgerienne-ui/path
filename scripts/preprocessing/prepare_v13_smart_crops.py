@@ -109,7 +109,20 @@ def extract_pannuke_instances(mask: np.ndarray) -> np.ndarray:
 
 def compute_hv_maps(inst_map: np.ndarray) -> np.ndarray:
     """
-    Calcule cartes HV (Horizontal/Vertical) centripètes.
+    Calcule cartes HV (Horizontal/Vertical) centripètes via Distance Transform.
+
+    AMÉLIORATION 2025-12-28: Utilise Distance Transform au lieu du centroïde.
+
+    Problème avec centroïde (mean):
+    - Pour les noyaux concaves (forme de C, rein), le centroïde peut
+      tomber EN DEHORS du noyau, dans le vide/background.
+    - Les vecteurs HV pointent vers un centre inexistant.
+    - Le Watershed ne trouve pas de "pic d'énergie" → instances perdues.
+
+    Solution Distance Transform:
+    - Le centre est le pixel le plus ÉLOIGNÉ des bords (le plus "profond").
+    - Garantit que le centre est TOUJOURS à l'intérieur du noyau.
+    - Robuste pour toutes les formes (rondes, allongées, concaves).
 
     Args:
         inst_map: Instance map (H, W) int32
@@ -117,6 +130,8 @@ def compute_hv_maps(inst_map: np.ndarray) -> np.ndarray:
     Returns:
         hv_map: (2, H, W) float32 [-1, 1]
     """
+    from scipy.ndimage import distance_transform_edt
+
     h, w = inst_map.shape
     hv_map = np.zeros((2, h, w), dtype=np.float32)
 
@@ -130,11 +145,13 @@ def compute_hv_maps(inst_map: np.ndarray) -> np.ndarray:
         if len(y_coords) == 0:
             continue
 
-        # Centroïde
-        cy = y_coords.mean()
-        cx = x_coords.mean()
+        # Distance Transform: trouver le pixel le plus éloigné des bords
+        # C'est le "vrai centre biologique" du noyau
+        dist_map = distance_transform_edt(inst_mask)
+        idx_max = np.argmax(dist_map)
+        cy, cx = np.unravel_index(idx_max, inst_mask.shape)
 
-        # Max distances pour normalisation
+        # Max distances pour normalisation [-1, 1]
         max_dist_y = max(abs(y_coords - cy).max(), 1e-6)
         max_dist_x = max(abs(x_coords - cx).max(), 1e-6)
 
