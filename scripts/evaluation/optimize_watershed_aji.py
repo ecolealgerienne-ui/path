@@ -5,10 +5,14 @@ Optimisation des paramètres Watershed pour améliorer l'AJI.
 Ce script effectue un grid search sur les paramètres du watershed post-processing
 pour trouver la configuration optimale qui maximise l'AJI.
 
+L'algorithme hv_to_instances est IDENTIQUE à celui de test_v13_smart_crops_aji.py
+pour garantir la cohérence des résultats.
+
 Paramètres optimisés:
-- beta: Poids de la magnitude HV dans l'énergie (0.5 à 2.0)
-- min_size: Taille minimale des instances (10 à 50 pixels)
-- dist_threshold: Seuil de distance pour les markers (0.3 à 0.7)
+- beta: Exposant de la magnitude HV pour suppression frontières (expert: ~2.0)
+- min_size: Taille minimale des instances en pixels (expert: ~50)
+- np_threshold: Seuil de binarisation NP (default: 0.35)
+- min_distance: Distance minimale entre pics pour peak_local_max (default: 3)
 
 Usage:
     python scripts/evaluation/optimize_watershed_aji.py \
@@ -103,68 +107,94 @@ def compute_aji(pred_inst: np.ndarray, gt_inst: np.ndarray) -> float:
 def hv_to_instances(
     np_pred: np.ndarray,
     hv_pred: np.ndarray,
-    beta: float = 1.5,
+    beta: float = 0.5,
     min_size: int = 40,
-    dist_threshold: float = 0.5
+    np_threshold: float = 0.35,
+    min_distance: int = 3,
+    debug: bool = False
 ) -> np.ndarray:
     """
-    Convert NP mask and HV maps to instance segmentation using watershed.
+    HV-guided watershed for instance segmentation.
+
+    IMPORTANT: This function matches test_v13_smart_crops_aji.py exactly.
 
     Args:
-        np_pred: Binary nuclear presence mask (H, W)
-        hv_pred: HV maps (2, H, W) with H and V components
-        beta: Weight for HV magnitude in energy (higher = more separation)
+        np_pred: Nuclear presence mask (H, W) in [0, 1]
+        hv_pred: HV maps (2, H, W) in [-1, 1]
+        beta: HV magnitude exponent for boundary suppression
         min_size: Minimum instance size in pixels
-        dist_threshold: Threshold for distance transform (fraction of max)
+        np_threshold: Threshold for NP binarization
+        min_distance: Minimum distance between peaks
+        debug: Print debug info for sanity checking
 
     Returns:
         Instance segmentation map (H, W) with unique IDs per instance
     """
-    if np_pred.sum() == 0:
+    from skimage.feature import peak_local_max
+    from skimage.measure import label as skimage_label
+
+    # Threshold NP to get binary mask
+    np_binary = (np_pred > np_threshold).astype(np.uint8)
+
+    if np_binary.sum() == 0:
         return np.zeros_like(np_pred, dtype=np.int32)
 
-    # Binary mask
-    binary_mask = (np_pred > 0.5).astype(np.uint8)
-
     # Distance transform
-    dist = distance_transform_edt(binary_mask)
+    dist = distance_transform_edt(np_binary)
 
-    # HV magnitude
-    h_map = hv_pred[0]
-    v_map = hv_pred[1]
-    hv_mag = np.sqrt(h_map**2 + v_map**2)
+    # HV magnitude (range [0, sqrt(2)]) - NO NORMALIZATION
+    hv_h = hv_pred[0]
+    hv_v = hv_pred[1]
+    hv_magnitude = np.sqrt(hv_h**2 + hv_v**2)
 
-    # Normalize HV magnitude to [0, 1]
-    hv_mag_norm = (hv_mag - hv_mag.min()) / (hv_mag.max() - hv_mag.min() + 1e-8)
+    # HV-guided marker energy
+    marker_energy = dist * (1 - hv_magnitude ** beta)
 
-    # Energy: combination of distance and HV magnitude
-    # High energy at centers (high dist, low HV mag)
-    # Low energy at boundaries (low dist, high HV mag)
-    energy = dist * (1 - hv_mag_norm ** beta)
+    # Find local maxima as markers using peak_local_max
+    markers_coords = peak_local_max(
+        marker_energy,
+        min_distance=min_distance,
+        threshold_abs=0.1,
+        exclude_border=False
+    )
 
-    # Find markers (local maxima of energy within mask)
-    markers_mask = (energy > dist_threshold * energy.max()) & (binary_mask > 0)
-    markers, n_markers = label(markers_mask)
+    if debug:
+        print(f"    peak_local_max found {len(markers_coords)} markers")
 
-    if n_markers == 0:
-        # Fallback: use connected components
-        markers, n_markers = label(binary_mask)
+    # Create markers map with sequential IDs
+    markers = np.zeros_like(np_binary, dtype=np.int32)
+    for i, (y, x) in enumerate(markers_coords, start=1):
+        markers[y, x] = i
 
-    # Watershed
-    inst_map = watershed(-energy, markers, mask=binary_mask)
+    # If no markers found, return empty
+    if markers.max() == 0:
+        if debug:
+            print("    WARNING: No markers found!")
+        return np.zeros_like(np_pred, dtype=np.int32)
 
-    # Remove small objects
+    # Watershed - propagates marker IDs to all connected pixels
+    inst_map = watershed(-dist, markers, mask=np_binary)
+
+    if debug:
+        unique_before = np.unique(inst_map)
+        print(f"    After watershed: {len(unique_before)} unique values: {unique_before[:10]}...")
+
+    # Remove small objects - requires labeled input
     if min_size > 0:
+        # Ensure proper labeling before remove_small_objects
+        inst_map = skimage_label(inst_map)
         inst_map = remove_small_objects(inst_map.astype(np.int32), min_size=min_size)
-        # Relabel to sequential IDs
-        unique_ids = np.unique(inst_map)
-        unique_ids = unique_ids[unique_ids > 0]
-        new_inst_map = np.zeros_like(inst_map)
-        for new_id, old_id in enumerate(unique_ids, start=1):
-            new_inst_map[inst_map == old_id] = new_id
-        inst_map = new_inst_map
+        # Relabel to ensure consecutive IDs after removal
+        inst_map = skimage_label(inst_map)
 
-    return inst_map
+    if debug:
+        unique_after = np.unique(inst_map)
+        n_instances = len(unique_after) - 1  # Exclude background (0)
+        print(f"    After remove_small_objects: {n_instances} instances")
+        if n_instances <= 1:
+            print(f"    WARNING: Only {n_instances} instance(s)! unique={unique_after}")
+
+    return inst_map.astype(np.int32)
 
 
 def load_model_and_data(checkpoint_path: str, family: str, device: str = "cuda"):
@@ -271,12 +301,19 @@ def grid_search(
     use_hybrid,
     n_samples: int,
     device: str,
-    beta_range: list = [0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0],
-    min_size_range: list = [10, 20, 30, 40, 50],
-    dist_threshold_range: list = [0.3, 0.4, 0.5, 0.6, 0.7]
+    beta_range: list = [0.5, 1.0, 1.5, 2.0, 2.5],
+    min_size_range: list = [20, 30, 40, 50, 60],
+    np_threshold_range: list = [0.3, 0.35, 0.4, 0.45],
+    min_distance_range: list = [2, 3, 4, 5]
 ):
     """
     Grid search over watershed parameters.
+
+    Parameters optimized (matching test_v13_smart_crops_aji.py):
+    - beta: HV magnitude exponent for boundary suppression (expert suggests ~2.0)
+    - min_size: Minimum instance size in pixels (expert suggests ~50)
+    - np_threshold: NP binarization threshold
+    - min_distance: Minimum distance between peak markers
 
     Returns:
         Best parameters and full results grid
@@ -287,14 +324,17 @@ def grid_search(
 
     n_to_eval = min(n_samples, len(images))
 
+    total_configs = len(beta_range) * len(min_size_range) * len(np_threshold_range) * len(min_distance_range)
+
     print(f"\n{'='*70}")
     print(f"GRID SEARCH WATERSHED PARAMETERS")
     print(f"{'='*70}")
     print(f"Samples: {n_to_eval}")
     print(f"Beta values: {beta_range}")
     print(f"Min size values: {min_size_range}")
-    print(f"Dist threshold values: {dist_threshold_range}")
-    print(f"Total configurations: {len(beta_range) * len(min_size_range) * len(dist_threshold_range)}")
+    print(f"NP threshold values: {np_threshold_range}")
+    print(f"Min distance values: {min_distance_range}")
+    print(f"Total configurations: {total_configs}")
     print(f"{'='*70}\n")
 
     # First, run inference on all samples and cache predictions
@@ -306,17 +346,38 @@ def grid_search(
         if (i + 1) % 10 == 0:
             print(f"  Inference: {i+1}/{n_to_eval}")
 
-    print(f"\nEvaluating {len(beta_range) * len(min_size_range) * len(dist_threshold_range)} configurations...")
+    # Sanity check: verify labeling works on first 3 samples
+    print("\n🔍 SANITY CHECK: Verifying instance labeling on first 3 samples...")
+    for i in range(min(3, n_to_eval)):
+        np_pred, hv_pred = predictions[i]
+        gt_inst = inst_maps[i]
+        n_gt = len(np.unique(gt_inst)) - 1
+
+        # Run with debug=True
+        pred_inst = hv_to_instances(
+            np_pred, hv_pred,
+            beta=1.5, min_size=40, np_threshold=0.35, min_distance=3,
+            debug=True
+        )
+        n_pred = len(np.unique(pred_inst)) - 1
+
+        print(f"  Sample {i}: GT={n_gt} instances, Pred={n_pred} instances")
+
+        if n_pred == 0 or n_pred == 1:
+            print(f"  ⚠️  WARNING: Very few instances detected! Check labeling.")
+
+    print("✅ Sanity check complete\n")
+
+    print(f"\nEvaluating {total_configs} configurations...")
 
     # Grid search
     results = []
     best_aji = 0
     best_params = None
 
-    total_configs = len(beta_range) * len(min_size_range) * len(dist_threshold_range)
     config_idx = 0
 
-    for beta, min_size, dist_thresh in product(beta_range, min_size_range, dist_threshold_range):
+    for beta, min_size, np_thresh, min_dist in product(beta_range, min_size_range, np_threshold_range, min_distance_range):
         config_idx += 1
 
         ajis = []
@@ -328,7 +389,13 @@ def grid_search(
             gt_inst = inst_maps[i]
 
             # Convert to instances with current parameters
-            pred_inst = hv_to_instances(np_pred, hv_pred, beta, min_size, dist_thresh)
+            pred_inst = hv_to_instances(
+                np_pred, hv_pred,
+                beta=beta,
+                min_size=min_size,
+                np_threshold=np_thresh,
+                min_distance=min_dist
+            )
 
             # Compute AJI
             aji = compute_aji(pred_inst, gt_inst)
@@ -346,7 +413,8 @@ def grid_search(
         results.append({
             'beta': beta,
             'min_size': min_size,
-            'dist_threshold': dist_thresh,
+            'np_threshold': np_thresh,
+            'min_distance': min_dist,
             'aji_mean': mean_aji,
             'aji_std': std_aji,
             'n_pred': mean_n_pred,
@@ -356,9 +424,14 @@ def grid_search(
 
         if mean_aji > best_aji:
             best_aji = mean_aji
-            best_params = {'beta': beta, 'min_size': min_size, 'dist_threshold': dist_thresh}
+            best_params = {
+                'beta': beta,
+                'min_size': min_size,
+                'np_threshold': np_thresh,
+                'min_distance': min_dist
+            }
 
-        if config_idx % 20 == 0:
+        if config_idx % 50 == 0:
             print(f"  Progress: {config_idx}/{total_configs} - Current best AJI: {best_aji:.4f}")
 
     return best_params, results
@@ -398,32 +471,34 @@ def main():
     results_sorted = sorted(results, key=lambda x: x['aji_mean'], reverse=True)
 
     # Print top 10 configurations
-    print(f"\n{'='*70}")
+    print(f"\n{'='*80}")
     print("TOP 10 CONFIGURATIONS")
-    print(f"{'='*70}")
-    print(f"{'Rank':<6} {'Beta':<8} {'MinSize':<10} {'DistThr':<10} {'AJI Mean':<12} {'AJI Std':<10} {'OverSeg':<10}")
-    print(f"{'-'*70}")
+    print(f"{'='*80}")
+    print(f"{'Rank':<6} {'Beta':<8} {'MinSize':<10} {'NP_Thr':<10} {'MinDist':<10} {'AJI Mean':<12} {'OverSeg':<10}")
+    print(f"{'-'*80}")
 
     for i, r in enumerate(results_sorted[:10]):
-        print(f"{i+1:<6} {r['beta']:<8.2f} {r['min_size']:<10} {r['dist_threshold']:<10.2f} "
-              f"{r['aji_mean']:<12.4f} {r['aji_std']:<10.4f} {r['over_seg_ratio']:<10.2f}")
+        print(f"{i+1:<6} {r['beta']:<8.2f} {r['min_size']:<10} {r['np_threshold']:<10.2f} "
+              f"{r['min_distance']:<10} {r['aji_mean']:<12.4f} {r['over_seg_ratio']:<10.2f}")
 
     # Print best configuration
-    print(f"\n{'='*70}")
+    print(f"\n{'='*80}")
     print("BEST CONFIGURATION")
-    print(f"{'='*70}")
+    print(f"{'='*80}")
     print(f"  Beta:            {best_params['beta']}")
     print(f"  Min Size:        {best_params['min_size']}")
-    print(f"  Dist Threshold:  {best_params['dist_threshold']}")
+    print(f"  NP Threshold:    {best_params['np_threshold']}")
+    print(f"  Min Distance:    {best_params['min_distance']}")
     print(f"  AJI Mean:        {results_sorted[0]['aji_mean']:.4f} ± {results_sorted[0]['aji_std']:.4f}")
     print(f"  Over-seg Ratio:  {results_sorted[0]['over_seg_ratio']:.2f}")
-    print(f"{'='*70}")
+    print(f"{'='*80}")
 
-    # Compare with default parameters
-    default_result = next((r for r in results if r['beta'] == 1.5 and r['min_size'] == 40 and r['dist_threshold'] == 0.5), None)
+    # Compare with default parameters (from test_v13_smart_crops_aji.py)
+    default_result = next((r for r in results if r['beta'] == 0.5 and r['min_size'] == 40
+                           and r['np_threshold'] == 0.35 and r['min_distance'] == 3), None)
     if default_result:
         improvement = (results_sorted[0]['aji_mean'] - default_result['aji_mean']) / default_result['aji_mean'] * 100
-        print(f"\nComparison with default (beta=1.5, min_size=40, dist_thresh=0.5):")
+        print(f"\nComparison with default (beta=0.5, min_size=40, np_threshold=0.35, min_distance=3):")
         print(f"  Default AJI:   {default_result['aji_mean']:.4f}")
         print(f"  Optimized AJI: {results_sorted[0]['aji_mean']:.4f}")
         print(f"  Improvement:   {improvement:+.1f}%")
@@ -450,14 +525,15 @@ def main():
     print(f"\nResults saved to: {results_file}")
 
     # Print usage recommendation
-    print(f"\n{'='*70}")
+    print(f"\n{'='*80}")
     print("RECOMMENDATION")
-    print(f"{'='*70}")
-    print(f"Update hv_to_instances() in test_v13_smart_crops_aji.py with:")
+    print(f"{'='*80}")
+    print(f"Update hv_guided_watershed() in test_v13_smart_crops_aji.py with:")
     print(f"  beta={best_params['beta']}")
     print(f"  min_size={best_params['min_size']}")
-    print(f"  dist_threshold={best_params['dist_threshold']}")
-    print(f"{'='*70}\n")
+    print(f"  np_threshold={best_params['np_threshold']}")
+    print(f"  min_distance={best_params['min_distance']}")
+    print(f"{'='*80}\n")
 
 
 if __name__ == "__main__":
