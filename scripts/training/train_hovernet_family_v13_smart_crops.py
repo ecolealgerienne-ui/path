@@ -646,6 +646,8 @@ def main():
                        help="Activer Uncertainty Weighting (poids appris)")
     parser.add_argument("--use_hybrid", action="store_true",
                        help="Activer mode hybride RGB+H-channel (injection Hématoxyline)")
+    parser.add_argument("--use_se_block", action="store_true",
+                       help="Activer SE-Block pour recalibration attention sur H-channel (Hu et al. 2018)")
     parser.add_argument("--device", default="cuda", choices=["cuda", "cpu"])
     args = parser.parse_args()
 
@@ -666,6 +668,7 @@ def main():
     print(f"  Augmentation: {args.augment}")
     print(f"  Adaptive loss: {args.adaptive_loss}")
     print(f"  Hybrid mode: {args.use_hybrid} (injection H-channel)")
+    print(f"  SE-Block: {args.use_se_block} (attention recalibration)")
     print(f"  Device: {args.device}")
 
     # Datasets
@@ -712,12 +715,17 @@ def main():
         embed_dim=1536,
         n_classes=n_classes,
         dropout=args.dropout,
-        use_hybrid=args.use_hybrid
+        use_hybrid=args.use_hybrid,
+        use_se_block=args.use_se_block
     ).to(device)
 
     if args.use_hybrid:
         print(f"  → Mode HYBRID activé: injection H-channel via RuifrokExtractor")
         print(f"  → up1 input channels: 257 (256 bottleneck + 1 H-channel)")
+
+    if args.use_se_block:
+        print(f"  → SE-Block activé: recalibration des canaux post-fusion")
+        print(f"  → Attention forcée sur H-channel aux pixels de frontière")
 
     n_params = sum(p.numel() for p in model.parameters())
     print(f"  → Paramètres: {n_params:,}")

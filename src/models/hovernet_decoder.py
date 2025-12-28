@@ -24,6 +24,74 @@ import torch.nn.functional as F
 from typing import Tuple, Optional
 
 
+class SEBlock(nn.Module):
+    """
+    Squeeze-and-Excitation Block (Hu et al., 2018).
+
+    Recalibre les canaux en fonction du contexte global.
+
+    Architecture:
+        Input (B, C, H, W)
+            ↓
+        Global Average Pooling → (B, C, 1, 1)
+            ↓
+        FC1 (C → C//reduction) + ReLU
+            ↓
+        FC2 (C//reduction → C) + Sigmoid
+            ↓
+        Scale = (B, C, 1, 1) → broadcast multiply
+            ↓
+        Output = Input * Scale
+
+    Pourquoi c'est crucial pour Hybrid mode:
+    - Après concat: 80 canaux (64 RGB + 16 H-channel)
+    - Sans SE: le modèle ignore H-channel (passager clandestin)
+    - Avec SE: le modèle apprend à augmenter le poids de H sur les bordures
+
+    Impact attendu: AJI +10% (0.54 → 0.60+)
+    """
+
+    def __init__(self, channels: int, reduction: int = 16):
+        """
+        Args:
+            channels: Nombre de canaux en entrée
+            reduction: Facteur de réduction pour le bottleneck FC
+        """
+        super().__init__()
+
+        # S'assurer que le bottleneck a au moins 4 canaux
+        reduced_channels = max(channels // reduction, 4)
+
+        self.squeeze = nn.AdaptiveAvgPool2d(1)  # Global Average Pooling
+        self.excitation = nn.Sequential(
+            nn.Linear(channels, reduced_channels, bias=False),
+            nn.ReLU(inplace=True),
+            nn.Linear(reduced_channels, channels, bias=False),
+            nn.Sigmoid()
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            x: (B, C, H, W) input features
+
+        Returns:
+            (B, C, H, W) recalibrated features
+        """
+        B, C, H, W = x.shape
+
+        # Squeeze: Global Average Pooling
+        squeezed = self.squeeze(x).view(B, C)  # (B, C)
+
+        # Excitation: FC layers
+        scale = self.excitation(squeezed)  # (B, C)
+
+        # Scale: broadcast multiply
+        scale = scale.view(B, C, 1, 1)  # (B, C, 1, 1)
+
+        return x * scale
+
+
 class UpsampleBlock(nn.Module):
     """Bloc d'upsampling avec convolutions."""
 
@@ -288,6 +356,7 @@ class HoVerNetDecoder(nn.Module):
         n_classes: int = 5,
         dropout: float = 0.1,  # Dropout pour régularisation
         use_hybrid: bool = False,  # Activer injection H-channel
+        use_se_block: bool = False,  # Activer SE-Block après fusion (Hu et al., 2018)
     ):
         super().__init__()
 
@@ -295,6 +364,7 @@ class HoVerNetDecoder(nn.Module):
         self.img_size = img_size
         self.n_patches = img_size // patch_size  # 16 pour 224/14
         self.use_hybrid = use_hybrid
+        self.use_se_block = use_se_block
 
         # ===== BOTTLENECK PARTAGÉ (économie VRAM) =====
         self.bottleneck = nn.Sequential(
@@ -334,6 +404,18 @@ class HoVerNetDecoder(nn.Module):
 
         # Dropout entre les blocs d'upsampling
         self.dropout = nn.Dropout2d(dropout) if dropout > 0 else nn.Identity()
+
+        # ===== SE-BLOCK: Attention sur canaux après fusion (Hu et al., 2018) =====
+        # Résout le problème du "Passager Clandestin":
+        # Sans SE: le modèle ignore H-channel (concat passive)
+        # Avec SE: le modèle apprend à augmenter le poids de H sur les bordures
+        #
+        # Le SE-Block recalibre les 80 canaux (64 RGB + 16 H) en fonction du contexte
+        # global. Sur les pixels de bordure, il augmente le poids des canaux H-channel.
+        if use_se_block:
+            self.se_block = SEBlock(head_in_channels, reduction=16)
+        else:
+            self.se_block = None
 
         # ===== TÊTES SPÉCIALISÉES (légères) =====
         # V2 Hybrid: 65 canaux (64 features + 1 H-channel) si use_hybrid=True
@@ -455,6 +537,12 @@ class HoVerNetDecoder(nn.Module):
 
             # Concaténer avec features décodées (skip-connection chimique)
             x = torch.cat([x, h_channel], dim=1)  # (B, 80, 224, 224)
+
+        # ===== SE-BLOCK: Recalibration des canaux (Hu et al., 2018) =====
+        # Force le modèle à augmenter le poids du H-channel sur les bordures
+        # Résout le "Passager Clandestin" : H-channel n'est plus ignoré
+        if self.se_block is not None:
+            x = self.se_block(x)  # (B, 80, 224, 224) → recalibré
 
         # Têtes spécialisées (légères, partagent les features du tronc)
         # V3 Hybrid: prennent 80 canaux (64 features + 16 H-channel amplifié)
