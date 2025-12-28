@@ -536,15 +536,25 @@ class HoVerNetLoss(nn.Module):
         # Les pixels aux frontières inter-cellulaires reçoivent un poids 10× plus élevé
         # pour forcer le modèle à apprendre des séparations nettes.
         if weight_map is not None:
-            # ✅ FIX Tech Lead 2025-12-28: Utiliser FocalLoss avec reduction='none'
-            # PROBLÈME AVANT: F.cross_entropy bypass le γ=2.0 de FocalLoss
-            #   → Perd le downweight des exemples faciles (background)
-            #   → Perd le focus sur les exemples difficiles (bords)
-            # FIX: Appeler self.focal_loss avec reduction='none' pour obtenir
-            #      loss par pixel, puis appliquer pondération Ronneberger
-            np_focal_raw = self.focal_loss(np_pred, np_target.long(), reduction='none')
+            # ✅ FIX Tech Lead 2025-12-28: CrossEntropy PURE + Ronneberger
+            #
+            # DIAGNOSTIC DU CONFLIT Focal ∩ Ronneberger:
+            # - FocalLoss: (1-p)^γ downweight pixels où modèle confiant (p>0.8 → coef 0.04)
+            # - Ronneberger: upweight pixels frontières (coef 10×)
+            # - CONFLIT: Pixel frontière bien prédit (p=0.9) → Focal 0.01 × Ronneberger 10 = 0.1×
+            #   → Le modèle "arrête" d'apprendre la précision chirurgicale des frontières
+            #   → AJI régresse (0.55 → 0.54) malgré Dice stable
+            #
+            # SOLUTION: Ronneberger fait le focus spatial EXPLICITE, pas besoin de Focal
+            # - Ronneberger cible géographiquement les frontières (ce que l'AJI mesure)
+            # - CrossEntropy pure laisse le gradient intact pour que Ronneberger agisse
+            #
+            # NOTE: FocalLoss gérait aussi le déséquilibre via alpha, mais Ronneberger
+            # compense car les frontières (upweighted 10×) sont dans les zones de noyaux.
+            np_focal_raw = F.cross_entropy(np_pred, np_target.long(), reduction='none')
             np_focal = (np_focal_raw * weight_map).mean()
         else:
+            # Sans weight_map (VAL ou ancien mode): FocalLoss pour déséquilibre classes
             np_focal = self.focal_loss(np_pred, np_target.long())
 
         np_dice = self.dice_loss(np_pred, np_target.float())
