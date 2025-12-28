@@ -256,49 +256,90 @@ class V13SmartCropsDataset(Dataset):
 
 
 def compute_dice(pred: torch.Tensor, target: torch.Tensor) -> float:
-    """Calcule le Dice score pour NP."""
-    pred_binary = (pred.argmax(dim=1) == 1).float()
-    target_float = target.float()
+    """
+    Calcule le Dice score pour NP en PER-SAMPLE puis moyenne.
 
-    intersection = (pred_binary * target_float).sum()
-    union = pred_binary.sum() + target_float.sum()
+    IMPORTANT: Utilise la même méthode que test_v13_smart_crops_aji.py
+    pour garantir la cohérence des métriques training/test.
 
-    if union == 0:
-        return 1.0
+    Avant (Batch-wide): Samples avec beaucoup de noyaux dominent → Dice gonflé
+    Après (Per-sample): Chaque sample a le même poids → Dice réaliste
+    """
+    pred_binary = (pred.argmax(dim=1) == 1).float()  # (B, H, W)
+    target_float = target.float()  # (B, H, W)
 
-    return (2 * intersection / union).item()
+    batch_size = pred_binary.shape[0]
+    dice_scores = []
+
+    for i in range(batch_size):
+        pred_i = pred_binary[i]  # (H, W)
+        target_i = target_float[i]  # (H, W)
+
+        intersection = (pred_i * target_i).sum()
+        union = pred_i.sum() + target_i.sum()
+
+        if union == 0:
+            dice_scores.append(1.0)
+        else:
+            dice_scores.append((2 * intersection / union).item())
+
+    return sum(dice_scores) / len(dice_scores)
 
 
 def compute_hv_mse(hv_pred: torch.Tensor, hv_target: torch.Tensor, np_target: torch.Tensor) -> float:
-    """Calcule le MSE des cartes HV sur pixels de noyaux."""
-    mask = np_target.float().unsqueeze(1)
+    """
+    Calcule le MSE des cartes HV sur pixels de noyaux en PER-SAMPLE puis moyenne.
 
-    if mask.sum() == 0:
-        return 0.0
+    Cohérent avec compute_dice() pour éviter que les samples denses dominent.
+    """
+    batch_size = hv_pred.shape[0]
+    mse_scores = []
 
-    hv_pred_masked = hv_pred * mask
-    hv_target_masked = hv_target * mask
+    for i in range(batch_size):
+        mask_i = np_target[i].float()  # (H, W)
 
-    mse = ((hv_pred_masked - hv_target_masked) ** 2).sum() / mask.sum()
-    return mse.item()
+        if mask_i.sum() == 0:
+            mse_scores.append(0.0)
+            continue
+
+        hv_pred_i = hv_pred[i]  # (2, H, W)
+        hv_target_i = hv_target[i]  # (2, H, W)
+
+        # Masquer uniquement les pixels de noyaux
+        mask_expanded = mask_i.unsqueeze(0)  # (1, H, W)
+        hv_pred_masked = hv_pred_i * mask_expanded
+        hv_target_masked = hv_target_i * mask_expanded
+
+        mse = ((hv_pred_masked - hv_target_masked) ** 2).sum() / mask_i.sum()
+        mse_scores.append(mse.item())
+
+    return sum(mse_scores) / len(mse_scores) if mse_scores else 0.0
 
 
 def compute_nt_accuracy(nt_pred: torch.Tensor, nt_target: torch.Tensor, np_target: torch.Tensor) -> float:
-    """Calcule l'accuracy de classification NT sur pixels de noyaux."""
-    # Masque des pixels de noyaux
-    mask = np_target > 0
+    """
+    Calcule l'accuracy de classification NT sur pixels de noyaux en PER-SAMPLE puis moyenne.
 
-    if mask.sum() == 0:
-        return 1.0  # Pas d'erreur possible si pas de noyaux
+    Cohérent avec compute_dice() pour éviter que les samples denses dominent.
+    """
+    batch_size = nt_pred.shape[0]
+    acc_scores = []
 
-    # Prédiction de classe
-    pred_class = nt_pred.argmax(dim=1)
+    for i in range(batch_size):
+        mask_i = np_target[i] > 0  # (H, W)
 
-    # Accuracy uniquement sur les pixels de noyaux
-    correct = (pred_class == nt_target) & mask
-    accuracy = correct.sum().float() / mask.sum().float()
+        if mask_i.sum() == 0:
+            acc_scores.append(1.0)  # Pas d'erreur possible si pas de noyaux
+            continue
 
-    return accuracy.item()
+        pred_class_i = nt_pred[i].argmax(dim=0)  # (H, W)
+        target_i = nt_target[i]  # (H, W)
+
+        correct = (pred_class_i == target_i) & mask_i
+        accuracy = correct.sum().float() / mask_i.sum().float()
+        acc_scores.append(accuracy.item())
+
+    return sum(acc_scores) / len(acc_scores) if acc_scores else 1.0
 
 
 def train_one_epoch(
