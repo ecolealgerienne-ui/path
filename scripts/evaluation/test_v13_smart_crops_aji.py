@@ -8,7 +8,7 @@ and computes instance segmentation metrics (AJI, PQ) to verify improvement:
 - V13 Smart Crops target: AJI ≥ 0.68 (+18% improvement on VAL data)
 
 The script uses HV-guided watershed for instance segmentation post-processing
-with optimized parameters (beta=1.50, min_size=40).
+with optimized parameters (beta=1.0 for softmax, min_size=40).
 
 Usage:
     python scripts/evaluation/test_v13_smart_crops_aji.py \
@@ -119,7 +119,7 @@ def compute_pq(pred_inst: np.ndarray, gt_inst: np.ndarray, iou_threshold: float 
 def hv_guided_watershed(
     np_pred: np.ndarray,
     hv_pred: np.ndarray,
-    beta: float = 1.50,  # Optimized value from Phase 5a
+    beta: float = 1.0,   # Reduced from 1.50 to match softmax activation (expert recommendation)
     min_size: int = 40   # Optimized value from Phase 5a
 ) -> np.ndarray:
     """
@@ -132,7 +132,7 @@ def hv_guided_watershed(
         np_pred: Nuclear presence probability map (H, W) in [0, 1]
         hv_pred: HV maps (2, H, W) in [-1, 1]
         beta: HV magnitude exponent (higher = stronger boundary suppression)
-              Optimized value: 1.50 (from grid search)
+              Value: 1.0 (reduced from 1.50 for softmax activation)
         min_size: Minimum instance size in pixels
                   Optimized value: 40 (from grid search)
 
@@ -229,8 +229,8 @@ def main():
     parser.add_argument(
         "--beta",
         type=float,
-        default=1.50,
-        help="HV magnitude exponent (default: 1.50 optimized)"
+        default=1.0,
+        help="HV magnitude exponent (default: 1.0 for softmax activation)"
     )
     parser.add_argument(
         "--min_size",
@@ -342,8 +342,9 @@ def main():
         with torch.no_grad():
             np_out, hv_out, nt_out = model(features)  # (1, 2, 224, 224), (1, 2, 224, 224), (1, 5, 224, 224)
 
-            # Convert to numpy
-            np_pred = torch.sigmoid(np_out).cpu().numpy()[0, 1]  # (224, 224)
+            # Convert to numpy - USE SOFTMAX (not sigmoid!) for CrossEntropyLoss
+            np_probs = torch.softmax(np_out, dim=1).cpu().numpy()[0]  # (2, 224, 224)
+            np_pred = np_probs[1]  # Canal 1 = Noyaux (224, 224)
             hv_pred = hv_out.cpu().numpy()[0]  # (2, 224, 224)
 
         # Watershed post-processing
