@@ -356,10 +356,11 @@ def apply_rotation(
         nt_rot = np.rot90(nt_target, k=-1, axes=(0, 1))
         inst_map_rot = np.rot90(inst_map, k=-1, axes=(0, 1))
 
-        # HV component swapping: H' = V, V' = -H (CORRECT MATH)
-        # Vecteur (1,0) droite → (0,-1) bas après 90° CW
-        h_rot = np.rot90(hv_target[1], k=-1, axes=(0, 1))   # H' = V
-        v_rot = -np.rot90(hv_target[0], k=-1, axes=(0, 1))  # V' = -H
+        # CORRECTION MATHÉMATIQUE (90° CW, référentiel image Y vers le bas)
+        # Vecteur (1,0) droite → (0,1) bas après 90° CW
+        # Formule: H' = -V, V' = H
+        h_rot = -np.rot90(hv_target[1], k=-1, axes=(0, 1))  # H' = -V
+        v_rot = np.rot90(hv_target[0], k=-1, axes=(0, 1))   # V' = H
         hv_rot = np.stack([h_rot, v_rot], axis=0)
 
         return image_rot, np_rot, hv_rot, nt_rot, inst_map_rot
@@ -385,11 +386,11 @@ def apply_rotation(
         nt_rot = np.rot90(nt_target, k=1, axes=(0, 1))
         inst_map_rot = np.rot90(inst_map, k=1, axes=(0, 1))
 
-        # HV component swapping for 270° CW: H' = -V, V' = H
-        # Test: vecteur (1,0) droite → (0,1) haut après 270° CW
-        # Code: H' = -V = 0, V' = H = 1 → (0, 1) ✓
-        h_rot = -np.rot90(hv_target[1], k=1, axes=(0, 1))  # H' = -V
-        v_rot = np.rot90(hv_target[0], k=1, axes=(0, 1))   # V' = H
+        # CORRECTION MATHÉMATIQUE (270° CW, référentiel image Y vers le bas)
+        # Vecteur (1,0) droite → (0,-1) haut après 270° CW
+        # Formule: H' = V, V' = -H
+        h_rot = np.rot90(hv_target[1], k=1, axes=(0, 1))   # H' = V
+        v_rot = -np.rot90(hv_target[0], k=1, axes=(0, 1))  # V' = -H
         hv_rot = np.stack([h_rot, v_rot], axis=0)
 
         return image_rot, np_rot, hv_rot, nt_rot, inst_map_rot
