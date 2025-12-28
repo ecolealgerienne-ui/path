@@ -512,7 +512,8 @@ def main():
     parser.add_argument("--batch_size", type=int, default=16)
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--lambda_np", type=float, default=1.0)
-    parser.add_argument("--lambda_hv", type=float, default=2.0)
+    parser.add_argument("--lambda_hv", type=float, default=5.0,
+                       help="Poids branche HV - Tech Lead recommande 5.0 pour V13-Hybrid V2")
     parser.add_argument("--lambda_nt", type=float, default=1.0)
     parser.add_argument("--lambda_magnitude", type=float, default=1.0,
                        help="Poids magnitude loss (force gradients HV)")

@@ -228,18 +228,26 @@ class HoVerNetDecoder(nn.Module):
           NP       HV       NT
         (binaire) (H+V)  (5 classes)
 
-    Architecture Hybrid (use_hybrid=True):
+    Architecture Hybrid V2 (use_hybrid=True) - HIGH RESOLUTION INJECTION:
         H-optimus-0 features     +     RGB image
               ↓                          ↓
-        Bottleneck (256)         RuifrokExtractor (1)
+        Bottleneck (256)         RuifrokExtractor
+              ↓                          ↓
+        Tronc commun              (extraction H à 224×224)
+        (upsampling)                     │
+              ↓                          │
+        Features 224×224 (64)            │
               ↓                          ↓
               └──────── concat ──────────┘
                           ↓
-                    257 canaux
-                          ↓
-                  Tronc commun (upsampling)
+                    65 canaux (64+1)
                           ↓
                     NP / HV / NT
+
+    POURQUOI injection haute résolution (vs bottleneck 16×16):
+    1. Bottleneck Dominance: 256 features noient 1 H-channel → gradient H drowns
+    2. Résolution: AJI mesure précision au pixel (membrane) → 16×16 trop grossier
+    3. Skip-Connection Chimique: H guide les têtes au niveau pixel, pas latent
 
     Le canal H (Hématoxyline) fournit l'info de densité chromatinienne
     pour améliorer la séparation d'instances (AJI cible +18%).
@@ -279,13 +287,17 @@ class HoVerNetDecoder(nn.Module):
             nn.Dropout2d(dropout) if dropout > 0 else nn.Identity(),
         )
 
-        # ===== MODE HYBRID: Extracteur H-channel =====
+        # ===== MODE HYBRID V2: Extracteur H-channel (injection haute résolution) =====
         if use_hybrid:
             self.ruifrok = RuifrokExtractor()
-            up1_in_channels = bottleneck_dim + 1  # 256 + 1 = 257
+            # V2: up1 garde 256 canaux (pas d'injection au bottleneck)
+            up1_in_channels = bottleneck_dim  # 256
+            # L'injection se fait APRÈS up4, au niveau 224×224
+            head_in_channels = 64 + 1  # 65 = features(64) + H-channel(1)
         else:
             self.ruifrok = None
             up1_in_channels = bottleneck_dim  # 256
+            head_in_channels = 64
 
         # ===== TRONC COMMUN (upsampling partagé) =====
         # 16x16 → 32 → 64 → 128 → 224
@@ -299,12 +311,13 @@ class HoVerNetDecoder(nn.Module):
         self.dropout = nn.Dropout2d(dropout) if dropout > 0 else nn.Identity()
 
         # ===== TÊTES SPÉCIALISÉES (légères) =====
-        self.np_head = DecoderHead(64, 2)        # Nuclei Presence (binaire)
+        # V2 Hybrid: 65 canaux (64 features + 1 H-channel) si use_hybrid=True
+        self.np_head = DecoderHead(head_in_channels, 2)        # Nuclei Presence (binaire)
         self.hv_head = nn.Sequential(
-            DecoderHead(64, 2),
+            DecoderHead(head_in_channels, 2),
             nn.Tanh()  # OBLIGATOIRE: forcer HV dans [-1, 1] pour matcher targets
         )
-        self.nt_head = DecoderHead(64, n_classes)  # Nuclei Type (5 classes)
+        self.nt_head = DecoderHead(head_in_channels, n_classes)  # Nuclei Type (5 classes)
 
     def reshape_features(self, x: torch.Tensor) -> torch.Tensor:
         """
@@ -366,33 +379,6 @@ class HoVerNetDecoder(nn.Module):
         # Bottleneck partagé (économie VRAM: 1536 → 256, + dropout)
         x = self.bottleneck(x)  # (B, 256, 16, 16)
 
-        # =====================================================================
-        # V13-HYBRID: Injection canal H (Hématoxyline)
-        # =====================================================================
-        #
-        # Le canal H (extrait par déconvolution Ruifrok) contient l'info de
-        # densité chromatinienne PURE. Cela aide le modèle à mieux détecter
-        # les frontières nucléaires, surtout dans les tissus denses.
-        #
-        # GAIN ATTENDU: AJI +10-18% (séparation instances améliorée)
-        # =====================================================================
-        if self.use_hybrid:
-            if images_rgb is None:
-                raise ValueError(
-                    "images_rgb est requis quand use_hybrid=True. "
-                    "Passez les images RGB (B, 3, H, W) au forward()."
-                )
-
-            # Extraire canal H via déconvolution Ruifrok
-            # IMPORTANT: detach() pour éviter que les gradients ne remontent
-            # vers l'image RGB (pas de fine-tuning de l'extraction couleur)
-            with torch.no_grad():
-                h_channel = self.ruifrok(images_rgb, target_size=self.n_patches)
-                # h_channel: (B, 1, 16, 16)
-
-            # Concaténer avec features bottleneck
-            x = torch.cat([x, h_channel], dim=1)  # (B, 257, 16, 16)
-
         # Tronc commun (upsampling partagé avec dropout)
         x = self.up1(x)         # (B, 128, 32, 32)
         x = self.dropout(x)
@@ -407,7 +393,39 @@ class HoVerNetDecoder(nn.Module):
             x = F.interpolate(x, size=(self.img_size, self.img_size),
                             mode='bilinear', align_corners=False)
 
+        # =====================================================================
+        # V13-HYBRID V2: Injection canal H à HAUTE RÉSOLUTION (224×224)
+        # =====================================================================
+        #
+        # POURQUOI injection haute résolution (vs bottleneck 16×16):
+        # 1. Bottleneck Dominance: 256 features noient 1 H-channel → gradient drowns
+        # 2. Résolution: AJI mesure précision au pixel → 16×16 trop grossier
+        # 3. Skip-Connection Chimique: H guide les têtes au niveau pixel
+        #
+        # Le canal H (Ruifrok) contient l'info de densité chromatinienne PURE.
+        # En l'injectant à 224×224, chaque pixel de H correspond directement à
+        # un pixel de sortie → guide précis pour les membranes cellulaires.
+        #
+        # GAIN ATTENDU: AJI +18% (0.54 → 0.68) via séparation instances améliorée
+        # =====================================================================
+        if self.use_hybrid:
+            if images_rgb is None:
+                raise ValueError(
+                    "images_rgb est requis quand use_hybrid=True. "
+                    "Passez les images RGB (B, 3, H, W) au forward()."
+                )
+
+            # Extraire canal H via déconvolution Ruifrok à HAUTE RÉSOLUTION
+            # target_size=224 au lieu de 16 → correspondance pixel-à-pixel
+            with torch.no_grad():
+                h_channel = self.ruifrok(images_rgb, target_size=self.img_size)
+                # h_channel: (B, 1, 224, 224) ← HAUTE RÉSOLUTION
+
+            # Concaténer avec features décodées (skip-connection chimique)
+            x = torch.cat([x, h_channel], dim=1)  # (B, 65, 224, 224)
+
         # Têtes spécialisées (légères, partagent les features du tronc)
+        # V2 Hybrid: prennent 65 canaux (64 features + 1 H-channel)
         np_out = self.np_head(x)
         hv_out = self.hv_head(x)
         nt_out = self.nt_head(x)
@@ -434,7 +452,7 @@ class HoVerNetLoss(nn.Module):
     def __init__(
         self,
         lambda_np: float = 1.0,
-        lambda_hv: float = 2.0,
+        lambda_hv: float = 5.0,
         lambda_nt: float = 1.0,
         lambda_magnitude: float = 5.0,
         adaptive: bool = False,
@@ -442,7 +460,7 @@ class HoVerNetLoss(nn.Module):
         """
         Args:
             lambda_np: Poids branche NP (segmentation binaire)
-            lambda_hv: Poids branche HV (séparation instances) - 2.0 pour focus gradients
+            lambda_hv: Poids branche HV (séparation instances) - 5.0 pour V13-Hybrid V2
             lambda_nt: Poids branche NT (typage cellulaire)
             lambda_magnitude: Poids magnitude loss (Expert: 5.0 pour forcer gradients forts)
             adaptive: Si True, utilise Uncertainty Weighting (poids appris)
