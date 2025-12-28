@@ -112,6 +112,7 @@ def compute_hv_maps(inst_map: np.ndarray) -> np.ndarray:
     Calcule cartes HV (Horizontal/Vertical) centripètes via Distance Transform.
 
     AMÉLIORATION 2025-12-28: Utilise Distance Transform au lieu du centroïde.
+    FIX CRITIQUE 2025-12-28: Normalisation ISOTROPE pour préserver l'aspect ratio.
 
     Problème avec centroïde (mean):
     - Pour les noyaux concaves (forme de C, rein), le centroïde peut
@@ -123,6 +124,11 @@ def compute_hv_maps(inst_map: np.ndarray) -> np.ndarray:
     - Le centre est le pixel le plus ÉLOIGNÉ des bords (le plus "profond").
     - Garantit que le centre est TOUJOURS à l'intérieur du noyau.
     - Robuste pour toutes les formes (rondes, allongées, concaves).
+
+    FIX Normalisation Isotrope:
+    - AVANT: H normalisé par max_dist_x, V par max_dist_y → gradients "déformés"
+    - APRÈS: H et V normalisés par max(max_dist_x, max_dist_y) → géométrie préservée
+    - Résultat: Pics Watershed nets au lieu de traînées floues → AJI amélioré
 
     Args:
         inst_map: Instance map (H, W) int32
@@ -151,14 +157,20 @@ def compute_hv_maps(inst_map: np.ndarray) -> np.ndarray:
         idx_max = np.argmax(dist_map)
         cy, cx = np.unravel_index(idx_max, inst_mask.shape)
 
-        # Max distances pour normalisation [-1, 1]
-        max_dist_y = max(abs(y_coords - cy).max(), 1e-6)
-        max_dist_x = max(abs(x_coords - cx).max(), 1e-6)
+        # Distances brutes (centripètes)
+        h_dist = cx - x_coords  # Horizontal
+        v_dist = cy - y_coords  # Vertical
+
+        # NORMALISATION ISOTROPE (Fix critique)
+        # Utilise la MÊME valeur max pour H et V → préserve l'aspect ratio
+        max_dist_x = np.abs(h_dist).max() if len(h_dist) > 0 else 1e-6
+        max_dist_y = np.abs(v_dist).max() if len(v_dist) > 0 else 1e-6
+        global_max_dist = max(max_dist_x, max_dist_y, 1e-6)
 
         # Vecteurs centripètes normalisés [-1, 1]
         # Convention HoVer-Net: vecteurs pointent VERS le centre
-        h_map = (cx - x_coords) / max_dist_x  # Horizontal (X)
-        v_map = (cy - y_coords) / max_dist_y  # Vertical (Y)
+        h_map = h_dist / global_max_dist
+        v_map = v_dist / global_max_dist
 
         # Convention HoVer-Net: H à index 0, V à index 1
         hv_map[0, y_coords, x_coords] = h_map  # Horizontal
