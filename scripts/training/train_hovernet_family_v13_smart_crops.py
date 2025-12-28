@@ -431,15 +431,22 @@ def train_one_epoch(
         # Gradient monitoring (V13-Hybrid-Final 2025-12-28)
         # Vérifie que le H-channel est "vivant" (reçoit du gradient)
         if debug_gradients and n_batches < 10:  # Premier 10 batches
-            # Gradient sur la première couche de hv_head
-            if hasattr(model, 'hv_head') and model.hv_head[0].weight.grad is not None:
-                hv_grad = model.hv_head[0].weight.grad.norm().item()
+            # Gradient sur la première couche de hv_head (DecoderHead.head[0])
+            if hasattr(model, 'hv_head') and hasattr(model.hv_head, 'head'):
+                first_conv = model.hv_head.head[0]
+                if hasattr(first_conv, 'weight') and first_conv.weight.grad is not None:
+                    hv_grad = first_conv.weight.grad.norm().item()
+                else:
+                    hv_grad = 0.0
             else:
                 hv_grad = 0.0
 
-            # Gradient sur bottleneck (features RGB)
-            if hasattr(model, 'bottleneck') and model.bottleneck[0].weight.grad is not None:
-                feat_grad = model.bottleneck[0].weight.grad.norm().item()
+            # Gradient sur bottleneck (features RGB) - bottleneck[0] est Conv2d
+            if hasattr(model, 'bottleneck') and hasattr(model.bottleneck[0], 'weight'):
+                if model.bottleneck[0].weight.grad is not None:
+                    feat_grad = model.bottleneck[0].weight.grad.norm().item()
+                else:
+                    feat_grad = 0.0
             else:
                 feat_grad = 0.0
 
