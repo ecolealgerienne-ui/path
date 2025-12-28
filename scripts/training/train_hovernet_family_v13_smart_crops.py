@@ -452,21 +452,33 @@ def train_one_epoch(
             else:
                 feat_grad = 0.0
 
-            # Gradient sur H-channel (si mode hybride)
-            # V3: Monitorer à la fois InstanceNorm et h_projection
+            # Gradient sur H-channel (si mode hybride ou FPN Chimique)
+            # V4: Monitorer FPN Chimique (h_pyramid) OU mode hybride classique (ruifrok + h_projection)
             h_norm_grad = 0.0
             h_proj_grad = 0.0
             if use_hybrid:
-                # InstanceNorm dans RuifrokExtractor
-                if hasattr(model, 'ruifrok') and hasattr(model.ruifrok, 'instance_norm'):
-                    if model.ruifrok.instance_norm.weight is not None and model.ruifrok.instance_norm.weight.grad is not None:
-                        h_norm_grad = model.ruifrok.instance_norm.weight.grad.norm().item()
+                # Mode FPN Chimique: vérifier h_pyramid.projections
+                if hasattr(model, 'h_pyramid') and model.h_pyramid is not None:
+                    # Prendre la projection au niveau 16×16 comme référence
+                    proj_16 = model.h_pyramid.projections['16'][0]  # Premier Conv2d
+                    if hasattr(proj_16, 'weight') and proj_16.weight.grad is not None:
+                        h_proj_grad = proj_16.weight.grad.norm().item()
+                    # Aussi vérifier niveau 224 (final)
+                    proj_224 = model.h_pyramid.projections['224'][0]
+                    if hasattr(proj_224, 'weight') and proj_224.weight.grad is not None:
+                        h_norm_grad = proj_224.weight.grad.norm().item()  # Réutilise variable pour affichage
+                else:
+                    # Mode hybride classique (sans FPN)
+                    # InstanceNorm dans RuifrokExtractor
+                    if hasattr(model, 'ruifrok') and model.ruifrok is not None and hasattr(model.ruifrok, 'instance_norm'):
+                        if model.ruifrok.instance_norm.weight is not None and model.ruifrok.instance_norm.weight.grad is not None:
+                            h_norm_grad = model.ruifrok.instance_norm.weight.grad.norm().item()
 
-                # Projection 1→16 canaux (V3)
-                if hasattr(model, 'h_projection') and model.h_projection is not None:
-                    # h_projection est un Sequential, prendre le premier Conv2d
-                    if hasattr(model.h_projection[0], 'weight') and model.h_projection[0].weight.grad is not None:
-                        h_proj_grad = model.h_projection[0].weight.grad.norm().item()
+                    # Projection 1→16 canaux (V3)
+                    if hasattr(model, 'h_projection') and model.h_projection is not None:
+                        # h_projection est un Sequential, prendre le premier Conv2d
+                        if hasattr(model.h_projection[0], 'weight') and model.h_projection[0].weight.grad is not None:
+                            h_proj_grad = model.h_projection[0].weight.grad.norm().item()
 
                 h_total_grad = h_norm_grad + h_proj_grad
                 h_grad_magnitudes.append(h_total_grad)
@@ -478,8 +490,13 @@ def train_one_epoch(
                 print(f"   HV Head grad norm:       {hv_grad:.6f}")
                 print(f"   Bottleneck grad norm:    {feat_grad:.6f}")
                 if use_hybrid:
-                    print(f"   H-channel InstanceNorm:  {h_norm_grad:.6f}")
-                    print(f"   H-channel Projection:    {h_proj_grad:.6f}")
+                    # Affichage adapté au mode FPN Chimique
+                    if hasattr(model, 'h_pyramid') and model.h_pyramid is not None:
+                        print(f"   🧪 FPN Chimique H@16 grad:  {h_proj_grad:.6f}")
+                        print(f"   🧪 FPN Chimique H@224 grad: {h_norm_grad:.6f}")
+                    else:
+                        print(f"   H-channel InstanceNorm:  {h_norm_grad:.6f}")
+                        print(f"   H-channel Projection:    {h_proj_grad:.6f}")
                     h_total = h_norm_grad + h_proj_grad
                     if h_total < 1e-6:
                         print(f"   ⚠️  ALERTE: H-channel gradient ≈ 0 → Passager Clandestin!")
