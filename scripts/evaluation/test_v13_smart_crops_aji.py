@@ -390,6 +390,7 @@ def main():
 
     all_dice = []
     all_aji = []
+    all_aji_fair = []  # Fair AJI using same watershed for both
     all_pq = []
     n_pred_instances = []
     n_gt_instances = []
@@ -431,8 +432,22 @@ def main():
         aji = compute_aji(pred_inst, gt_inst)
         pq_metrics = compute_pq(pred_inst, gt_inst)
 
+        # DEBUG: Compute "fair AJI" using same method for both
+        # Reconstruct GT instances using SAME watershed method
+        gt_hv = hv_targets[i]  # (2, 224, 224)
+        gt_inst_watershed = hv_guided_watershed(
+            np_targets[i],  # Use GT NP as binary mask
+            gt_hv,          # Use GT HV for guidance
+            np_threshold=0.5,  # GT is already binary
+            beta=args.beta,
+            min_size=args.min_size,
+            min_distance=args.min_distance
+        )
+        aji_fair = compute_aji(pred_inst, gt_inst_watershed)
+
         all_dice.append(dice)
         all_aji.append(aji)
+        all_aji_fair.append(aji_fair)
         all_pq.append(pq_metrics['PQ'])
         n_pred_instances.append(len(np.unique(pred_inst)) - 1)
         n_gt_instances.append(len(np.unique(gt_inst)) - 1)
@@ -447,6 +462,8 @@ def main():
     mean_aji = np.mean(all_aji)
     std_aji = np.std(all_aji)
     median_aji = np.median(all_aji)
+    mean_aji_fair = np.mean(all_aji_fair)
+    std_aji_fair = np.std(all_aji_fair)
     mean_pq = np.mean(all_pq)
     std_pq = np.std(all_pq)
     mean_n_pred = np.mean(n_pred_instances)
@@ -457,10 +474,18 @@ def main():
     print(f"\n  Dice:        {mean_dice:.4f} ± {std_dice:.4f}")
     print(f"  AJI:         {mean_aji:.4f} ± {std_aji:.4f}")
     print(f"  AJI Median:  {median_aji:.4f}")
+    print(f"  AJI FAIR:    {mean_aji_fair:.4f} ± {std_aji_fair:.4f}  ← Same watershed for GT & Pred")
     print(f"  PQ:          {mean_pq:.4f} ± {std_pq:.4f}")
     print(f"\n  Instances pred: {mean_n_pred:.1f}")
     print(f"  Instances GT:   {mean_n_gt:.1f}")
     print(f"  Over-seg ratio: {over_seg_ratio:.2f}×")
+
+    # Diagnostic
+    if mean_aji_fair > mean_aji + 0.05:
+        print(f"\n⚠️  DIAGNOSTIC: AJI FAIR (+{mean_aji_fair - mean_aji:.2f}) > AJI standard")
+        print(f"   → Le problème vient de la MÉTHODE de construction des GT instances")
+        print(f"   → scipy.ndimage.label() produit des frontières différentes du watershed")
+        print(f"   → Considérez utiliser watershed pour les GT aussi (cohérence)")
 
     # Verdict
     print("\n" + "=" * 80)
