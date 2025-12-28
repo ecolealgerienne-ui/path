@@ -119,7 +119,8 @@ def compute_pq(pred_inst: np.ndarray, gt_inst: np.ndarray, iou_threshold: float 
 def hv_guided_watershed(
     np_pred: np.ndarray,
     hv_pred: np.ndarray,
-    beta: float = 0.8,   # Reduced to 0.8 for Epidermal dense nuclei (expert recommendation)
+    np_threshold: float = 0.35,  # Lowered from 0.5 to increase mask surface (expert recommendation)
+    beta: float = 0.5,   # Lowered from 0.8 to 0.5 for dense Epidermal tissues
     min_size: int = 40,  # Optimized value from Phase 5a
     min_distance: int = 3  # Reduced from 5 for dense nuclei detection
 ) -> np.ndarray:
@@ -132,16 +133,16 @@ def hv_guided_watershed(
     Args:
         np_pred: Nuclear presence probability map (H, W) in [0, 1]
         hv_pred: HV maps (2, H, W) in [-1, 1]
-        beta: HV magnitude exponent (higher = stronger boundary suppression)
-              Value: 0.8 (expert recommendation for Epidermal)
+        np_threshold: Threshold for NP binarization (default: 0.35 to increase mask surface)
+        beta: HV magnitude exponent (default: 0.5 for dense Epidermal tissues)
         min_size: Minimum instance size in pixels (default: 40)
         min_distance: Minimum distance between peaks (default: 3 for dense nuclei)
 
     Returns:
         Instance map (H, W) with instance IDs starting from 1
     """
-    # Threshold NP to get binary mask
-    np_binary = (np_pred > 0.5).astype(np.uint8)
+    # Threshold NP to get binary mask (lowered threshold = larger masks = better IoU)
+    np_binary = (np_pred > np_threshold).astype(np.uint8)
 
     if np_binary.sum() == 0:
         return np.zeros_like(np_pred, dtype=np.int32)
@@ -228,10 +229,16 @@ def main():
         help="Number of validation samples to evaluate"
     )
     parser.add_argument(
+        "--np_threshold",
+        type=float,
+        default=0.35,
+        help="NP binarization threshold (default: 0.35 for larger masks)"
+    )
+    parser.add_argument(
         "--beta",
         type=float,
-        default=0.8,
-        help="HV magnitude exponent (default: 0.8 for Epidermal dense nuclei)"
+        default=0.5,
+        help="HV magnitude exponent (default: 0.5 for dense Epidermal tissues)"
     )
     parser.add_argument(
         "--min_size",
@@ -262,6 +269,7 @@ def main():
     print(f"  Checkpoint: {args.checkpoint}")
     print(f"  Family: {args.family}")
     print(f"  N samples: {args.n_samples}")
+    print(f"  NP threshold: {args.np_threshold}")
     print(f"  Watershed beta: {args.beta}")
     print(f"  Watershed min_size: {args.min_size}")
     print(f"  Watershed min_distance: {args.min_distance}")
@@ -359,6 +367,7 @@ def main():
         pred_inst = hv_guided_watershed(
             np_pred,
             hv_pred,
+            np_threshold=args.np_threshold,
             beta=args.beta,
             min_size=args.min_size,
             min_distance=args.min_distance
@@ -426,6 +435,7 @@ def main():
         "family": args.family,
         "n_samples": n_to_eval,
         "watershed_params": {
+            "np_threshold": args.np_threshold,
             "beta": args.beta,
             "min_size": args.min_size,
             "min_distance": args.min_distance
