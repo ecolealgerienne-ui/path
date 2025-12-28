@@ -119,10 +119,10 @@ def compute_pq(pred_inst: np.ndarray, gt_inst: np.ndarray, iou_threshold: float 
 def hv_guided_watershed(
     np_pred: np.ndarray,
     hv_pred: np.ndarray,
-    np_threshold: float = 0.35,  # Lowered from 0.5 to increase mask surface (expert recommendation)
-    beta: float = 0.5,   # Lowered from 0.8 to 0.5 for dense Epidermal tissues
-    min_size: int = 40,  # Optimized value from Phase 5a
-    min_distance: int = 3  # Reduced from 5 for dense nuclei detection
+    np_threshold: float = 0.45,  # Optimized via grid search (2025-12-28)
+    beta: float = 0.5,   # Optimal: centres nets mais gradients HV bruités
+    min_size: int = 50,  # Optimized via grid search - filtre bruit
+    min_distance: int = 5  # Optimized via grid search - évite sur-segmentation
 ) -> np.ndarray:
     """
     HV-guided watershed for instance segmentation.
@@ -133,10 +133,10 @@ def hv_guided_watershed(
     Args:
         np_pred: Nuclear presence probability map (H, W) in [0, 1]
         hv_pred: HV maps (2, H, W) in [-1, 1]
-        np_threshold: Threshold for NP binarization (default: 0.35 to increase mask surface)
-        beta: HV magnitude exponent (default: 0.5 for dense Epidermal tissues)
-        min_size: Minimum instance size in pixels (default: 40)
-        min_distance: Minimum distance between peaks (default: 3 for dense nuclei)
+        np_threshold: Threshold for NP binarization (default: 0.45, grid-search optimized)
+        beta: HV magnitude exponent (default: 0.5, optimal pour centres nets/gradients bruités)
+        min_size: Minimum instance size in pixels (default: 50, grid-search optimized)
+        min_distance: Minimum distance between peaks (default: 5, grid-search optimized)
 
     Returns:
         Instance map (H, W) with instance IDs starting from 1
