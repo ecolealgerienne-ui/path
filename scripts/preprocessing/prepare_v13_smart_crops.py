@@ -211,120 +211,146 @@ def compute_nt_target(mask: np.ndarray) -> np.ndarray:
     return nt_target
 
 
-def extract_crop(
+def extract_raw_crop(
     image: np.ndarray,
-    inst_map_global: np.ndarray,
-    hv_global: np.ndarray,
     np_target: np.ndarray,
     nt_target: np.ndarray,
     x1: int, y1: int, x2: int, y2: int
 ) -> Dict[str, np.ndarray]:
     """
-    Extrait un crop 224×224 avec approche LOCAL RELABELING (Expert-recommended).
+    Extrait un crop 224×224 SANS labeling ni HV (sera fait APRÈS rotation).
 
-    ✅ APPROCHE LOCAL RELABELING (2025-12-27):
+    ✅ FIX Expert 2025-12-28: label() et compute_hv_maps() APRÈS rotation
 
-    HISTORIQUE - Pourquoi abandonner l'approche HYBRIDE:
-    1. Bug #1: ID collision (noyaux complets IDs originaux vs fragmentés renumbered)
-       → Plusieurs instances avec même ID → AJI baisse de 0.5535 à 0.5055 (-8.7%)
-    2. Bug #2: HV rotation mathematics error (90°/270° inversions de signe)
-       → Modèle apprend mauvaises directions de gradients
-    3. Complexité excessive → Prone to bugs difficiles à détecter
+    PROBLÈME IDENTIFIÉ:
+    - label() numérote les noyaux de gauche à droite
+    - Si rotation APRÈS labeling → ordre des IDs incohérent avec image rotée
+    - Pour Transformer (H-optimus-0): ordre spatial des tokens crucial
+    - Cette dissonance crée du "bruit" qui bloque la précision à ~0.55 AJI
 
-    SOLUTION LOCAL RELABELING:
-    1. Extraire crop 224×224 standard (slicing)
-    2. Appliquer scipy.ndimage.label() sur masque binaire NP
-       → Crée inst_map_local avec IDs séquentiels [1, 2, 3, ..., n]
-    3. Recalculer TOUS les HV maps depuis inst_map_local
-       → Garantit cohérence 100% ID ↔ HV
+    SOLUTION:
+    1. extract_raw_crop() → juste slice (image, np, nt)
+    2. apply_rotation() → rotation spatiale
+    3. finalize_crop_after_rotation() → label() + compute_hv_maps() sur image rotée
 
-    BÉNÉFICES:
-    - SIMPLICITÉ: Pas de distinction complets/fragmentés → moins de bugs
-    - COHÉRENCE GARANTIE: inst_map ↔ HV maps toujours alignés
-    - PRODUCTION REALITY: Modèle ne verra jamais contexte global 256×256
-    - PAS DE COLLISIONS: scipy.ndimage.label() garantit IDs uniques
+    Résultat: IDs d'instances suivent l'ordre naturel dans l'image FINALE.
 
     Args:
         image: Image RGB 256×256
-        inst_map_global: Instance map 256×256 (utilisé seulement comme référence)
-        hv_global: HV maps globaux (2, 256, 256) (non utilisé dans LOCAL)
         np_target: Masque binaire 256×256
         nt_target: Types cellulaires 256×256
         x1, y1, x2, y2: Coordonnées crop
 
     Returns:
-        Dict avec:
-        - image: Crop 224×224 RGB
-        - np_target: Masque binaire 224×224
-        - hv_target: HV maps LOCAL (recalculés depuis inst_map_local)
-        - nt_target: Types cellulaires 224×224
-        - inst_map: inst_map_local avec IDs séquentiels [1, 2, ..., n]
+        Dict avec crop RAW (sans inst_map ni hv_target)
     """
-    # ========================================================================
-    # APPROCHE LOCAL RELABELING (Expert-recommended, 2025-12-27)
-    # ========================================================================
-    # PRINCIPE: Relabeling complet local au lieu de l'approche HYBRID complexe.
-    #
-    # POURQUOI CETTE APPROCHE:
-    # 1. SIMPLICITÉ: Pas de distinction complets/fragmentés → moins de bugs
-    # 2. COHÉRENCE GARANTIE: inst_map_local ↔ HV maps 100% alignés
-    # 3. PRODUCTION REALITY: Le modèle ne verra JAMAIS le contexte global 256×256
-    #    en production, seulement des crops 224×224. Donc l'entraînement
-    #    doit correspondre à cette réalité.
-    #
-    # ========================================================================
-
-    # 1. Extraire crop (slicing standard)
     crop_image = image[y1:y2, x1:x2]
     crop_np = np_target[y1:y2, x1:x2]
     crop_nt = nt_target[y1:y2, x1:x2]
 
-    # 2. LOCAL RELABELING: Créer instance map locale avec IDs séquentiels
-    # Utilise scipy.ndimage.label() pour identifier connected components
-    from scipy.ndimage import label
-
-    binary_mask = (crop_np > 0.5).astype(np.uint8)
-    inst_map_local, n_instances = label(binary_mask)
-
-    # inst_map_local contient maintenant des IDs UNIQUES séquentiels [1, 2, 3, ..., n]
-    # SANS référence aux IDs globaux de l'image 256×256 originale
-
-    # 3. Recalculer HV maps ENTIÈREMENT depuis inst_map_local
-    # CRITIQUE: Cela garantit que les vecteurs HV pointent vers les centres
-    # calculés à partir de inst_map_local, PAS depuis les centres globaux
-    crop_hv = compute_hv_maps(inst_map_local)
-
-    # RÉSULTAT: Cohérence 100% garantie entre inst_map_local et crop_hv
-    # - Chaque instance dans inst_map_local a un ID unique
-    # - Chaque ID correspond à UN SEUL centre de masse
-    # - Les vecteurs HV dans crop_hv pointent vers CES centres (pas d'autres)
-    # ========================================================================
-
-    # 4. Validation
+    # Validation basique
     assert crop_image.shape == (CROP_SIZE, CROP_SIZE, 3), f"Image shape: {crop_image.shape}"
     assert crop_np.shape == (CROP_SIZE, CROP_SIZE), f"NP shape: {crop_np.shape}"
-    assert crop_hv.shape == (2, CROP_SIZE, CROP_SIZE), f"HV shape: {crop_hv.shape}"
     assert crop_nt.shape == (CROP_SIZE, CROP_SIZE), f"NT shape: {crop_nt.shape}"
-    assert inst_map_local.shape == (CROP_SIZE, CROP_SIZE), f"inst_map shape: {inst_map_local.shape}"
-
-    # Validation HV range [-1, 1]
-    assert crop_hv.min() >= -1.0 and crop_hv.max() <= 1.0, \
-        f"HV range invalid: [{crop_hv.min():.3f}, {crop_hv.max():.3f}]"
-
-    # Validation inst_map: IDs doivent être séquentiels [1, 2, ..., n_instances]
-    unique_ids = np.unique(inst_map_local)
-    unique_ids = unique_ids[unique_ids > 0]  # Exclure background (0)
-    expected_ids = np.arange(1, n_instances + 1)
-    assert np.array_equal(unique_ids, expected_ids), \
-        f"inst_map IDs not sequential: {unique_ids} vs expected {expected_ids}"
 
     return {
         'image': crop_image,
         'np_target': crop_np,
-        'hv_target': crop_hv,  # ✅ LOCAL: Recalculé depuis inst_map_local
         'nt_target': crop_nt,
-        'inst_map': inst_map_local,  # ✅ LOCAL: IDs séquentiels [1, 2, 3, ..., n]
     }
+
+
+def apply_simple_rotation(
+    image: np.ndarray,
+    np_target: np.ndarray,
+    nt_target: np.ndarray,
+    rotation: str
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Applique rotation SIMPLE (sans HV - car HV sera calculé après).
+
+    Args:
+        image: (224, 224, 3)
+        np_target: (224, 224)
+        nt_target: (224, 224)
+        rotation: '0', '90', '180', '270', 'flip_h'
+
+    Returns:
+        (image_rot, np_rot, nt_rot)
+    """
+    if rotation == '0':
+        return image, np_target, nt_target
+
+    elif rotation == '90':
+        image_rot = np.rot90(image, k=-1, axes=(0, 1))
+        np_rot = np.rot90(np_target, k=-1, axes=(0, 1))
+        nt_rot = np.rot90(nt_target, k=-1, axes=(0, 1))
+        return image_rot, np_rot, nt_rot
+
+    elif rotation == '180':
+        image_rot = np.rot90(image, k=2, axes=(0, 1))
+        np_rot = np.rot90(np_target, k=2, axes=(0, 1))
+        nt_rot = np.rot90(nt_target, k=2, axes=(0, 1))
+        return image_rot, np_rot, nt_rot
+
+    elif rotation == '270':
+        image_rot = np.rot90(image, k=1, axes=(0, 1))
+        np_rot = np.rot90(np_target, k=1, axes=(0, 1))
+        nt_rot = np.rot90(nt_target, k=1, axes=(0, 1))
+        return image_rot, np_rot, nt_rot
+
+    elif rotation == 'flip_h':
+        image_rot = np.fliplr(image)
+        np_rot = np.fliplr(np_target)
+        nt_rot = np.fliplr(nt_target)
+        return image_rot, np_rot, nt_rot
+
+    else:
+        raise ValueError(f"Unknown rotation: {rotation}")
+
+
+def finalize_crop_after_rotation(
+    image: np.ndarray,
+    np_target: np.ndarray,
+    nt_target: np.ndarray
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Finalise un crop APRÈS rotation: label() + compute_hv_maps().
+
+    ✅ FIX Expert 2025-12-28: Cette fonction est appelée APRÈS rotation
+    pour garantir que les IDs d'instances suivent l'ordre spatial naturel
+    dans l'image FINALE (rotée).
+
+    Args:
+        image: Image rotée (224, 224, 3)
+        np_target: Masque binaire roté (224, 224)
+        nt_target: Types cellulaires rotés (224, 224)
+
+    Returns:
+        (hv_target, inst_map, n_instances, is_valid)
+    """
+    from scipy.ndimage import label
+
+    # Labeling sur image ROTÉE → IDs suivent ordre naturel gauche→droite
+    binary_mask = (np_target > 0.5).astype(np.uint8)
+    inst_map, n_instances = label(binary_mask)
+
+    # Vérifier si crop valide (au moins 1 noyau)
+    is_valid = n_instances > 0
+
+    if not is_valid:
+        # Retourner HV vide si pas de noyaux
+        hv_target = np.zeros((2, CROP_SIZE, CROP_SIZE), dtype=np.float32)
+        return hv_target, inst_map, n_instances, False
+
+    # Calculer HV sur image ROTÉE → vecteurs pointent vers bons centres
+    hv_target = compute_hv_maps(inst_map)
+
+    # Validation HV range
+    assert hv_target.min() >= -1.0 and hv_target.max() <= 1.0, \
+        f"HV range invalid: [{hv_target.min():.3f}, {hv_target.max():.3f}]"
+
+    return hv_target, inst_map, n_instances, True
 
 
 def is_valid_crop(np_target: np.ndarray, nt_target: np.ndarray) -> Tuple[bool, int]:
@@ -549,37 +575,39 @@ def generate_smart_crops_from_pannuke(
             assert image.shape == (PANNUKE_IMAGE_SIZE, PANNUKE_IMAGE_SIZE, 3)
             assert mask.shape == (PANNUKE_IMAGE_SIZE, PANNUKE_IMAGE_SIZE, 6)
 
-            # Générer targets à 256×256 (AVANT crop)
-            inst_map = extract_pannuke_instances(mask)
+            # Générer targets à 256×256 (NP et NT seulement - HV sera calculé APRÈS rotation)
+            # ⚠️ FIX CRITIQUE: Ne PAS calculer HV ici - le label() doit être fait APRÈS rotation
             np_target = compute_np_target(mask)
-            hv_target = compute_hv_maps(inst_map)
             nt_target = compute_nt_target(mask)
 
             # Générer 5 crops avec rotations spécifiques (stratégie V13 Smart Crops)
             for pos_name, (x1, y1, x2, y2) in CROP_POSITIONS.items():
-                crop = extract_crop(
-                    image, inst_map, hv_target, np_target, nt_target,
+                # ÉTAPE 1: Extraire crop RAW (sans HV ni inst_map)
+                crop_raw = extract_raw_crop(
+                    image, np_target, nt_target,
                     x1, y1, x2, y2
                 )
 
-                # Filtrer si GT vide
-                is_valid, _ = is_valid_crop(crop['np_target'], crop['nt_target'])
+                # ÉTAPE 2: Appliquer rotation (image, np, nt seulement)
+                rotation = CROP_ROTATION_MAPPING[pos_name]
 
+                img_rot, np_rot, nt_rot = apply_simple_rotation(
+                    crop_raw['image'],
+                    crop_raw['np_target'],
+                    crop_raw['nt_target'],
+                    rotation
+                )
+
+                # ÉTAPE 3: Finaliser APRÈS rotation - c'est ici que label() est fait!
+                # ⚠️ FIX CRITIQUE: label() sur image ROTÉE = ordre spatial cohérent
+                hv_rot, inst_rot, n_instances, is_valid = finalize_crop_after_rotation(
+                    img_rot, np_rot, nt_rot
+                )
+
+                # Filtrer si GT vide (aucune instance après rotation)
                 if not is_valid:
                     stats['total_crops_filtered'] += 1
                     continue
-
-                # Appliquer la rotation spécifique à ce crop (1 seule rotation par crop)
-                rotation = CROP_ROTATION_MAPPING[pos_name]
-
-                img_rot, np_rot, hv_rot, nt_rot, inst_rot = apply_rotation(
-                    crop['image'],
-                    crop['np_target'],
-                    crop['hv_target'],
-                    crop['nt_target'],
-                    crop['inst_map'],
-                    rotation
-                )
 
                 crops_data['images'].append(img_rot)
                 crops_data['np_targets'].append(np_rot)
