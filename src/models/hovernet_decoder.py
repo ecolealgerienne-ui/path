@@ -277,6 +277,96 @@ class RuifrokExtractor(nn.Module):
         return h_channel
 
 
+class HChannelPyramid(nn.Module):
+    """
+    FPN Chimique: Pyramide multi-échelle du canal Hématoxyline.
+
+    Génère le H-channel à 5 résolutions pour injection à chaque niveau du décodeur:
+    - Level 0: 16×16   (après bottleneck)
+    - Level 1: 32×32   (après up1)
+    - Level 2: 64×64   (après up2)
+    - Level 3: 112×112 (après up3)
+    - Level 4: 224×224 (après up4)
+
+    POURQUOI FPN Chimique:
+    - L'injection tardive (224×224 seul) = "cécité profonde"
+    - Le décodeur a déjà figé ses décisions géométriques
+    - Le H-channel doit guider DEPUIS LE DÉBUT la reconstruction
+
+    Chaque niveau a sa propre projection 1→16 canaux + InstanceNorm.
+
+    Architecture par niveau:
+        H@16×16 → Conv1x1(1→16) → InstanceNorm → ReLU
+        ...
+        H@224×224 → Conv1x1(1→16) → InstanceNorm → ReLU
+
+    Usage:
+        pyramid = HChannelPyramid()
+        h_dict = pyramid(rgb_image)
+        # h_dict = {16: (B,16,16,16), 32: (B,16,32,32), ..., 224: (B,16,224,224)}
+    """
+
+    # Résolutions de la pyramide (correspondant aux niveaux du décodeur)
+    SCALES = [16, 32, 64, 112, 224]
+
+    def __init__(self, h_projection_dim: int = 16):
+        super().__init__()
+
+        self.h_projection_dim = h_projection_dim
+
+        # Matrice staining H&E (Ruifrok)
+        self.register_buffer(
+            'stain_matrix',
+            torch.tensor([0.650, 0.704, 0.286]).view(1, 3, 1, 1)
+        )
+
+        # Projection et normalisation séparées pour chaque échelle
+        # Cela permet au modèle d'apprendre des représentations adaptées à chaque résolution
+        self.projections = nn.ModuleDict()
+        for scale in self.SCALES:
+            self.projections[str(scale)] = nn.Sequential(
+                nn.Conv2d(1, h_projection_dim, kernel_size=1, bias=False),
+                nn.InstanceNorm2d(h_projection_dim, affine=True),
+                nn.ReLU(inplace=True),
+            )
+
+    def forward(self, rgb_input: torch.Tensor) -> dict:
+        """
+        Extrait la pyramide H-channel multi-échelle.
+
+        Args:
+            rgb_input: Image RGB (B, 3, H, W) en [0, 255]
+
+        Returns:
+            dict: {scale: h_features} où h_features = (B, h_projection_dim, scale, scale)
+        """
+        # Clamp pour éviter log(0)
+        rgb_input = rgb_input.clamp(1e-6, 255.0)
+
+        # RGB → Optical Density
+        od = -torch.log10(rgb_input / 255.0 + 1e-6)
+
+        # Projection sur vecteur Hématoxyline (full resolution)
+        h_full = torch.sum(od * self.stain_matrix, dim=1, keepdim=True)
+        # h_full: (B, 1, H, W) où H=W=224 typiquement
+
+        # Construire la pyramide
+        pyramid = {}
+        for scale in self.SCALES:
+            # Resize à l'échelle cible
+            h_scaled = F.interpolate(
+                h_full,
+                size=(scale, scale),
+                mode='bilinear',
+                align_corners=False
+            )
+            # Projection 1 → 16 canaux avec normalisation
+            h_projected = self.projections[str(scale)](h_scaled)
+            pyramid[scale] = h_projected
+
+        return pyramid
+
+
 class DecoderHead(nn.Module):
     """
     Tête de décodage légère.
@@ -355,8 +445,9 @@ class HoVerNetDecoder(nn.Module):
         img_size: int = 224,
         n_classes: int = 5,
         dropout: float = 0.1,  # Dropout pour régularisation
-        use_hybrid: bool = False,  # Activer injection H-channel
+        use_hybrid: bool = False,  # Activer injection H-channel (obsolète, utiliser use_fpn_chimique)
         use_se_block: bool = False,  # Activer SE-Block après fusion (Hu et al., 2018)
+        use_fpn_chimique: bool = False,  # Activer FPN Chimique (injection multi-échelle)
     ):
         super().__init__()
 
@@ -365,6 +456,7 @@ class HoVerNetDecoder(nn.Module):
         self.n_patches = img_size // patch_size  # 16 pour 224/14
         self.use_hybrid = use_hybrid
         self.use_se_block = use_se_block
+        self.use_fpn_chimique = use_fpn_chimique
 
         # ===== BOTTLENECK PARTAGÉ (économie VRAM) =====
         self.bottleneck = nn.Sequential(
@@ -374,51 +466,80 @@ class HoVerNetDecoder(nn.Module):
             nn.Dropout2d(dropout) if dropout > 0 else nn.Identity(),
         )
 
-        # ===== MODE HYBRID V3: Extracteur H-channel AMPLIFIÉ =====
-        # V2 Problem: H-channel (1 canal) noyé par features (64 canaux) → 1.5% contribution
-        # V3 Solution: Projeter H-channel sur 16 canaux → 16/(64+16) = 20% contribution
-        self.h_projection_dim = 16  # Nombre de canaux pour H-channel amplifié
-        if use_hybrid:
+        # Nombre de canaux pour H-channel amplifié (utilisé par hybrid et fpn_chimique)
+        self.h_projection_dim = 16
+
+        # =====================================================================
+        # MODE FPN CHIMIQUE: Injection multi-échelle du H-channel
+        # =====================================================================
+        # Résout le problème de "Cécité Profonde":
+        # - L'injection tardive (224×224 seul) = le décodeur a déjà figé ses décisions
+        # - FPN Chimique injecte H à CHAQUE niveau: 16, 32, 64, 112, 224
+        # - Le H-channel guide la reconstruction DEPUIS LE DÉBUT
+        #
+        # Architecture avec FPN Chimique:
+        #   Bottleneck (256) + H@16 (16) = 272 → up1 → 128
+        #   128 + H@32 (16) = 144 → up2 → 64
+        #   64 + H@64 (16) = 80 → up3 → 64
+        #   64 + H@112 (16) = 80 → up4 → 64
+        #   64 + H@224 (16) = 80 → Heads
+        # =====================================================================
+        if use_fpn_chimique:
+            self.h_pyramid = HChannelPyramid(h_projection_dim=self.h_projection_dim)
+            self.ruifrok = None  # Non utilisé en mode FPN
+            self.h_projection = None
+
+            # Canaux ajustés pour chaque niveau (+ 16 H-channel)
+            up1_in_channels = bottleneck_dim + self.h_projection_dim  # 256 + 16 = 272
+            up2_in_channels = 128 + self.h_projection_dim  # 128 + 16 = 144
+            up3_in_channels = 64 + self.h_projection_dim   # 64 + 16 = 80
+            up4_in_channels = 64 + self.h_projection_dim   # 64 + 16 = 80
+            head_in_channels = 64 + self.h_projection_dim  # 64 + 16 = 80
+
+        elif use_hybrid:
+            # ===== MODE HYBRID V3 (legacy): Injection H à 224×224 seul =====
+            self.h_pyramid = None
             self.ruifrok = RuifrokExtractor()
-            # Projection 1 → 16 canaux avec conv 1x1 (learnable)
             self.h_projection = nn.Sequential(
                 nn.Conv2d(1, self.h_projection_dim, kernel_size=1),
                 nn.ReLU(inplace=True),
             )
             up1_in_channels = bottleneck_dim  # 256
-            # L'injection se fait APRÈS up4, au niveau 224×224
-            head_in_channels = 64 + self.h_projection_dim  # 80 = features(64) + H-channel(16)
+            up2_in_channels = 128
+            up3_in_channels = 64
+            up4_in_channels = 64
+            head_in_channels = 64 + self.h_projection_dim  # 80
+
         else:
+            # ===== MODE STANDARD: Pas d'injection H =====
+            self.h_pyramid = None
             self.ruifrok = None
             self.h_projection = None
             up1_in_channels = bottleneck_dim  # 256
+            up2_in_channels = 128
+            up3_in_channels = 64
+            up4_in_channels = 64
             head_in_channels = 64
 
         # ===== TRONC COMMUN (upsampling partagé) =====
+        # Avec FPN Chimique: les input channels sont ajustés pour inclure H-channel
         # 16x16 → 32 → 64 → 128 → 224
-        # Expert: Remplacer bilinear par PixelShuffle pour bords nets
-        self.up1 = PixelShuffleBlock(up1_in_channels, 128)  # 16→32, (256 ou 257)→128
-        self.up2 = PixelShuffleBlock(128, 64)               # 32→64, 128→64
-        self.up3 = PixelShuffleBlock(64, 64)                # 64→128, 64→64
-        self.up4 = PixelShuffleBlock(64, 64)                # 128→256, 64→64
+        self.up1 = PixelShuffleBlock(up1_in_channels, 128)  # (256 ou 272) → 128
+        self.up2 = PixelShuffleBlock(up2_in_channels, 64)   # (128 ou 144) → 64
+        self.up3 = PixelShuffleBlock(up3_in_channels, 64)   # (64 ou 80) → 64
+        self.up4 = PixelShuffleBlock(up4_in_channels, 64)   # (64 ou 80) → 64
 
         # Dropout entre les blocs d'upsampling
         self.dropout = nn.Dropout2d(dropout) if dropout > 0 else nn.Identity()
 
-        # ===== SE-BLOCK: Attention sur canaux après fusion (Hu et al., 2018) =====
-        # Résout le problème du "Passager Clandestin":
-        # Sans SE: le modèle ignore H-channel (concat passive)
-        # Avec SE: le modèle apprend à augmenter le poids de H sur les bordures
-        #
-        # Le SE-Block recalibre les 80 canaux (64 RGB + 16 H) en fonction du contexte
-        # global. Sur les pixels de bordure, il augmente le poids des canaux H-channel.
+        # ===== SE-BLOCK: Attention sur canaux après fusion finale (Hu et al., 2018) =====
+        # Avec FPN Chimique: recalibre les 80 canaux finaux (64 features + 16 H@224)
         if use_se_block:
             self.se_block = SEBlock(head_in_channels, reduction=16)
         else:
             self.se_block = None
 
         # ===== TÊTES SPÉCIALISÉES (légères) =====
-        # V2 Hybrid: 65 canaux (64 features + 1 H-channel) si use_hybrid=True
         self.np_head = DecoderHead(head_in_channels, 2)        # Nuclei Presence (binaire)
         self.hv_head = nn.Sequential(
             DecoderHead(head_in_channels, 2),
@@ -473,79 +594,116 @@ class HoVerNetDecoder(nn.Module):
         """
         Args:
             features: (B, N, D) tokens du ViT (dernière couche)
-            images_rgb: (B, 3, H, W) images RGB en [0, 255] (requis si use_hybrid=True)
+            images_rgb: (B, 3, H, W) images RGB en [0, 255] (requis si use_hybrid ou use_fpn_chimique)
 
         Returns:
             np_logits: (B, 2, H, W) - probabilités noyau/background
             hv_maps: (B, 2, H, W) - cartes horizontal/vertical
             nt_logits: (B, 5, H, W) - probabilités par type
         """
+        # =====================================================================
+        # FPN CHIMIQUE: Injection multi-échelle du H-channel
+        # =====================================================================
+        # Le H-channel est injecté à CHAQUE niveau du décodeur:
+        #   16×16 → 32×32 → 64×64 → 112×112 → 224×224
+        #
+        # Résout le problème de "Cécité Profonde":
+        # - L'injection tardive (224 seul) = décisions déjà figées
+        # - FPN Chimique guide la reconstruction DEPUIS LE DÉBUT
+        #
+        # GAIN ATTENDU: AJI 0.54 → 0.68 (+26%) via guidage continu
+        # =====================================================================
+
         # Reshape tokens → spatial
         x = self.reshape_features(features)  # (B, 1536, 16, 16)
 
-        # Bottleneck partagé (économie VRAM: 1536 → 256, + dropout)
+        # Bottleneck partagé (économie VRAM: 1536 → 256)
         x = self.bottleneck(x)  # (B, 256, 16, 16)
 
-        # Tronc commun (upsampling partagé avec dropout)
-        x = self.up1(x)         # (B, 128, 32, 32)
-        x = self.dropout(x)
-        x = self.up2(x)         # (B, 64, 64, 64)
-        x = self.dropout(x)
-        x = self.up3(x)         # (B, 64, 128, 128)
-        x = self.dropout(x)
-        x = self.up4(x)         # (B, 64, 256, 256)
+        # ===== MODE FPN CHIMIQUE: Injection à chaque niveau =====
+        if self.use_fpn_chimique:
+            if images_rgb is None:
+                raise ValueError(
+                    "images_rgb est requis quand use_fpn_chimique=True. "
+                    "Passez les images RGB (B, 3, H, W) au forward()."
+                )
 
-        # Ajuster à la taille cible (224x224)
-        if x.shape[-1] != self.img_size:
-            x = F.interpolate(x, size=(self.img_size, self.img_size),
-                            mode='bilinear', align_corners=False)
+            # Extraire la pyramide H-channel (5 niveaux)
+            h_pyramid = self.h_pyramid(images_rgb)
+            # h_pyramid = {16: (B,16,16,16), 32: (B,16,32,32), 64: (B,16,64,64),
+            #              112: (B,16,112,112), 224: (B,16,224,224)}
 
-        # =====================================================================
-        # V13-HYBRID V2: Injection canal H à HAUTE RÉSOLUTION (224×224)
-        # =====================================================================
-        #
-        # POURQUOI injection haute résolution (vs bottleneck 16×16):
-        # 1. Bottleneck Dominance: 256 features noient 1 H-channel → gradient drowns
-        # 2. Résolution: AJI mesure précision au pixel → 16×16 trop grossier
-        # 3. Skip-Connection Chimique: H guide les têtes au niveau pixel
-        #
-        # Le canal H (Ruifrok) contient l'info de densité chromatinienne PURE.
-        # En l'injectant à 224×224, chaque pixel de H correspond directement à
-        # un pixel de sortie → guide précis pour les membranes cellulaires.
-        #
-        # GAIN ATTENDU: AJI +18% (0.54 → 0.68) via séparation instances améliorée
-        # =====================================================================
-        if self.use_hybrid:
+            # Niveau 0: Après bottleneck (16×16)
+            x = torch.cat([x, h_pyramid[16]], dim=1)  # (B, 272, 16, 16)
+
+            # Niveau 1: up1 (16→32) puis injection H@32
+            x = self.up1(x)  # (B, 128, 32, 32)
+            x = self.dropout(x)
+            x = torch.cat([x, h_pyramid[32]], dim=1)  # (B, 144, 32, 32)
+
+            # Niveau 2: up2 (32→64) puis injection H@64
+            x = self.up2(x)  # (B, 64, 64, 64)
+            x = self.dropout(x)
+            x = torch.cat([x, h_pyramid[64]], dim=1)  # (B, 80, 64, 64)
+
+            # Niveau 3: up3 (64→128) puis interpolation à 112 et injection H@112
+            x = self.up3(x)  # (B, 64, 128, 128)
+            x = self.dropout(x)
+            x = F.interpolate(x, size=(112, 112), mode='bilinear', align_corners=False)
+            x = torch.cat([x, h_pyramid[112]], dim=1)  # (B, 80, 112, 112)
+
+            # Niveau 4: up4 (112→224) puis injection H@224
+            x = self.up4(x)  # (B, 64, 224, 224)
+            x = torch.cat([x, h_pyramid[224]], dim=1)  # (B, 80, 224, 224)
+
+        # ===== MODE HYBRID V3 (legacy): Injection H à 224×224 seul =====
+        elif self.use_hybrid:
             if images_rgb is None:
                 raise ValueError(
                     "images_rgb est requis quand use_hybrid=True. "
                     "Passez les images RGB (B, 3, H, W) au forward()."
                 )
 
-            # Extraire canal H via déconvolution Ruifrok à HAUTE RÉSOLUTION
-            # target_size=224 au lieu de 16 → correspondance pixel-à-pixel
-            # NOTE: PAS de torch.no_grad() ici! On veut que les gradients
-            # passent par InstanceNorm2d pour optimiser ses paramètres affine.
+            # Tronc commun standard (sans injection intermédiaire)
+            x = self.up1(x)         # (B, 128, 32, 32)
+            x = self.dropout(x)
+            x = self.up2(x)         # (B, 64, 64, 64)
+            x = self.dropout(x)
+            x = self.up3(x)         # (B, 64, 128, 128)
+            x = self.dropout(x)
+            x = self.up4(x)         # (B, 64, 256, 256)
+
+            # Ajuster à 224×224
+            if x.shape[-1] != self.img_size:
+                x = F.interpolate(x, size=(self.img_size, self.img_size),
+                                mode='bilinear', align_corners=False)
+
+            # Injection H à haute résolution (224×224)
             h_channel = self.ruifrok(images_rgb, target_size=self.img_size)
-            # h_channel: (B, 1, 224, 224) ← HAUTE RÉSOLUTION, normalisé N(0,1)
-
-            # V3: Amplifier H-channel de 1 → 16 canaux pour augmenter son influence
-            # Avant: 1/(64+1) = 1.5% contribution → noyé par features
-            # Après: 16/(64+16) = 20% contribution → influence significative
             h_channel = self.h_projection(h_channel)
-            # h_channel: (B, 16, 224, 224) ← AMPLIFIÉ
-
-            # Concaténer avec features décodées (skip-connection chimique)
             x = torch.cat([x, h_channel], dim=1)  # (B, 80, 224, 224)
 
-        # ===== SE-BLOCK: Recalibration des canaux (Hu et al., 2018) =====
-        # Force le modèle à augmenter le poids du H-channel sur les bordures
-        # Résout le "Passager Clandestin" : H-channel n'est plus ignoré
-        if self.se_block is not None:
-            x = self.se_block(x)  # (B, 80, 224, 224) → recalibré
+        # ===== MODE STANDARD: Pas d'injection H =====
+        else:
+            x = self.up1(x)         # (B, 128, 32, 32)
+            x = self.dropout(x)
+            x = self.up2(x)         # (B, 64, 64, 64)
+            x = self.dropout(x)
+            x = self.up3(x)         # (B, 64, 128, 128)
+            x = self.dropout(x)
+            x = self.up4(x)         # (B, 64, 256, 256)
 
-        # Têtes spécialisées (légères, partagent les features du tronc)
-        # V3 Hybrid: prennent 80 canaux (64 features + 16 H-channel amplifié)
+            # Ajuster à 224×224
+            if x.shape[-1] != self.img_size:
+                x = F.interpolate(x, size=(self.img_size, self.img_size),
+                                mode='bilinear', align_corners=False)
+
+        # ===== SE-BLOCK: Recalibration finale des canaux (Hu et al., 2018) =====
+        # Avec FPN Chimique: recalibre les 80 canaux finaux (64 features + 16 H@224)
+        if self.se_block is not None:
+            x = self.se_block(x)
+
+        # Têtes spécialisées
         np_out = self.np_head(x)
         hv_out = self.hv_head(x)
         nt_out = self.nt_head(x)

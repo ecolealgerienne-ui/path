@@ -262,6 +262,11 @@ def main():
         action="store_true",
         help="Use hybrid mode (RGB+H-channel injection)"
     )
+    parser.add_argument(
+        "--use_fpn_chimique",
+        action="store_true",
+        help="Use FPN Chimique (multi-scale H-injection at 5 levels)"
+    )
     args = parser.parse_args()
 
     device = torch.device(args.device)
@@ -279,6 +284,7 @@ def main():
     print(f"  Watershed min_size: {args.min_size}")
     print(f"  Watershed min_distance: {args.min_distance}")
     print(f"  Hybrid mode: {args.use_hybrid} (H-channel injection)")
+    print(f"  FPN Chimique: {args.use_fpn_chimique} (multi-scale H @ 16,32,64,112,224)")
     print(f"  Device: {args.device}")
 
     # Load model
@@ -286,9 +292,10 @@ def main():
     print("LOADING MODEL")
     print("=" * 80)
 
-    # Check checkpoint for hybrid mode consistency
+    # Check checkpoint for hybrid/fpn mode consistency
     checkpoint = torch.load(args.checkpoint, map_location=device)
     checkpoint_use_hybrid = checkpoint.get('use_hybrid', False)
+    checkpoint_use_fpn = checkpoint.get('use_fpn_chimique', False)
 
     if args.use_hybrid != checkpoint_use_hybrid:
         print(f"  ⚠️  WARNING: Checkpoint trained with use_hybrid={checkpoint_use_hybrid}")
@@ -296,11 +303,18 @@ def main():
         print(f"  ⚠️  Using checkpoint setting: use_hybrid={checkpoint_use_hybrid}")
         args.use_hybrid = checkpoint_use_hybrid
 
+    if args.use_fpn_chimique != checkpoint_use_fpn:
+        print(f"  ⚠️  WARNING: Checkpoint trained with use_fpn_chimique={checkpoint_use_fpn}")
+        print(f"  ⚠️  But evaluation requested use_fpn_chimique={args.use_fpn_chimique}")
+        print(f"  ⚠️  Using checkpoint setting: use_fpn_chimique={checkpoint_use_fpn}")
+        args.use_fpn_chimique = checkpoint_use_fpn
+
     model = HoVerNetDecoder(
         embed_dim=1536,
         n_classes=n_classes,
         dropout=0.1,
-        use_hybrid=args.use_hybrid
+        use_hybrid=args.use_hybrid,
+        use_fpn_chimique=args.use_fpn_chimique
     ).to(device)
 
     model.load_state_dict(checkpoint['model_state_dict'])
@@ -310,6 +324,8 @@ def main():
     print(f"  Best Dice: {checkpoint.get('best_dice', 'N/A')}")
     if args.use_hybrid:
         print(f"  ✅ Mode HYBRID activé: injection H-channel via RuifrokExtractor")
+    if args.use_fpn_chimique:
+        print(f"  ✅ Mode FPN CHIMIQUE activé: injection H multi-échelle (16→32→64→112→224)")
 
     # Load validation data (targets + inst_maps)
     print("\n" + "=" * 80)

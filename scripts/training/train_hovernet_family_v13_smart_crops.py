@@ -648,6 +648,8 @@ def main():
                        help="Activer mode hybride RGB+H-channel (injection Hématoxyline)")
     parser.add_argument("--use_se_block", action="store_true",
                        help="Activer SE-Block pour recalibration attention sur H-channel (Hu et al. 2018)")
+    parser.add_argument("--use_fpn_chimique", action="store_true",
+                       help="Activer FPN Chimique (Multi-scale H-Injection) à 5 niveaux: 16, 32, 64, 112, 224")
     parser.add_argument("--device", default="cuda", choices=["cuda", "cpu"])
     args = parser.parse_args()
 
@@ -669,6 +671,7 @@ def main():
     print(f"  Adaptive loss: {args.adaptive_loss}")
     print(f"  Hybrid mode: {args.use_hybrid} (injection H-channel)")
     print(f"  SE-Block: {args.use_se_block} (attention recalibration)")
+    print(f"  FPN Chimique: {args.use_fpn_chimique} (multi-scale H @ 16,32,64,112,224)")
     print(f"  Device: {args.device}")
 
     # Datasets
@@ -716,7 +719,8 @@ def main():
         n_classes=n_classes,
         dropout=args.dropout,
         use_hybrid=args.use_hybrid,
-        use_se_block=args.use_se_block
+        use_se_block=args.use_se_block,
+        use_fpn_chimique=args.use_fpn_chimique
     ).to(device)
 
     if args.use_hybrid:
@@ -726,6 +730,12 @@ def main():
     if args.use_se_block:
         print(f"  → SE-Block activé: recalibration des canaux post-fusion")
         print(f"  → Attention forcée sur H-channel aux pixels de frontière")
+
+    if args.use_fpn_chimique:
+        print(f"  → FPN CHIMIQUE activé: injection H-channel à 5 niveaux")
+        print(f"  → Niveaux: 16×16 → 32×32 → 64×64 → 112×112 → 224×224")
+        print(f"  → Architecture: Bottleneck(256) + H@16(16) = 272 → up1 → 128 + H@32(16) = 144 → ...")
+        print(f"  → Objectif: Briser la 'Cécité Profonde' - H visible dès le niveau 0")
 
     n_params = sum(p.numel() for p in model.parameters())
     print(f"  → Paramètres: {n_params:,}")
@@ -823,8 +833,12 @@ def main():
             best_combined_score = combined_score
             best_dice = val_metrics['dice']
 
-            # Suffix pour différencier mode hybride
-            suffix = "_hybrid" if args.use_hybrid else ""
+            # Suffix pour différencier modes
+            suffix = ""
+            if args.use_hybrid:
+                suffix += "_hybrid"
+            if args.use_fpn_chimique:
+                suffix += "_fpn"
             checkpoint_path = checkpoint_dir / f"hovernet_{args.family}_v13_smart_crops{suffix}_best.pth"
             torch.save({
                 'epoch': epoch,
@@ -835,13 +849,18 @@ def main():
                 'best_combined_score': best_combined_score,
                 'val_metrics': val_metrics,
                 'args': vars(args),
-                'use_hybrid': args.use_hybrid  # Important pour chargement inference
+                'use_hybrid': args.use_hybrid,  # Important pour chargement inference
+                'use_fpn_chimique': args.use_fpn_chimique  # FPN Chimique multi-scale
             }, checkpoint_path)
 
             print(f"✅ Best model saved (Score: {combined_score:.4f})")
 
     # Save history
-    suffix = "_hybrid" if args.use_hybrid else ""
+    suffix = ""
+    if args.use_hybrid:
+        suffix += "_hybrid"
+    if args.use_fpn_chimique:
+        suffix += "_fpn"
     history_path = checkpoint_dir / f"hovernet_{args.family}_v13_smart_crops{suffix}_history.json"
     with open(history_path, 'w') as f:
         json.dump(history, f, indent=2)
@@ -855,9 +874,13 @@ def main():
     print(f"\nCheckpoint: {checkpoint_final}")
     print(f"History: {history_path}")
     print("\nProchaine étape:")
-    hybrid_flag = " --use_hybrid" if args.use_hybrid else ""
+    flags = ""
+    if args.use_hybrid:
+        flags += " --use_hybrid"
+    if args.use_fpn_chimique:
+        flags += " --use_fpn_chimique"
     print(f"  python scripts/evaluation/test_v13_smart_crops_aji.py \\")
-    print(f"      --family {args.family} --n_samples 50{hybrid_flag}")
+    print(f"      --family {args.family} --n_samples 50{flags}")
 
     return 0
 
