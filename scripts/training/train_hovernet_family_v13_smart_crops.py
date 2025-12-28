@@ -667,6 +667,8 @@ def main():
                        help="Activer SE-Block pour recalibration attention sur H-channel (Hu et al. 2018)")
     parser.add_argument("--use_fpn_chimique", action="store_true",
                        help="Activer FPN Chimique (Multi-scale H-Injection) à 5 niveaux: 16, 32, 64, 112, 224")
+    parser.add_argument("--resume", type=str, default=None,
+                       help="Chemin vers checkpoint pour reprendre l'entraînement (fine-tuning)")
     parser.add_argument("--device", default="cuda", choices=["cuda", "cpu"])
     args = parser.parse_args()
 
@@ -754,6 +756,16 @@ def main():
         print(f"  → Architecture: Bottleneck(256) + H@16(16) = 272 → up1 → 128 + H@32(16) = 144 → ...")
         print(f"  → Objectif: Briser la 'Cécité Profonde' - H visible dès le niveau 0")
 
+    # Resume from checkpoint if provided
+    start_epoch = 0
+    if args.resume:
+        print(f"\n  📥 Chargement checkpoint: {args.resume}")
+        checkpoint = torch.load(args.resume, map_location=device, weights_only=False)
+        model.load_state_dict(checkpoint['model_state_dict'])
+        start_epoch = checkpoint.get('epoch', 0)
+        print(f"  ✅ Checkpoint chargé (epoch {start_epoch})")
+        print(f"  → Fine-tuning pour {args.epochs} epochs supplémentaires")
+
     n_params = sum(p.numel() for p in model.parameters())
     print(f"  → Paramètres: {n_params:,}")
 
@@ -801,7 +813,7 @@ def main():
     checkpoint_dir = PROJECT_ROOT / "models/checkpoints_v13_smart_crops"
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
-    for epoch in range(1, args.epochs + 1):
+    for epoch in range(start_epoch + 1, start_epoch + args.epochs + 1):
         # Lambda HV Scheduler (V13-Hybrid-Final 2025-12-28)
         # Epochs 1-25: lambda_hv stable pour convergence Dice/NT
         # Epochs 26+: boost lambda_hv pour affiner séparation membranes
