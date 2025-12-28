@@ -46,13 +46,35 @@ from src.models.organ_families import FAMILIES, get_organs, FAMILY_DESCRIPTIONS
 
 
 class FeatureAugmentation:
-    """Augmentation pour features H-optimus-0, targets et weight_map."""
+    """
+    Augmentation ALIGNÉE pour features H-optimus-0, targets, weight_map ET image RGB.
+
+    CRITIQUE (2025-12-28): L'image RGB DOIT être augmentée avec la MÊME transformation
+    que les features, sinon le H-channel extrait sera désaligné avec les targets.
+
+    Bug corrigé: Avant, l'image n'était pas augmentée → signaux contradictoires
+    → AJI 0.4584 (catastrophique) au lieu de 0.5444 (sans augmentation).
+    """
 
     def __init__(self, p_flip: float = 0.5, p_rot90: float = 0.5):
         self.p_flip = p_flip
         self.p_rot90 = p_rot90
 
-    def __call__(self, features, np_target, hv_target, nt_target, weight_map=None):
+    def __call__(self, features, np_target, hv_target, nt_target, weight_map=None, image=None):
+        """
+        Applique la MÊME transformation géométrique à tous les inputs.
+
+        Args:
+            features: (261, 1536) H-optimus-0 features
+            np_target: (224, 224) NP target
+            hv_target: (2, 224, 224) HV target
+            nt_target: (224, 224) NT target
+            weight_map: (224, 224) optional Ronneberger weights
+            image: (224, 224, 3) optional RGB image for hybrid mode
+
+        Returns:
+            Tuple of augmented tensors (MÊME transformation appliquée à tous)
+        """
         # Structure H-optimus-0: [CLS, Registers(4), Patches(256)]
         cls_token = features[0:1]
         registers = features[1:5]
@@ -61,8 +83,13 @@ class FeatureAugmentation:
         # Reshape patches en grille 16x16
         patches_grid = patches.reshape(16, 16, -1)
 
-        # Flip horizontal
-        if np.random.random() < self.p_flip:
+        # Décision d'augmentation (stockées pour appliquer la MÊME aux deux)
+        do_flip = np.random.random() < self.p_flip
+        do_rot = np.random.random() < self.p_rot90
+        rot_k = np.random.choice([1, 2, 3]) if do_rot else 0
+
+        # Flip horizontal - MÊME transformation pour features, targets ET image
+        if do_flip:
             patches_grid = np.flip(patches_grid, axis=1).copy()
             np_target = np.flip(np_target, axis=1).copy()
             hv_target = np.flip(hv_target, axis=2).copy()
@@ -70,29 +97,32 @@ class FeatureAugmentation:
             nt_target = np.flip(nt_target, axis=1).copy()
             if weight_map is not None:
                 weight_map = np.flip(weight_map, axis=1).copy()
+            if image is not None:
+                image = np.flip(image, axis=1).copy()  # (H, W, C) → flip sur W
 
-        # Rotation 90° (HV component swapping)
-        if np.random.random() < self.p_rot90:
-            k = np.random.choice([1, 2, 3])
-            patches_grid = np.rot90(patches_grid, k, axes=(0, 1)).copy()
-            np_target = np.rot90(np_target, k).copy()
-            hv_target = np.rot90(hv_target, k, axes=(1, 2)).copy()
-            nt_target = np.rot90(nt_target, k).copy()
+        # Rotation 90° - MÊME transformation pour features, targets ET image
+        if do_rot and rot_k > 0:
+            patches_grid = np.rot90(patches_grid, rot_k, axes=(0, 1)).copy()
+            np_target = np.rot90(np_target, rot_k).copy()
+            hv_target = np.rot90(hv_target, rot_k, axes=(1, 2)).copy()
+            nt_target = np.rot90(nt_target, rot_k).copy()
             if weight_map is not None:
-                weight_map = np.rot90(weight_map, k).copy()
+                weight_map = np.rot90(weight_map, rot_k).copy()
+            if image is not None:
+                image = np.rot90(image, rot_k, axes=(0, 1)).copy()  # (H, W, C) → rot sur H,W
 
             # Component swapping selon rotation
-            if k == 1:  # 90° anti-horaire
+            if rot_k == 1:  # 90° anti-horaire
                 hv_target = np.stack([hv_target[1], -hv_target[0]])
-            elif k == 2:  # 180°
+            elif rot_k == 2:  # 180°
                 hv_target = np.stack([-hv_target[0], -hv_target[1]])
-            elif k == 3:  # 270°
+            elif rot_k == 3:  # 270°
                 hv_target = np.stack([-hv_target[1], hv_target[0]])
 
         patches = patches_grid.reshape(256, -1)
         features = np.concatenate([cls_token, registers, patches], axis=0)
 
-        return features, np_target, hv_target, nt_target, weight_map
+        return features, np_target, hv_target, nt_target, weight_map, image
 
 
 class V13SmartCropsDataset(Dataset):
@@ -233,13 +263,13 @@ class V13SmartCropsDataset(Dataset):
 
         # Pas de resize nécessaire (déjà à 224×224)
 
+        # Augmentation ALIGNÉE (2025-12-28): MÊME transformation pour features ET image
         if self.augmenter is not None and self.split == "train":
-            features, np_target, hv_target, nt_target, weight_map = self.augmenter(
-                features, np_target, hv_target, nt_target, weight_map
+            features, np_target, hv_target, nt_target, weight_map, image = self.augmenter(
+                features, np_target, hv_target, nt_target, weight_map, image
             )
-            # NOTE: L'image n'est PAS augmentée avec features car RuifrokExtractor
-            # utilise torch.no_grad() - le gradient ne passe pas par l'image RGB.
-            # L'augmentation géométrique des features suffit.
+            # L'image EST maintenant augmentée avec la même transformation que features
+            # → Alignement spatial garanti entre H-channel et targets
 
         features = torch.from_numpy(features)
         np_target = torch.from_numpy(np_target.copy())
