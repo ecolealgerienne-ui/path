@@ -477,7 +477,10 @@ def generate_smart_crops_from_pannuke(
 
             all_source_images.append(image)
             all_source_masks.append(mask)
-            all_source_ids.append(i)
+            # IMPORTANT: Source ID globalement unique (fold * 10000 + local_index)
+            # Évite collision si même index local dans différents folds
+            global_source_id = fold * 10000 + i
+            all_source_ids.append(global_source_id)
             all_fold_ids.append(fold)
 
     n_total = len(all_source_images)
