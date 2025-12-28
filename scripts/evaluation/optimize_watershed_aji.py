@@ -198,44 +198,34 @@ def hv_to_instances(
 
 
 def load_model_and_data(checkpoint_path: str, family: str, device: str = "cuda"):
-    """Load model and validation data with auto-detection of architecture."""
+    """Load model and validation data - use checkpoint metadata for hybrid mode."""
 
     # Load checkpoint
     checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
+
+    # Get use_hybrid from checkpoint metadata (like test_v13_smart_crops_aji.py does)
+    use_hybrid = checkpoint.get('use_hybrid', False)
     state_dict = checkpoint.get('model_state_dict', checkpoint)
 
-    # Auto-detect architecture from checkpoint
-    has_ruifrok = any('ruifrok' in k for k in state_dict.keys())
-    has_h_projection = any('h_projection' in k for k in state_dict.keys())
+    print(f"  Checkpoint metadata: use_hybrid={use_hybrid}")
 
-    # Check head input dimension
+    # Also check head dimensions for additional info
     if 'np_head.head.0.weight' in state_dict:
         head_in_channels = state_dict['np_head.head.0.weight'].shape[1]
-    else:
-        head_in_channels = 64
-
-    # Determine configuration
-    if head_in_channels == 80:
-        use_hybrid = True
-        print(f"  Auto-detected: V3 Hybrid (16 H-channels)")
-    elif head_in_channels == 65:
-        use_hybrid = True
-        print(f"  Auto-detected: V2 Hybrid (1 H-channel)")
-    elif has_ruifrok or has_h_projection:
-        use_hybrid = True
-        print(f"  Auto-detected: Hybrid mode ({head_in_channels} input)")
-    else:
-        use_hybrid = False
-        print(f"  Auto-detected: Non-hybrid ({head_in_channels} input)")
+        print(f"  Head input channels: {head_in_channels}")
 
     model = HoVerNetDecoder(
         embed_dim=1536,
         n_classes=5,
+        dropout=0.1,
         use_hybrid=use_hybrid
     ).to(device)
 
     model.load_state_dict(state_dict)
     model.eval()
+
+    if use_hybrid:
+        print(f"  ✅ Mode HYBRID activé: injection H-channel via RuifrokExtractor")
 
     # Load validation data
     data_dir = Path("data/family_data_v13_smart_crops")
@@ -288,8 +278,11 @@ def run_inference(model, rgb_features, images, idx, device, use_hybrid):
         # Tuple: (np_out, hv_out, nt_out)
         np_out, hv_out, nt_out = outputs
 
-    np_pred = torch.sigmoid(np_out).cpu().numpy()[0, 0]
-    hv_pred = hv_out.cpu().numpy()[0]
+    # CRITICAL: Use SOFTMAX (not sigmoid!) - NP output is 2-channel for CrossEntropyLoss
+    # Channel 0 = Background, Channel 1 = Nuclei
+    np_probs = torch.softmax(np_out, dim=1).cpu().numpy()[0]  # (2, 224, 224)
+    np_pred = np_probs[1]  # Canal 1 = Noyaux (224, 224)
+    hv_pred = hv_out.cpu().numpy()[0]  # (2, 224, 224)
 
     return np_pred, hv_pred
 
