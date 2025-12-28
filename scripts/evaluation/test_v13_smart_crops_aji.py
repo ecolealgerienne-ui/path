@@ -119,8 +119,9 @@ def compute_pq(pred_inst: np.ndarray, gt_inst: np.ndarray, iou_threshold: float 
 def hv_guided_watershed(
     np_pred: np.ndarray,
     hv_pred: np.ndarray,
-    beta: float = 1.0,   # Reduced from 1.50 to match softmax activation (expert recommendation)
-    min_size: int = 40   # Optimized value from Phase 5a
+    beta: float = 0.8,   # Reduced to 0.8 for Epidermal dense nuclei (expert recommendation)
+    min_size: int = 40,  # Optimized value from Phase 5a
+    min_distance: int = 3  # Reduced from 5 for dense nuclei detection
 ) -> np.ndarray:
     """
     HV-guided watershed for instance segmentation.
@@ -132,9 +133,9 @@ def hv_guided_watershed(
         np_pred: Nuclear presence probability map (H, W) in [0, 1]
         hv_pred: HV maps (2, H, W) in [-1, 1]
         beta: HV magnitude exponent (higher = stronger boundary suppression)
-              Value: 1.0 (reduced from 1.50 for softmax activation)
-        min_size: Minimum instance size in pixels
-                  Optimized value: 40 (from grid search)
+              Value: 0.8 (expert recommendation for Epidermal)
+        min_size: Minimum instance size in pixels (default: 40)
+        min_distance: Minimum distance between peaks (default: 3 for dense nuclei)
 
     Returns:
         Instance map (H, W) with instance IDs starting from 1
@@ -161,7 +162,7 @@ def hv_guided_watershed(
     from skimage.feature import peak_local_max
     markers_coords = peak_local_max(
         marker_energy,
-        min_distance=5,
+        min_distance=min_distance,  # Use parameter (default: 3 for dense nuclei)
         threshold_abs=0.1,
         exclude_border=False
     )
@@ -229,14 +230,20 @@ def main():
     parser.add_argument(
         "--beta",
         type=float,
-        default=1.0,
-        help="HV magnitude exponent (default: 1.0 for softmax activation)"
+        default=0.8,
+        help="HV magnitude exponent (default: 0.8 for Epidermal dense nuclei)"
     )
     parser.add_argument(
         "--min_size",
         type=int,
         default=40,
         help="Minimum instance size (default: 40 optimized)"
+    )
+    parser.add_argument(
+        "--min_distance",
+        type=int,
+        default=3,
+        help="Minimum distance between peak markers (default: 3 for dense nuclei)"
     )
     parser.add_argument(
         "--device",
@@ -257,6 +264,7 @@ def main():
     print(f"  N samples: {args.n_samples}")
     print(f"  Watershed beta: {args.beta}")
     print(f"  Watershed min_size: {args.min_size}")
+    print(f"  Watershed min_distance: {args.min_distance}")
     print(f"  Device: {args.device}")
 
     # Load model
@@ -352,7 +360,8 @@ def main():
             np_pred,
             hv_pred,
             beta=args.beta,
-            min_size=args.min_size
+            min_size=args.min_size,
+            min_distance=args.min_distance
         )
 
         # Metrics
@@ -418,7 +427,8 @@ def main():
         "n_samples": n_to_eval,
         "watershed_params": {
             "beta": args.beta,
-            "min_size": args.min_size
+            "min_size": args.min_size,
+            "min_distance": args.min_distance
         },
         "metrics": {
             "dice_mean": float(mean_dice),
