@@ -434,9 +434,10 @@ class HoVerNetDecoder(nn.Module):
 
             # Extraire canal H via déconvolution Ruifrok à HAUTE RÉSOLUTION
             # target_size=224 au lieu de 16 → correspondance pixel-à-pixel
-            with torch.no_grad():
-                h_channel = self.ruifrok(images_rgb, target_size=self.img_size)
-                # h_channel: (B, 1, 224, 224) ← HAUTE RÉSOLUTION
+            # NOTE: PAS de torch.no_grad() ici! On veut que les gradients
+            # passent par InstanceNorm2d pour optimiser ses paramètres affine.
+            h_channel = self.ruifrok(images_rgb, target_size=self.img_size)
+            # h_channel: (B, 1, 224, 224) ← HAUTE RÉSOLUTION, normalisé N(0,1)
 
             # Concaténer avec features décodées (skip-connection chimique)
             x = torch.cat([x, h_channel], dim=1)  # (B, 65, 224, 224)
