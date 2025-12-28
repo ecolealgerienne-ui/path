@@ -96,11 +96,12 @@ class FocalLoss(nn.Module):
         self.gamma = gamma
         self.reduction = reduction
 
-    def forward(self, inputs: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+    def forward(self, inputs: torch.Tensor, targets: torch.Tensor, reduction: str = None) -> torch.Tensor:
         """
         Args:
             inputs: (B, C, H, W) logits
             targets: (B, H, W) class indices
+            reduction: 'mean', 'sum', or 'none'. If None, uses self.reduction.
         """
         ce_loss = F.cross_entropy(inputs, targets, reduction='none')
         p = torch.exp(-ce_loss)  # Probabilité de la bonne classe
@@ -111,9 +112,12 @@ class FocalLoss(nn.Module):
 
         focal_loss = alpha_weight * focal_weight * ce_loss
 
-        if self.reduction == 'mean':
+        # Use provided reduction or fall back to instance default
+        red = reduction if reduction is not None else self.reduction
+
+        if red == 'mean':
             return focal_loss.mean()
-        elif self.reduction == 'sum':
+        elif red == 'sum':
             return focal_loss.sum()
         return focal_loss
 
@@ -532,9 +536,13 @@ class HoVerNetLoss(nn.Module):
         # Les pixels aux frontières inter-cellulaires reçoivent un poids 10× plus élevé
         # pour forcer le modèle à apprendre des séparations nettes.
         if weight_map is not None:
-            # Focal loss avec pondération spatiale
-            # On utilise reduction='none' pour obtenir loss par pixel
-            np_focal_raw = F.cross_entropy(np_pred, np_target.long(), reduction='none')
+            # ✅ FIX Tech Lead 2025-12-28: Utiliser FocalLoss avec reduction='none'
+            # PROBLÈME AVANT: F.cross_entropy bypass le γ=2.0 de FocalLoss
+            #   → Perd le downweight des exemples faciles (background)
+            #   → Perd le focus sur les exemples difficiles (bords)
+            # FIX: Appeler self.focal_loss avec reduction='none' pour obtenir
+            #      loss par pixel, puis appliquer pondération Ronneberger
+            np_focal_raw = self.focal_loss(np_pred, np_target.long(), reduction='none')
             np_focal = (np_focal_raw * weight_map).mean()
         else:
             np_focal = self.focal_loss(np_pred, np_target.long())
