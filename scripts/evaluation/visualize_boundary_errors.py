@@ -40,23 +40,63 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from src.models.hovernet_decoder import HoVerNetDecoder
 
 
-def load_model(checkpoint_path: str, device: str = "cuda", use_hybrid: bool = True):
-    """Charge le modèle HoVer-Net."""
+def load_model(checkpoint_path: str, device: str = "cuda"):
+    """
+    Charge le modèle HoVer-Net avec auto-détection de l'architecture.
+
+    Détecte automatiquement:
+    - Mode hybride (présence de ruifrok/h_projection keys)
+    - Version V2 (1 H-channel, 65 input) vs V3 (16 H-channels, 80 input)
+    """
+    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
+
+    if 'model_state_dict' in checkpoint:
+        state_dict = checkpoint['model_state_dict']
+    else:
+        state_dict = checkpoint
+
+    # Auto-detect architecture from checkpoint keys
+    has_ruifrok = any('ruifrok' in k for k in state_dict.keys())
+    has_h_projection = any('h_projection' in k for k in state_dict.keys())
+
+    # Check head input dimension to determine hybrid version
+    # np_head.head.0.weight shape: (out_ch, in_ch, k, k)
+    if 'np_head.head.0.weight' in state_dict:
+        head_in_channels = state_dict['np_head.head.0.weight'].shape[1]
+    else:
+        head_in_channels = 64  # Default non-hybrid
+
+    # Determine configuration
+    if head_in_channels == 80:
+        # V3 hybrid: 64 base + 16 H-channels
+        use_hybrid = True
+        print(f"  Auto-detected: V3 Hybrid (16 H-channels, {head_in_channels} input)")
+    elif head_in_channels == 65:
+        # V2 hybrid: 64 base + 1 H-channel
+        use_hybrid = True
+        print(f"  Auto-detected: V2 Hybrid (1 H-channel, {head_in_channels} input)")
+    elif has_ruifrok or has_h_projection:
+        # Has hybrid keys but different dimension
+        use_hybrid = True
+        print(f"  Auto-detected: Hybrid mode ({head_in_channels} input)")
+    else:
+        # Non-hybrid
+        use_hybrid = False
+        print(f"  Auto-detected: Non-hybrid ({head_in_channels} input)")
+
+    # Create model with detected configuration
     model = HoVerNetDecoder(
         embed_dim=1536,
         n_classes=5,
         use_hybrid=use_hybrid,
     )
 
-    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
-    if 'model_state_dict' in checkpoint:
-        model.load_state_dict(checkpoint['model_state_dict'])
-    else:
-        model.load_state_dict(checkpoint)
+    # Load state dict
+    model.load_state_dict(state_dict)
 
     model = model.to(device)
     model.eval()
-    return model
+    return model, use_hybrid
 
 
 def hv_to_instances(np_pred: np.ndarray, hv_pred: np.ndarray,
@@ -324,8 +364,6 @@ def main():
                         help="Paramètre beta du watershed")
     parser.add_argument("--min_size", type=int, default=40,
                         help="Taille minimum d'instance")
-    parser.add_argument("--use_hybrid", action="store_true", default=True,
-                        help="Utiliser le mode hybride")
     parser.add_argument("--device", type=str, default="cuda",
                         help="Device (cuda ou cpu)")
 
@@ -334,9 +372,9 @@ def main():
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Charger le modèle
+    # Charger le modèle (auto-détection de l'architecture)
     print(f"Chargement du modèle: {args.checkpoint}")
-    model = load_model(args.checkpoint, args.device, args.use_hybrid)
+    model, use_hybrid = load_model(args.checkpoint, args.device)
 
     # Charger les données de validation
     data_path = Path(args.data_dir) / f"{args.family}_val_v13_smart_crops.npz"
@@ -370,7 +408,7 @@ def main():
         # Inférence
         feat_tensor = torch.from_numpy(feat).unsqueeze(0).float().to(args.device)
 
-        if args.use_hybrid:
+        if use_hybrid:
             # Préparer image RGB pour hybrid
             image_tensor = torch.from_numpy(image).permute(2, 0, 1).unsqueeze(0).float().to(args.device)
 

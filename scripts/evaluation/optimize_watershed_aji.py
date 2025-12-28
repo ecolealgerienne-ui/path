@@ -168,14 +168,35 @@ def hv_to_instances(
 
 
 def load_model_and_data(checkpoint_path: str, family: str, device: str = "cuda"):
-    """Load model and validation data."""
+    """Load model and validation data with auto-detection of architecture."""
 
-    # Load model
+    # Load checkpoint
     checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
-
-    # Determine if hybrid model
     state_dict = checkpoint.get('model_state_dict', checkpoint)
-    use_hybrid = any('ruifrok' in k or 'h_projection' in k for k in state_dict.keys())
+
+    # Auto-detect architecture from checkpoint
+    has_ruifrok = any('ruifrok' in k for k in state_dict.keys())
+    has_h_projection = any('h_projection' in k for k in state_dict.keys())
+
+    # Check head input dimension
+    if 'np_head.head.0.weight' in state_dict:
+        head_in_channels = state_dict['np_head.head.0.weight'].shape[1]
+    else:
+        head_in_channels = 64
+
+    # Determine configuration
+    if head_in_channels == 80:
+        use_hybrid = True
+        print(f"  Auto-detected: V3 Hybrid (16 H-channels)")
+    elif head_in_channels == 65:
+        use_hybrid = True
+        print(f"  Auto-detected: V2 Hybrid (1 H-channel)")
+    elif has_ruifrok or has_h_projection:
+        use_hybrid = True
+        print(f"  Auto-detected: Hybrid mode ({head_in_channels} input)")
+    else:
+        use_hybrid = False
+        print(f"  Auto-detected: Non-hybrid ({head_in_channels} input)")
 
     model = HoVerNetDecoder(
         embed_dim=1536,
