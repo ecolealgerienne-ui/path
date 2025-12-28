@@ -451,11 +451,10 @@ def train_one_epoch(
                 feat_grad = 0.0
 
             # Gradient sur InstanceNorm du H-channel (si mode hybride)
+            h_norm_grad = 0.0  # Initialiser par défaut
             if use_hybrid and hasattr(model, 'h_extractor') and hasattr(model.h_extractor, 'instance_norm'):
                 if model.h_extractor.instance_norm.weight is not None and model.h_extractor.instance_norm.weight.grad is not None:
                     h_norm_grad = model.h_extractor.instance_norm.weight.grad.norm().item()
-                else:
-                    h_norm_grad = 0.0
                 h_grad_magnitudes.append(h_norm_grad)
 
             feature_grad_magnitudes.append(feat_grad)
