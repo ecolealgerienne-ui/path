@@ -373,7 +373,8 @@ def compute_nt_accuracy(nt_pred: torch.Tensor, nt_target: torch.Tensor, np_targe
 
 
 def train_one_epoch(
-    model, dataloader, criterion, optimizer, device, epoch, n_classes, use_hybrid=False
+    model, dataloader, criterion, optimizer, device, epoch, n_classes, use_hybrid=False,
+    debug_gradients=False
 ):
     """
     Train pour une epoch AVEC pondération spatiale Ronneberger.
@@ -383,6 +384,7 @@ def train_one_epoch(
 
     Args:
         use_hybrid: Si True, passe les images RGB au modèle pour injection H-channel.
+        debug_gradients: Si True, affiche debug gradient H-channel (epoch 1).
     """
     model.train()
 
@@ -391,6 +393,10 @@ def train_one_epoch(
     total_hv_mse = 0.0
     total_nt_acc = 0.0
     n_batches = 0
+
+    # Gradient monitoring (V13-Hybrid-Final 2025-12-28)
+    h_grad_magnitudes = [] if debug_gradients else None
+    feature_grad_magnitudes = [] if debug_gradients else None
 
     pbar = tqdm(dataloader, desc=f"Epoch {epoch}")
     for batch in pbar:
@@ -421,6 +427,45 @@ def train_one_epoch(
         # Backward
         optimizer.zero_grad()
         loss.backward()
+
+        # Gradient monitoring (V13-Hybrid-Final 2025-12-28)
+        # Vérifie que le H-channel est "vivant" (reçoit du gradient)
+        if debug_gradients and n_batches < 10:  # Premier 10 batches
+            # Gradient sur la première couche de hv_head
+            if hasattr(model, 'hv_head') and model.hv_head[0].weight.grad is not None:
+                hv_grad = model.hv_head[0].weight.grad.norm().item()
+            else:
+                hv_grad = 0.0
+
+            # Gradient sur bottleneck (features RGB)
+            if hasattr(model, 'bottleneck') and model.bottleneck[0].weight.grad is not None:
+                feat_grad = model.bottleneck[0].weight.grad.norm().item()
+            else:
+                feat_grad = 0.0
+
+            # Gradient sur InstanceNorm du H-channel (si mode hybride)
+            if use_hybrid and hasattr(model, 'h_extractor') and hasattr(model.h_extractor, 'instance_norm'):
+                if model.h_extractor.instance_norm.weight is not None and model.h_extractor.instance_norm.weight.grad is not None:
+                    h_norm_grad = model.h_extractor.instance_norm.weight.grad.norm().item()
+                else:
+                    h_norm_grad = 0.0
+                h_grad_magnitudes.append(h_norm_grad)
+
+            feature_grad_magnitudes.append(feat_grad)
+
+            if n_batches == 0:
+                print(f"\n🔍 GRADIENT DEBUG (Epoch 1, Batch {n_batches+1}):")
+                print(f"   HV Head grad norm:       {hv_grad:.6f}")
+                print(f"   Bottleneck grad norm:    {feat_grad:.6f}")
+                if use_hybrid:
+                    print(f"   H-channel InstanceNorm:  {h_norm_grad:.6f}")
+                    if h_norm_grad < 1e-6:
+                        print(f"   ⚠️  ALERTE: H-channel gradient ≈ 0 → Passager Clandestin!")
+                    elif h_norm_grad < feat_grad * 0.01:
+                        print(f"   ⚠️  ALERTE: H-channel gradient < 1% features → sous-exploité")
+                    else:
+                        print(f"   ✅ H-channel gradient OK (ratio: {h_norm_grad/feat_grad:.2%})")
+
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
         optimizer.step()
 
@@ -440,6 +485,23 @@ def train_one_epoch(
             'dice': f'{dice:.4f}',
             'hv_mse': f'{hv_mse:.4f}'
         })
+
+    # Résumé gradient debug (epoch 1)
+    if debug_gradients and feature_grad_magnitudes:
+        print(f"\n📊 GRADIENT SUMMARY (Epoch 1, {len(feature_grad_magnitudes)} batches):")
+        mean_feat = sum(feature_grad_magnitudes) / len(feature_grad_magnitudes)
+        print(f"   Feature gradient mean:   {mean_feat:.6f}")
+        if h_grad_magnitudes:
+            mean_h = sum(h_grad_magnitudes) / len(h_grad_magnitudes)
+            print(f"   H-channel gradient mean: {mean_h:.6f}")
+            ratio = mean_h / mean_feat if mean_feat > 0 else 0
+            print(f"   Ratio H/Features:        {ratio:.2%}")
+            if ratio < 0.01:
+                print(f"   ⚠️  DIAGNOSTIC: H-channel sous-exploité → InstanceNorm peut aider")
+            elif ratio > 0.5:
+                print(f"   ✅ DIAGNOSTIC: H-channel bien intégré")
+            else:
+                print(f"   ℹ️  DIAGNOSTIC: H-channel contribue modérément")
 
     return {
         'loss': total_loss / n_batches,
@@ -542,8 +604,12 @@ def main():
     parser.add_argument("--batch_size", type=int, default=16)
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--lambda_np", type=float, default=1.0)
-    parser.add_argument("--lambda_hv", type=float, default=5.0,
-                       help="Poids branche HV - Tech Lead recommande 5.0 pour V13-Hybrid V2")
+    parser.add_argument("--lambda_hv", type=float, default=2.0,
+                       help="Poids branche HV initial (epochs 1-25)")
+    parser.add_argument("--lambda_hv_boost", type=float, default=8.0,
+                       help="Poids branche HV boost (epochs 26+) - Fine-tuning final")
+    parser.add_argument("--lambda_hv_boost_epoch", type=int, default=26,
+                       help="Epoch à partir de laquelle booster lambda_hv")
     parser.add_argument("--lambda_nt", type=float, default=1.0)
     parser.add_argument("--lambda_magnitude", type=float, default=1.0,
                        help="Poids magnitude loss (force gradients HV)")
@@ -569,6 +635,7 @@ def main():
     print(f"  Batch size: {args.batch_size}")
     print(f"  Learning rate: {args.lr}")
     print(f"  Lambda (NP/HV/NT/Mag): {args.lambda_np}/{args.lambda_hv}/{args.lambda_nt}/{args.lambda_magnitude}")
+    print(f"  Lambda HV scheduler: {args.lambda_hv} (epochs 1-{args.lambda_hv_boost_epoch-1}) → {args.lambda_hv_boost} (epochs {args.lambda_hv_boost_epoch}+)")
     print(f"  Dropout: {args.dropout}")
     print(f"  Augmentation: {args.augment}")
     print(f"  Adaptive loss: {args.adaptive_loss}")
@@ -673,12 +740,24 @@ def main():
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
     for epoch in range(1, args.epochs + 1):
-        print(f"\nEpoch {epoch}/{args.epochs}")
+        # Lambda HV Scheduler (V13-Hybrid-Final 2025-12-28)
+        # Epochs 1-25: lambda_hv stable pour convergence Dice/NT
+        # Epochs 26+: boost lambda_hv pour affiner séparation membranes
+        if epoch >= args.lambda_hv_boost_epoch:
+            current_lambda_hv = args.lambda_hv_boost
+        else:
+            current_lambda_hv = args.lambda_hv
 
-        # Train
+        # Mettre à jour lambda_hv dans criterion
+        criterion.lambda_hv = current_lambda_hv
+
+        print(f"\nEpoch {epoch}/{args.epochs} [lambda_hv={current_lambda_hv}]")
+
+        # Train avec gradient monitoring epoch 1
         train_metrics = train_one_epoch(
             model, train_loader, criterion, optimizer, device, epoch, n_classes,
-            use_hybrid=args.use_hybrid
+            use_hybrid=args.use_hybrid,
+            debug_gradients=(epoch == 1)  # Debug gradients epoch 1 uniquement
         )
 
         # Validation

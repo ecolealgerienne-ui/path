@@ -138,11 +138,16 @@ class RuifrokExtractor(nn.Module):
     L'hématoxyline colore les noyaux en violet/bleu → le canal H est
     idéal pour détecter les frontières nucléaires.
 
+    V13-Hybrid-Final (2025-12-28):
+    - Ajout InstanceNorm2d pour normaliser le H-channel en N(0, 1)
+    - Résout le problème de "Passager Clandestin" où le H-channel était
+      ignoré car sa magnitude statistique était trop faible vs les 64 features
+
     Référence: Ruifrok & Johnston, Anal Quant Cytol Histol 2001
 
     Usage:
         extractor = RuifrokExtractor()
-        h_channel = extractor(rgb_image)  # (B, 1, 16, 16)
+        h_channel = extractor(rgb_image)  # (B, 1, 224, 224) normalisé N(0, 1)
     """
 
     def __init__(self):
@@ -154,6 +159,13 @@ class RuifrokExtractor(nn.Module):
             'stain_matrix',
             torch.tensor([0.650, 0.704, 0.286]).view(1, 3, 1, 1)
         )
+
+        # InstanceNorm2d pour normaliser le H-channel en N(0, 1)
+        # - affine=True: paramètres apprenables (γ, β) pour fine-tuning
+        # - Résout le déséquilibre de magnitude: features BatchNorm'd vs H brut
+        # - En pathologie, l'intensité H varie entre échantillons (même après Macenko)
+        # - InstanceNorm normalise par sample → force statistique uniforme
+        self.instance_norm = nn.InstanceNorm2d(1, affine=True)
 
     def forward(
         self,
@@ -168,7 +180,7 @@ class RuifrokExtractor(nn.Module):
             target_size: Taille de sortie pour matcher la grille ViT (default: 16)
 
         Returns:
-            H-channel (B, 1, target_size, target_size) en OD normalisé
+            H-channel (B, 1, target_size, target_size) normalisé N(0, 1)
         """
         # Clamp pour éviter log(0) et valeurs négatives
         rgb_input = rgb_input.clamp(1e-6, 255.0)
@@ -181,13 +193,18 @@ class RuifrokExtractor(nn.Module):
         # h_channel = od · stain_vector
         h_channel = torch.sum(od * self.stain_matrix, dim=1, keepdim=True)
 
-        # Resize vers grille ViT (16×16)
+        # Resize vers taille cible
         h_channel = F.interpolate(
             h_channel,
             size=(target_size, target_size),
             mode='bilinear',
             align_corners=False
         )
+
+        # V13-Hybrid-Final: Normalisation statistique pour équilibrer avec features
+        # AVANT: H-channel en [0, ~2.5] (OD brut) → noyé par features en N(0, 1)
+        # APRÈS: H-channel en N(0, 1) → même "force" statistique que features
+        h_channel = self.instance_norm(h_channel)
 
         return h_channel
 
