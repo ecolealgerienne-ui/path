@@ -667,6 +667,8 @@ def main():
                        help="Activer SE-Block pour recalibration attention sur H-channel (Hu et al. 2018)")
     parser.add_argument("--use_fpn_chimique", action="store_true",
                        help="Activer FPN Chimique (Multi-scale H-Injection) à 5 niveaux: 16, 32, 64, 112, 224")
+    parser.add_argument("--use_h_instance_norm", action="store_true",
+                       help="Appliquer InstanceNorm sur H-channel avant fusion (normalise à mean=0, std=1)")
     parser.add_argument("--resume", type=str, default=None,
                        help="Chemin vers checkpoint pour reprendre l'entraînement (même famille)")
 
@@ -755,7 +757,8 @@ def main():
         dropout=args.dropout,
         use_hybrid=args.use_hybrid,
         use_se_block=args.use_se_block,
-        use_fpn_chimique=args.use_fpn_chimique
+        use_fpn_chimique=args.use_fpn_chimique,
+        use_h_instance_norm=args.use_h_instance_norm
     ).to(device)
 
     if args.use_hybrid:
@@ -771,6 +774,10 @@ def main():
         print(f"  → Niveaux: 16×16 → 32×32 → 64×64 → 112×112 → 224×224")
         print(f"  → Architecture: Bottleneck(256) + H@16(16) = 272 → up1 → 128 + H@32(16) = 144 → ...")
         print(f"  → Objectif: Briser la 'Cécité Profonde' - H visible dès le niveau 0")
+
+    if args.use_h_instance_norm:
+        print(f"  → H-InstanceNorm activé: normalisation H-channel à mean=0, std=1")
+        print(f"  → Objectif: Rééquilibrer la force statistique H vs Features")
 
     # Resume from checkpoint if provided (SAME family)
     start_epoch = 0

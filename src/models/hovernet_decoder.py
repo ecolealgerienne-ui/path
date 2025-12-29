@@ -448,6 +448,7 @@ class HoVerNetDecoder(nn.Module):
         use_hybrid: bool = False,  # Activer injection H-channel (obsolète, utiliser use_fpn_chimique)
         use_se_block: bool = False,  # Activer SE-Block après fusion (Hu et al., 2018)
         use_fpn_chimique: bool = False,  # Activer FPN Chimique (injection multi-échelle)
+        use_h_instance_norm: bool = False,  # Appliquer InstanceNorm sur H-channel avant fusion
     ):
         super().__init__()
 
@@ -457,6 +458,7 @@ class HoVerNetDecoder(nn.Module):
         self.use_hybrid = use_hybrid
         self.use_se_block = use_se_block
         self.use_fpn_chimique = use_fpn_chimique
+        self.use_h_instance_norm = use_h_instance_norm  # Normalise H à mean=0, std=1
 
         # ===== BOTTLENECK PARTAGÉ (économie VRAM) =====
         self.bottleneck = nn.Sequential(
@@ -632,6 +634,10 @@ class HoVerNetDecoder(nn.Module):
             h_pyramid = self.h_pyramid(images_rgb)
             # h_pyramid = {16: (B,16,16,16), 32: (B,16,32,32), 64: (B,16,64,64),
             #              112: (B,16,112,112), 224: (B,16,224,224)}
+
+            # Optionnel: Normaliser H-channel à mean=0, std=1 (rééquilibre vs features)
+            if self.use_h_instance_norm:
+                h_pyramid = {k: F.instance_norm(v) for k, v in h_pyramid.items()}
 
             # Niveau 0: Après bottleneck (16×16)
             x = torch.cat([x, h_pyramid[16]], dim=1)  # (B, 272, 16, 16)
