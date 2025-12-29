@@ -760,7 +760,8 @@ def main():
         use_hybrid=args.use_hybrid,
         use_se_block=args.use_se_block,
         use_fpn_chimique=args.use_fpn_chimique,
-        use_h_instance_norm=args.use_h_instance_norm
+        use_h_instance_norm=args.use_h_instance_norm,
+        use_h_alpha=args.use_h_alpha
     ).to(device)
 
     if args.use_hybrid:
@@ -778,8 +779,12 @@ def main():
         print(f"  → Objectif: Briser la 'Cécité Profonde' - H visible dès le niveau 0")
 
     if args.use_h_instance_norm:
-        print(f"  → H-InstanceNorm activé: normalisation H-channel à mean=0, std=1")
-        print(f"  → Objectif: Rééquilibrer la force statistique H vs Features")
+        print(f"  ⚠️ H-InstanceNorm activé [DEPRECATED]: lisse les gradients HV")
+
+    if args.use_h_alpha:
+        print(f"  → H-Alpha activé: facteur α learnable par niveau (init=10.0)")
+        print(f"  → Objectif: Amplifier H-channel sans détruire sa topographie")
+        print(f"  → Paramètres: h_alphas.16, h_alphas.32, h_alphas.64, h_alphas.112, h_alphas.224")
 
     # Resume from checkpoint if provided (SAME family)
     start_epoch = 0
