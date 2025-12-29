@@ -668,7 +668,14 @@ def main():
     parser.add_argument("--use_fpn_chimique", action="store_true",
                        help="Activer FPN Chimique (Multi-scale H-Injection) à 5 niveaux: 16, 32, 64, 112, 224")
     parser.add_argument("--resume", type=str, default=None,
-                       help="Chemin vers checkpoint pour reprendre l'entraînement (fine-tuning)")
+                       help="Chemin vers checkpoint pour reprendre l'entraînement (même famille)")
+
+    # === TRANSFER LEARNING INTER-FAMILLE (Expert 2025-12-29) ===
+    parser.add_argument("--pretrained_checkpoint", type=str, default=None,
+                       help="Checkpoint d'une AUTRE famille pour Transfer Learning (ex: Respiratory → Epidermal)")
+    parser.add_argument("--finetune_lr", type=float, default=1e-5,
+                       help="Learning rate ultra-bas pour fine-tuning inter-famille (évite catastrophic forgetting)")
+
     parser.add_argument("--device", default="cuda", choices=["cuda", "cpu"])
     args = parser.parse_args()
 
@@ -756,8 +763,11 @@ def main():
         print(f"  → Architecture: Bottleneck(256) + H@16(16) = 272 → up1 → 128 + H@32(16) = 144 → ...")
         print(f"  → Objectif: Briser la 'Cécité Profonde' - H visible dès le niveau 0")
 
-    # Resume from checkpoint if provided
+    # Resume from checkpoint if provided (SAME family)
     start_epoch = 0
+    effective_lr = args.lr  # Default LR
+    is_transfer_learning = False
+
     if args.resume:
         print(f"\n  📥 Chargement checkpoint: {args.resume}")
         checkpoint = torch.load(args.resume, map_location=device, weights_only=False)
@@ -765,6 +775,32 @@ def main():
         start_epoch = checkpoint.get('epoch', 0)
         print(f"  ✅ Checkpoint chargé (epoch {start_epoch})")
         print(f"  → Fine-tuning pour {args.epochs} epochs supplémentaires")
+
+    # Transfer Learning from DIFFERENT family checkpoint (Expert 2025-12-29)
+    elif args.pretrained_checkpoint:
+        is_transfer_learning = True
+        effective_lr = args.finetune_lr  # Ultra-low LR for transfer learning
+
+        print(f"\n  🔄 TRANSFER LEARNING INTER-FAMILLE")
+        print(f"  📥 Checkpoint source: {args.pretrained_checkpoint}")
+
+        checkpoint = torch.load(args.pretrained_checkpoint, map_location=device, weights_only=False)
+
+        # Load weights only (NOT optimizer state - we want fresh optimizer with low LR)
+        model.load_state_dict(checkpoint['model_state_dict'])
+
+        # Extract source info from checkpoint name
+        source_checkpoint = Path(args.pretrained_checkpoint).name
+        source_epoch = checkpoint.get('epoch', 'unknown')
+        source_dice = checkpoint.get('val_metrics', {}).get('dice', 'N/A')
+
+        print(f"  ✅ Poids chargés depuis: {source_checkpoint}")
+        print(f"  → Source epoch: {source_epoch}")
+        print(f"  → Source Dice: {source_dice}")
+        print(f"  → Reset epoch: 0 (nouveau départ pour famille {args.family})")
+        print(f"  → LR ultra-bas: {effective_lr} (vs {args.lr} normal)")
+        print(f"  → Objectif: Adapter les patterns Membrane/HV à la nouvelle famille")
+        # start_epoch reste à 0 (nouveau départ)
 
     n_params = sum(p.numel() for p in model.parameters())
     print(f"  → Paramètres: {n_params:,}")
@@ -784,13 +820,19 @@ def main():
         criterion.to(device)
 
     # Optimizer (inclut les paramètres de loss si adaptive)
+    # Note: effective_lr = args.finetune_lr si Transfer Learning, sinon args.lr
     if args.adaptive_loss:
         optimizer = AdamW(
             list(model.parameters()) + list(criterion.parameters()),
-            lr=args.lr, weight_decay=1e-4
+            lr=effective_lr, weight_decay=1e-4
         )
     else:
-        optimizer = AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)
+        optimizer = AdamW(model.parameters(), lr=effective_lr, weight_decay=1e-4)
+
+    if is_transfer_learning:
+        print(f"\n  ⚙️ Optimizer configuré pour Transfer Learning:")
+        print(f"  → LR: {effective_lr} (ultra-bas pour éviter catastrophic forgetting)")
+        print(f"  → Weight decay: 1e-4")
 
     scheduler = CosineAnnealingLR(optimizer, T_max=args.epochs, eta_min=1e-6)
 
