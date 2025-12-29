@@ -152,12 +152,16 @@ def load_model_and_data(checkpoint_path: str, family: str, device: str = "cuda")
         head_in_channels = state_dict['np_head.head.0.weight'].shape[1]
         print(f"  Head input channels: {head_in_channels}")
 
+    # Detect use_h_alpha from checkpoint (check if h_alphas params exist)
+    use_h_alpha = any('h_alphas' in k for k in state_dict.keys())
+
     model = HoVerNetDecoder(
         embed_dim=1536,
         n_classes=5,
         dropout=0.1,
         use_hybrid=use_hybrid,
-        use_fpn_chimique=use_fpn_chimique
+        use_fpn_chimique=use_fpn_chimique,
+        use_h_alpha=use_h_alpha
     ).to(device)
 
     model.load_state_dict(state_dict)
@@ -165,6 +169,8 @@ def load_model_and_data(checkpoint_path: str, family: str, device: str = "cuda")
 
     if use_fpn_chimique:
         print(f"  ✅ Mode FPN CHIMIQUE activé: injection H-channel multi-échelle (5 niveaux)")
+    if use_h_alpha:
+        print(f"  ✅ Mode H-Alpha activé: facteur α learnable par niveau")
     elif use_hybrid:
         print(f"  ✅ Mode HYBRID activé: injection H-channel via RuifrokExtractor")
 
