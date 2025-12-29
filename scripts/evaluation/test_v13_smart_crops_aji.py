@@ -119,10 +119,10 @@ def compute_pq(pred_inst: np.ndarray, gt_inst: np.ndarray, iou_threshold: float 
 def hv_guided_watershed(
     np_pred: np.ndarray,
     hv_pred: np.ndarray,
-    np_threshold: float = 0.45,  # Optimized via grid search (2025-12-28)
-    beta: float = 0.5,   # Optimal: centres nets mais gradients HV bruités
-    min_size: int = 50,  # Optimized via grid search - filtre bruit
-    min_distance: int = 5  # Optimized via grid search - évite sur-segmentation
+    np_threshold: float = 0.40,  # Optimized: Respiratory=0.40, Epidermal=0.45
+    beta: float = 0.50,          # Optimal for all families
+    min_size: int = 30,          # Optimized: Respiratory=30, Epidermal=40
+    min_distance: int = 5        # Optimal for all families (évite sur-segmentation)
 ) -> np.ndarray:
     """
     HV-guided watershed for instance segmentation.
@@ -228,29 +228,32 @@ def main():
         default=50,
         help="Number of validation samples to evaluate"
     )
+    # === WATERSHED PARAMETERS (Optimized via grid search 2025-12-29) ===
+    # Respiratory optimal: np_threshold=0.40, min_size=30, min_distance=5
+    # Epidermal optimal:   np_threshold=0.45, min_size=40, min_distance=5
     parser.add_argument(
         "--np_threshold",
         type=float,
-        default=0.35,
-        help="NP binarization threshold (default: 0.35 for larger masks)"
+        default=0.40,
+        help="NP binarization threshold (Respiratory=0.40, Epidermal=0.45)"
     )
     parser.add_argument(
         "--beta",
         type=float,
-        default=0.5,
-        help="HV magnitude exponent (default: 0.5 for dense Epidermal tissues)"
+        default=0.50,
+        help="HV magnitude exponent (optimal=0.50 for all families)"
     )
     parser.add_argument(
         "--min_size",
         type=int,
-        default=40,
-        help="Minimum instance size (default: 40 optimized)"
+        default=30,
+        help="Minimum instance size in pixels (Respiratory=30, Epidermal=40)"
     )
     parser.add_argument(
         "--min_distance",
         type=int,
-        default=3,
-        help="Minimum distance between peak markers (default: 3 for dense nuclei)"
+        default=5,
+        help="Minimum distance between peak markers (optimal=5 for all families)"
     )
     parser.add_argument(
         "--device",
