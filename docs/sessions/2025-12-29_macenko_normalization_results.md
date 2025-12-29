@@ -109,18 +109,105 @@ La normalisation Macenko devrait améliorer :
 
 ---
 
-## Prochaine Étape
+## Génération Smart Crops V13
 
-Générer les smart crops V13 sur les données normalisées :
+### Progression
+
+| Famille | Sources | Crops Générés | Filtrés | Statut | Validation |
+|---------|---------|---------------|---------|--------|------------|
+| **Respiratory** | 408 | 2015 | 25 | ✅ Terminé | ✅ VALIDE |
+| Glandular | 3391 | - | - | ⏳ En attente | - |
+| Digestive | 2430 | - | - | ⏳ En attente | - |
+| Urologic | 1101 | - | - | ⏳ En attente | - |
+| Epidermal | 574 | - | - | ⏳ En attente | - |
+
+### Détails par Famille
+
+#### Respiratory ✅
+
+**Génération :**
+```
+Génération Smart Crops V13 pour respiratory...
+Images sources: 408
+Algorithme: layer-based (max_samples=5000)
+
+Couches utilisées:
+  - center: 408 crops
+  - top_left: 408 crops
+  - top_right: 408 crops
+  - bottom_left: 408 crops
+  - bottom_right: 408 crops
+
+Total avant filtrage: 2040
+Crops conservés: 2015
+Crops filtrés (low content): 25
+```
+
+**Validation :**
+```bash
+python scripts/validation/verify_v13_smart_crops_data.py \
+    --data_file data/family_data_v13_smart_crops/respiratory_data_v13_smart_crops.npz
+```
+
+```
+=== Vérification données V13 Smart Crops ===
+
+Fichier: respiratory_data_v13_smart_crops.npz
+
+1. Vérification HV Targets:
+   ✅ Dtype: float32
+   ✅ Range: [-1.0000, 1.0000]
+
+2. Vérification inst_maps:
+   ✅ Présent dans le fichier
+   ✅ IDs séquentiels (LOCAL relabeling)
+   ✅ Cohérence inst_map ↔ np_target
+
+3. Vérification divergence HV:
+   ✅ Divergence moyenne: -0.3537 (négatif = centripète)
+   ✅ 100.0% des samples ont divergence négative
+
+🎉 RÉSULTAT: VALIDE
+```
+
+### Commandes pour les autres familles
 
 ```bash
-# Pour chaque famille
+# Glandular (priorité - plus grand volume)
 python scripts/preprocessing/prepare_v13_smart_crops.py --family glandular --max_samples 5000
+
+# Digestive
 python scripts/preprocessing/prepare_v13_smart_crops.py --family digestive --max_samples 5000
+
+# Urologic
 python scripts/preprocessing/prepare_v13_smart_crops.py --family urologic --max_samples 5000
-python scripts/preprocessing/prepare_v13_smart_crops.py --family respiratory --max_samples 5000
+
+# Epidermal
 python scripts/preprocessing/prepare_v13_smart_crops.py --family epidermal --max_samples 5000
 ```
+
+---
+
+## Validation Digestive (Overflow Warning)
+
+Suite au warning d'overflow détecté lors de la normalisation Macenko (ligne 103), une validation visuelle a été effectuée sur les indices 102-105.
+
+**Script utilisé :**
+```bash
+python scripts/validation/visualize_normalized_samples.py \
+    --family digestive --indices 102 103 104 105
+```
+
+**Résultat :** ✅ Aucun artefact détecté
+
+| Image | Range | Mean | Std | Verdict |
+|-------|-------|------|-----|---------|
+| 102 | [0, 255] | 186.7 | 47.9 | ✅ OK |
+| 103 | [0, 255] | 177.7 | 55.3 | ✅ OK |
+| 104 | [0, 255] | 193.9 | 47.4 | ✅ OK |
+| 105 | [0, 255] | 183.0 | 48.9 | ✅ OK |
+
+**Conclusion :** L'overflow `np.exp()` était bénin — les valeurs extrêmes ont été clippées correctement à [0, 255] sans perte de détail nucléaire.
 
 ---
 
