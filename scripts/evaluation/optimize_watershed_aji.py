@@ -53,7 +53,8 @@ def hv_to_instances(
     """
     HV-guided watershed for instance segmentation.
 
-    IMPORTANT: This function matches test_v13_smart_crops_aji.py exactly.
+    IMPORTANT: This function MUST match test_v13_smart_crops_aji.py EXACTLY!
+    Uses scipy.ndimage.label (not skimage.measure.label) for consistency.
 
     Args:
         np_pred: Nuclear presence mask (H, W) in [0, 1]
@@ -68,7 +69,6 @@ def hv_to_instances(
         Instance segmentation map (H, W) with unique IDs per instance
     """
     from skimage.feature import peak_local_max
-    from skimage.measure import label as skimage_label
 
     # Threshold NP to get binary mask
     np_binary = (np_pred > np_threshold).astype(np.uint8)
@@ -109,6 +109,10 @@ def hv_to_instances(
             print("    WARNING: No markers found!")
         return np.zeros_like(np_pred, dtype=np.int32)
 
+    # CRITICAL: Label markers BEFORE watershed (matches test_v13_smart_crops_aji.py)
+    # Uses scipy.ndimage.label (already imported at top of file)
+    markers = label(markers)[0]
+
     # Watershed - propagates marker IDs to all connected pixels
     inst_map = watershed(-dist, markers, mask=np_binary)
 
@@ -116,13 +120,12 @@ def hv_to_instances(
         unique_before = np.unique(inst_map)
         print(f"    After watershed: {len(unique_before)} unique values: {unique_before[:10]}...")
 
-    # Remove small objects - requires labeled input
+    # Remove small objects
     if min_size > 0:
-        # Ensure proper labeling before remove_small_objects
-        inst_map = skimage_label(inst_map)
-        inst_map = remove_small_objects(inst_map.astype(np.int32), min_size=min_size)
-        # Relabel to ensure consecutive IDs after removal
-        inst_map = skimage_label(inst_map)
+        inst_map = remove_small_objects(inst_map, min_size=min_size)
+
+    # Relabel to ensure consecutive IDs (scipy.ndimage.label)
+    inst_map = label(inst_map)[0]
 
     if debug:
         unique_after = np.unique(inst_map)
