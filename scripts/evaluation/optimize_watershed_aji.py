@@ -5,7 +5,7 @@ Optimisation des paramètres Watershed pour améliorer l'AJI.
 Ce script effectue un grid search sur les paramètres du watershed post-processing
 pour trouver la configuration optimale qui maximise l'AJI.
 
-L'algorithme hv_to_instances est IDENTIQUE à celui de test_v13_smart_crops_aji.py
+L'algorithme utilise hv_guided_watershed de src.postprocessing (single source of truth)
 pour garantir la cohérence des résultats.
 
 Paramètres optimisés:
@@ -26,9 +26,6 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from pathlib import Path
-from scipy.ndimage import label, distance_transform_edt
-from skimage.segmentation import watershed
-from skimage.morphology import remove_small_objects
 import json
 from datetime import datetime
 from itertools import product
@@ -39,102 +36,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from src.models.hovernet_decoder import HoVerNetDecoder
 from src.metrics.ground_truth_metrics import compute_aji  # Use centralized AJI (GT-centric)
-
-
-def hv_to_instances(
-    np_pred: np.ndarray,
-    hv_pred: np.ndarray,
-    beta: float = 0.5,
-    min_size: int = 40,
-    np_threshold: float = 0.35,
-    min_distance: int = 3,
-    debug: bool = False
-) -> np.ndarray:
-    """
-    HV-guided watershed for instance segmentation.
-
-    IMPORTANT: This function MUST match test_v13_smart_crops_aji.py EXACTLY!
-    Uses scipy.ndimage.label (not skimage.measure.label) for consistency.
-
-    Args:
-        np_pred: Nuclear presence mask (H, W) in [0, 1]
-        hv_pred: HV maps (2, H, W) in [-1, 1]
-        beta: HV magnitude exponent for boundary suppression
-        min_size: Minimum instance size in pixels
-        np_threshold: Threshold for NP binarization
-        min_distance: Minimum distance between peaks
-        debug: Print debug info for sanity checking
-
-    Returns:
-        Instance segmentation map (H, W) with unique IDs per instance
-    """
-    from skimage.feature import peak_local_max
-
-    # Threshold NP to get binary mask
-    np_binary = (np_pred > np_threshold).astype(np.uint8)
-
-    if np_binary.sum() == 0:
-        return np.zeros_like(np_pred, dtype=np.int32)
-
-    # Distance transform
-    dist = distance_transform_edt(np_binary)
-
-    # HV magnitude (range [0, sqrt(2)]) - NO NORMALIZATION
-    hv_h = hv_pred[0]
-    hv_v = hv_pred[1]
-    hv_magnitude = np.sqrt(hv_h**2 + hv_v**2)
-
-    # HV-guided marker energy
-    marker_energy = dist * (1 - hv_magnitude ** beta)
-
-    # Find local maxima as markers using peak_local_max
-    markers_coords = peak_local_max(
-        marker_energy,
-        min_distance=min_distance,
-        threshold_abs=0.1,
-        exclude_border=False
-    )
-
-    if debug:
-        print(f"    peak_local_max found {len(markers_coords)} markers")
-
-    # Create markers map with sequential IDs
-    markers = np.zeros_like(np_binary, dtype=np.int32)
-    for i, (y, x) in enumerate(markers_coords, start=1):
-        markers[y, x] = i
-
-    # If no markers found, return empty
-    if markers.max() == 0:
-        if debug:
-            print("    WARNING: No markers found!")
-        return np.zeros_like(np_pred, dtype=np.int32)
-
-    # CRITICAL: Label markers BEFORE watershed (matches test_v13_smart_crops_aji.py)
-    # Uses scipy.ndimage.label (already imported at top of file)
-    markers = label(markers)[0]
-
-    # Watershed - propagates marker IDs to all connected pixels
-    inst_map = watershed(-dist, markers, mask=np_binary)
-
-    if debug:
-        unique_before = np.unique(inst_map)
-        print(f"    After watershed: {len(unique_before)} unique values: {unique_before[:10]}...")
-
-    # Remove small objects
-    if min_size > 0:
-        inst_map = remove_small_objects(inst_map, min_size=min_size)
-
-    # Relabel to ensure consecutive IDs (scipy.ndimage.label)
-    inst_map = label(inst_map)[0]
-
-    if debug:
-        unique_after = np.unique(inst_map)
-        n_instances = len(unique_after) - 1  # Exclude background (0)
-        print(f"    After remove_small_objects: {n_instances} instances")
-        if n_instances <= 1:
-            print(f"    WARNING: Only {n_instances} instance(s)! unique={unique_after}")
-
-    return inst_map.astype(np.int32)
+from src.postprocessing import hv_guided_watershed  # Single source of truth
 
 
 def load_model_and_data(checkpoint_path: str, family: str, device: str = "cuda"):
@@ -297,7 +199,7 @@ def grid_search(
         n_gt = len(np.unique(gt_inst)) - 1
 
         # Run with debug=True
-        pred_inst = hv_to_instances(
+        pred_inst = hv_guided_watershed(
             np_pred, hv_pred,
             beta=1.5, min_size=40, np_threshold=0.35, min_distance=3,
             debug=True
@@ -332,7 +234,7 @@ def grid_search(
             gt_inst = inst_maps[i]
 
             # Convert to instances with current parameters
-            pred_inst = hv_to_instances(
+            pred_inst = hv_guided_watershed(
                 np_pred, hv_pred,
                 beta=beta,
                 min_size=min_size,
