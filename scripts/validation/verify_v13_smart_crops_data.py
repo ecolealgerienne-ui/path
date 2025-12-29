@@ -363,23 +363,50 @@ def main():
     parser.add_argument("--n_samples", type=int, default=20,
                         help="Nombre d'échantillons à vérifier")
     parser.add_argument("--split", type=str, default="train",
-                        choices=["train", "val"],
-                        help="Split à vérifier")
+                        choices=["train", "val", "all"],
+                        help="Split à vérifier (train, val, ou all pour les deux)")
 
     args = parser.parse_args()
 
-    if args.data_file:
-        data_path = Path(args.data_file)
+    # Déterminer les splits à vérifier
+    if args.split == "all":
+        splits_to_check = ["train", "val"]
     else:
-        data_path = Path(args.data_dir) / f"{args.family}_{args.split}_v13_smart_crops.npz"
+        splits_to_check = [args.split]
 
-    results = verify_data_file(data_path, n_samples=args.n_samples)
+    all_results = {}
+    all_ok = True
 
-    if 'error' in results:
-        print(f"❌ ERREUR: {results['error']}")
-        sys.exit(1)
+    for split in splits_to_check:
+        if args.data_file:
+            data_path = Path(args.data_file)
+        else:
+            data_path = Path(args.data_dir) / f"{args.family}_{split}_v13_smart_crops.npz"
 
-    sys.exit(0 if results.get('all_ok', False) else 1)
+        results = verify_data_file(data_path, n_samples=args.n_samples)
+        all_results[split] = results
+
+        if 'error' in results:
+            print(f"❌ ERREUR ({split}): {results['error']}")
+            all_ok = False
+        elif not results.get('all_ok', False):
+            all_ok = False
+
+    # Résumé final si plusieurs splits
+    if len(splits_to_check) > 1:
+        print(f"\n{'='*70}")
+        print("RÉSUMÉ GLOBAL (TRAIN + VAL)")
+        print(f"{'='*70}")
+        for split, results in all_results.items():
+            if 'error' in results:
+                print(f"  {split.upper()}: ❌ ERREUR - {results['error']}")
+            elif results.get('all_ok', False):
+                print(f"  {split.upper()}: ✅ VALIDE")
+            else:
+                print(f"  {split.upper()}: ❌ INVALIDE")
+        print(f"{'='*70}\n")
+
+    sys.exit(0 if all_ok else 1)
 
 
 if __name__ == "__main__":
