@@ -1,21 +1,24 @@
 #!/usr/bin/env python3
 """
-Préparation données V13 Smart Crops - 5 crops + 5 rotations déterministes.
+Préparation données V13 Smart Crops - Algorithme par couche avec limite max.
 
-⚠️ APPROCHE SPLIT-FIRST-THEN-ROTATE (CTO-validated):
-1. Split train/val par source_image_ids (80/20)
-2. Apply 5 crops to TRAIN → train crops
-3. Apply 5 crops to VAL → val crops
-4. Apply 5 rotations to train crops → train dataset
-5. Apply 5 rotations to val crops → val dataset
+⚠️ APPROCHE PAR COUCHE (Limite RAM/SSD):
+1. Couche 1: TOUS les crops CENTRE
+2. Couche 2: Si < max_samples → ajouter TOUS les TOP_LEFT + rotation
+3. Couche 3: Si < max_samples → ajouter TOUS les TOP_RIGHT + rotation
+4. Couche 4: Si < max_samples → ajouter TOUS les BOTTOM_LEFT + rotation
+5. Couche 5: Si < max_samples → ajouter TOUS les BOTTOM_RIGHT + rotation
+6. Stop dès que max_samples atteint ou couches épuisées
 
-Cette approche garantit ZÉRO data leakage (aucune source partagée).
+⚠️ SPLIT EXTERNE: Le split train/val se fait APRÈS via script séparé
+   (utilise source_image_ids pour garantir ZÉRO data leakage)
 
 Usage:
     python scripts/preprocessing/prepare_v13_smart_crops.py \
         --family epidermal \
         --pannuke_dir /home/amar/data/PanNuke \
-        --output_dir data/family_data_v13_smart_crops
+        --output_dir data/family_data_v13_smart_crops \
+        --max_samples 5000
 """
 
 import argparse
@@ -51,6 +54,10 @@ CROP_ROTATION_MAPPING = {
     'bottom_left':  '270',     # 270° clockwise (= 90° CCW)
     'bottom_right': 'flip_h',  # Flip horizontal
 }
+
+# Ordre des couches pour algorithme de génération par couche
+# Couche 1 = center (prioritaire), puis coins en ordre
+LAYER_ORDER = ['center', 'top_left', 'top_right', 'bottom_left', 'bottom_right']
 
 CROP_SIZE = 224
 
@@ -520,18 +527,27 @@ def generate_smart_crops_from_pannuke(
     output_dir: Path,
     family: str,
     folds: list = None,
-    train_ratio: float = 0.8,
+    max_samples: int = 5000,
     seed: int = 42
 ) -> Dict[str, int]:
     """
-    Génère crops avec split-first-then-rotate strategy.
+    Génère crops avec algorithme par couche et limite max.
+
+    ALGORITHME PAR COUCHE:
+    1. Couche 1: TOUS les crops CENTRE
+    2. Si < max_samples: ajouter TOUS les TOP_LEFT + rotation
+    3. Si < max_samples: ajouter TOUS les TOP_RIGHT + rotation
+    4. etc. jusqu'à max_samples ou couches épuisées
+
+    ⚠️ Le split train/val se fait APRÈS via script séparé
+       (utilise source_image_ids pour garantir ZÉRO data leakage)
 
     Args:
         pannuke_dir: Répertoire PanNuke
         output_dir: Répertoire de sortie
         family: Famille tissulaire
         folds: Liste des folds (défaut: [0, 1, 2])
-        train_ratio: Ratio train/val (défaut: 0.8)
+        max_samples: Nombre maximum de samples (défaut: 5000)
         seed: Seed pour reproductibilité
 
     Returns:
@@ -542,7 +558,9 @@ def generate_smart_crops_from_pannuke(
 
     print(f"\n{'='*70}")
     print(f"GÉNÉRATION V13 SMART CROPS - Famille: {family.upper()}")
-    print(f"{'='*70}\n")
+    print(f"{'='*70}")
+    print(f"Max samples: {max_samples}")
+    print(f"Algorithme: Par couche (center → top_left → top_right → ...)\n")
 
     # Organes de cette famille
     organs = [org for org, fam in ORGAN_TO_FAMILY.items() if fam == family]
@@ -590,151 +608,161 @@ def generate_smart_crops_from_pannuke(
     n_total = len(all_source_images)
     print(f"✅ Total images sources collectées: {n_total}\n")
 
-    # ========== ÉTAPE 2: Split train/val par source images ==========
-    np.random.seed(seed)
-    indices = np.arange(n_total)
-    np.random.shuffle(indices)
+    # ========== ÉTAPE 2: Génération par couche ==========
+    crops_data = {
+        'images': [],
+        'np_targets': [],
+        'hv_targets': [],
+        'nt_targets': [],
+        'inst_maps': [],
+        'weight_maps': [],
+        'source_image_ids': [],
+        'crop_positions': [],
+        'fold_ids': [],
+        'rotations': [],
+    }
 
-    n_train = int(train_ratio * n_total)
-    train_indices = indices[:n_train]
-    val_indices = indices[n_train:]
+    stats = {
+        'total_crops_kept': 0,
+        'total_crops_filtered': 0,
+        'layers_used': [],
+    }
 
-    print(f"📊 Split train/val:")
-    print(f"  Train: {len(train_indices)} images sources ({100*len(train_indices)/n_total:.1f}%)")
-    print(f"  Val:   {len(val_indices)} images sources ({100*len(val_indices)/n_total:.1f}%)\n")
+    # Pré-calculer NP et NT pour toutes les images sources (une seule fois)
+    print("📝 Pré-calcul des targets NP/NT...")
+    all_np_targets = []
+    all_nt_targets = []
+    for mask in tqdm(all_source_masks, desc="  Pré-calcul"):
+        np_target = compute_np_target(mask)
+        nt_target = compute_nt_target(mask)
+        all_np_targets.append(np_target)
+        all_nt_targets.append(nt_target)
 
-    # ========== ÉTAPE 3: Traiter train et val séparément ==========
-    # Stratégie V13 Smart Crops: 1 crop = 1 rotation (via CROP_ROTATION_MAPPING)
+    # Traiter couche par couche jusqu'à max_samples
+    print(f"\n📊 Génération par couche (max: {max_samples})...")
 
-    for split_name, split_indices in [('train', train_indices), ('val', val_indices)]:
-        print(f"{'='*70}")
-        print(f"Traitement split: {split_name.upper()}")
-        print(f"{'='*70}\n")
+    for layer_idx, pos_name in enumerate(LAYER_ORDER):
+        # Vérifier si on a atteint max_samples
+        if stats['total_crops_kept'] >= max_samples:
+            print(f"  ✅ Max samples atteint ({max_samples}), arrêt.")
+            break
 
-        crops_data = {
-            'images': [],
-            'np_targets': [],
-            'hv_targets': [],
-            'nt_targets': [],
-            'inst_maps': [],  # ✅ Instance maps cropés
-            'weight_maps': [],  # ✅ Weight maps Ronneberger pour frontières
-            'source_image_ids': [],
-            'crop_positions': [],
-            'fold_ids': [],
-            'rotations': [],
-        }
+        x1, y1, x2, y2 = CROP_POSITIONS[pos_name]
+        rotation = CROP_ROTATION_MAPPING[pos_name]
 
-        stats = {
-            'total_crops_kept': 0,
-            'total_crops_filtered': 0,
-        }
+        print(f"\n  📦 Couche {layer_idx + 1}: {pos_name.upper()} (rotation: {rotation})")
 
-        # Traiter chaque image source du split
-        for idx in tqdm(split_indices, desc=f"  {split_name}"):
+        layer_kept = 0
+        layer_filtered = 0
+
+        # Traiter toutes les images sources pour cette couche
+        for idx in range(n_total):
+            # Vérifier si on a atteint max_samples
+            if stats['total_crops_kept'] >= max_samples:
+                break
+
             image = all_source_images[idx]
-            mask = all_source_masks[idx]
+            np_target = all_np_targets[idx]
+            nt_target = all_nt_targets[idx]
             source_id = all_source_ids[idx]
             fold_id = all_fold_ids[idx]
 
-            # Validation
-            assert image.shape == (PANNUKE_IMAGE_SIZE, PANNUKE_IMAGE_SIZE, 3)
-            assert mask.shape == (PANNUKE_IMAGE_SIZE, PANNUKE_IMAGE_SIZE, 6)
+            # ÉTAPE 1: Extraire crop RAW
+            crop_raw = extract_raw_crop(
+                image, np_target, nt_target,
+                x1, y1, x2, y2
+            )
 
-            # Générer targets à 256×256 (NP et NT seulement - HV sera calculé APRÈS rotation)
-            # ⚠️ FIX CRITIQUE: Ne PAS calculer HV ici - le label() doit être fait APRÈS rotation
-            np_target = compute_np_target(mask)
-            nt_target = compute_nt_target(mask)
+            # ÉTAPE 2: Appliquer rotation
+            img_rot, np_rot, nt_rot = apply_simple_rotation(
+                crop_raw['image'],
+                crop_raw['np_target'],
+                crop_raw['nt_target'],
+                rotation
+            )
 
-            # Générer 5 crops avec rotations spécifiques (stratégie V13 Smart Crops)
-            for pos_name, (x1, y1, x2, y2) in CROP_POSITIONS.items():
-                # ÉTAPE 1: Extraire crop RAW (sans HV ni inst_map)
-                crop_raw = extract_raw_crop(
-                    image, np_target, nt_target,
-                    x1, y1, x2, y2
-                )
+            # ÉTAPE 3: Finaliser APRÈS rotation
+            hv_rot, inst_rot, weight_rot, n_instances, is_valid = finalize_crop_after_rotation(
+                img_rot, np_rot, nt_rot
+            )
 
-                # ÉTAPE 2: Appliquer rotation (image, np, nt seulement)
-                rotation = CROP_ROTATION_MAPPING[pos_name]
+            # Filtrer si GT vide
+            if not is_valid:
+                layer_filtered += 1
+                stats['total_crops_filtered'] += 1
+                continue
 
-                img_rot, np_rot, nt_rot = apply_simple_rotation(
-                    crop_raw['image'],
-                    crop_raw['np_target'],
-                    crop_raw['nt_target'],
-                    rotation
-                )
+            crops_data['images'].append(img_rot)
+            crops_data['np_targets'].append(np_rot)
+            crops_data['hv_targets'].append(hv_rot)
+            crops_data['nt_targets'].append(nt_rot)
+            crops_data['inst_maps'].append(inst_rot)
+            crops_data['weight_maps'].append(weight_rot)
+            crops_data['source_image_ids'].append(source_id)
+            crops_data['crop_positions'].append(pos_name)
+            crops_data['fold_ids'].append(fold_id)
+            crops_data['rotations'].append(rotation)
 
-                # ÉTAPE 3: Finaliser APRÈS rotation - c'est ici que label() est fait!
-                # ⚠️ FIX CRITIQUE: label() sur image ROTÉE = ordre spatial cohérent
-                # ✅ AJOUT: weight_map Ronneberger pour sur-pondérer frontières
-                hv_rot, inst_rot, weight_rot, n_instances, is_valid = finalize_crop_after_rotation(
-                    img_rot, np_rot, nt_rot
-                )
+            layer_kept += 1
+            stats['total_crops_kept'] += 1
 
-                # Filtrer si GT vide (aucune instance après rotation)
-                if not is_valid:
-                    stats['total_crops_filtered'] += 1
-                    continue
+        stats['layers_used'].append(pos_name)
+        print(f"     Conservés: {layer_kept}, Filtrés: {layer_filtered}")
+        print(f"     Total cumulé: {stats['total_crops_kept']}/{max_samples}")
 
-                crops_data['images'].append(img_rot)
-                crops_data['np_targets'].append(np_rot)
-                crops_data['hv_targets'].append(hv_rot)
-                crops_data['nt_targets'].append(nt_rot)
-                crops_data['inst_maps'].append(inst_rot)
-                crops_data['weight_maps'].append(weight_rot)
-                crops_data['source_image_ids'].append(source_id)
-                crops_data['crop_positions'].append(pos_name)
-                crops_data['fold_ids'].append(fold_id)
-                crops_data['rotations'].append(rotation)
+    # ========== ÉTAPE 3: Sauvegarde ==========
+    print(f"\n{'='*70}")
+    print(f"📊 RÉSUMÉ FINAL")
+    print(f"{'='*70}")
+    print(f"  Images sources:   {n_total}")
+    print(f"  Couches utilisées: {len(stats['layers_used'])} ({', '.join(stats['layers_used'])})")
+    print(f"  Crops conservés:   {stats['total_crops_kept']}")
+    print(f"  Crops filtrés:     {stats['total_crops_filtered']}")
 
-                stats['total_crops_kept'] += 1
+    if stats['total_crops_kept'] == 0:
+        print("❌ ERREUR: Aucun crop généré!")
+        return stats
 
-        # Statistiques split
-        print(f"\n📊 Statistiques {split_name}:")
-        print(f"  Crops conservés:      {stats['total_crops_kept']}")
-        print(f"  Crops filtrés (vide): {stats['total_crops_filtered']}")
+    output_dir.mkdir(parents=True, exist_ok=True)
+    output_file = output_dir / f"{family}_data_v13_smart_crops.npz"
 
-        # Sauvegarder split
-        output_dir.mkdir(parents=True, exist_ok=True)
-        output_file = output_dir / f"{family}_{split_name}_v13_smart_crops.npz"
+    print(f"\n💾 Conversion en arrays...")
+    images_array = np.stack(crops_data['images'], axis=0)
+    np_targets_array = np.stack(crops_data['np_targets'], axis=0)
+    hv_targets_array = np.stack(crops_data['hv_targets'], axis=0)
+    nt_targets_array = np.stack(crops_data['nt_targets'], axis=0)
+    inst_maps_array = np.stack(crops_data['inst_maps'], axis=0)
+    weight_maps_array = np.stack(crops_data['weight_maps'], axis=0)
+    source_ids_array = np.array(crops_data['source_image_ids'], dtype=np.int32)
+    crop_positions_array = np.array(crops_data['crop_positions'])
+    fold_ids_array = np.array(crops_data['fold_ids'], dtype=np.int32)
+    rotations_array = np.array(crops_data['rotations'])
 
-        print(f"\n💾 Conversion en arrays...")
-        images_array = np.stack(crops_data['images'], axis=0)
-        np_targets_array = np.stack(crops_data['np_targets'], axis=0)
-        hv_targets_array = np.stack(crops_data['hv_targets'], axis=0)
-        nt_targets_array = np.stack(crops_data['nt_targets'], axis=0)
-        inst_maps_array = np.stack(crops_data['inst_maps'], axis=0)
-        weight_maps_array = np.stack(crops_data['weight_maps'], axis=0)
-        source_ids_array = np.array(crops_data['source_image_ids'], dtype=np.int32)
-        crop_positions_array = np.array(crops_data['crop_positions'])
-        fold_ids_array = np.array(crops_data['fold_ids'], dtype=np.int32)
-        rotations_array = np.array(crops_data['rotations'])
+    print(f"💾 Sauvegarde: {output_file}")
+    np.savez_compressed(
+        output_file,
+        images=images_array,
+        np_targets=np_targets_array,
+        hv_targets=hv_targets_array,
+        nt_targets=nt_targets_array,
+        inst_maps=inst_maps_array,
+        weight_maps=weight_maps_array,
+        source_image_ids=source_ids_array,
+        crop_positions=crop_positions_array,
+        fold_ids=fold_ids_array,
+        rotations=rotations_array,
+    )
 
-        print(f"💾 Sauvegarde: {output_file}")
-        np.savez_compressed(
-            output_file,
-            images=images_array,
-            np_targets=np_targets_array,
-            hv_targets=hv_targets_array,
-            nt_targets=nt_targets_array,
-            inst_maps=inst_maps_array,  # ✅ Instance maps cropés
-            weight_maps=weight_maps_array,  # ✅ Weight maps Ronneberger
-            source_image_ids=source_ids_array,
-            crop_positions=crop_positions_array,
-            fold_ids=fold_ids_array,
-            rotations=rotations_array,
-        )
+    file_size_mb = output_file.stat().st_size / (1024 * 1024)
+    print(f"✅ Fichier créé: {file_size_mb:.1f} MB")
+    print(f"\n⚠️  RAPPEL: Lancer le script de split séparément pour train/val")
 
-        file_size_mb = output_file.stat().st_size / (1024 * 1024)
-        print(f"✅ Fichier créé: {file_size_mb:.1f} MB\n")
-
-    print(f"✅ GÉNÉRATION COMPLÈTE - Train et Val sauvegardés séparément")
-
-    return {}
+    return stats
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Génération V13 Smart Crops avec split-first-then-rotate"
+        description="Génération V13 Smart Crops avec algorithme par couche"
     )
     parser.add_argument(
         '--pannuke_dir',
@@ -763,10 +791,10 @@ def main():
         help="Folds à traiter (défaut: 0 1 2)"
     )
     parser.add_argument(
-        '--train_ratio',
-        type=float,
-        default=0.8,
-        help="Ratio train/val (défaut: 0.8)"
+        '--max_samples',
+        type=int,
+        default=5000,
+        help="Nombre maximum de samples à générer (défaut: 5000)"
     )
     parser.add_argument(
         '--seed',
@@ -788,7 +816,7 @@ def main():
         output_dir=args.output_dir,
         family=args.family,
         folds=args.folds,
-        train_ratio=args.train_ratio,
+        max_samples=args.max_samples,
         seed=args.seed,
     )
 
