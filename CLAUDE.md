@@ -198,10 +198,11 @@ python scripts/evaluation/test_v13_smart_crops_aji.py \
 
 **Paramètres Watershed optimisés par famille :**
 
-| Famille | np_threshold | min_size | beta | min_distance |
-|---------|--------------|----------|------|--------------|
-| Respiratory | 0.40 | 30 | 0.50 | 5 |
-| Epidermal | 0.45 | 40 | 0.50 | 5 |
+| Famille | np_threshold | min_size | beta | min_distance | AJI | Status |
+|---------|--------------|----------|------|--------------|-----|--------|
+| Respiratory | 0.40 | 30 | 0.50 | 5 | **0.6872** | ✅ Objectif |
+| Urologic | 0.45 | 30 | 0.50 | 2 | **0.6743** | 99.2% |
+| Epidermal | 0.45 | 20 | 1.00 | 3 | 0.6203 | 91.2% |
 
 ### 7. Optimisation Watershed (optionnel)
 
