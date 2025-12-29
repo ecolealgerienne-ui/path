@@ -265,7 +265,8 @@ features (B, 261, 1536):
 | Module | Fonction | Usage |
 |--------|----------|-------|
 | `src/postprocessing/watershed.py` | `hv_guided_watershed()` | Segmentation instances |
-| `src/metrics/ground_truth_metrics.py` | `compute_aji()` | Calcul AJI |
+| `src/metrics/ground_truth_metrics.py` | `compute_aji()` | Calcul AJI+ |
+| `src/evaluation/instance_evaluation.py` | `run_inference()`, `evaluate_sample()`, `evaluate_batch_with_params()` | Évaluation complète |
 
 **Import obligatoire:**
 
@@ -273,10 +274,11 @@ features (B, 261, 1536):
 # ✅ CORRECT - Single source of truth
 from src.postprocessing import hv_guided_watershed
 from src.metrics.ground_truth_metrics import compute_aji
+from src.evaluation import run_inference, evaluate_batch_with_params
 
 # ❌ INTERDIT - Duplication de code
 def hv_guided_watershed(...):  # Copie locale
-    ...
+def run_inference(...):        # Copie locale
 ```
 
 **Pourquoi:** Évite les divergences d'algorithme entre scripts (bug découvert 2025-12-29: scipy.ndimage.label vs skimage.measure.label causait -2.8% AJI).
