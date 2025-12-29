@@ -132,37 +132,50 @@ Chaque image source 256×256 génère 5 crops 224×224 avec rotations:
 
 ## Pipeline Complet (Commandes)
 
-### 1. Générer Smart Crops
+**Exemple pour famille `epidermal`** — Remplacer par la famille souhaitée.
+
+### 1. Normalisation Macenko (Staining)
+
+```bash
+python scripts/preprocessing/normalize_staining_source.py --family epidermal
+```
+
+### 2. Générer Smart Crops
 
 ```bash
 python scripts/preprocessing/prepare_v13_smart_crops.py \
-    --family respiratory \
+    --family epidermal \
     --max_samples 5000
 ```
 
-### 2. Vérifier Données
+### 3. Vérifier Données Générées
 
 ```bash
-python scripts/validation/verify_v13_smart_crops_data.py \
-    --family respiratory \
-    --split all
+# Vérifier les fichiers générés
+ls -la data/family_data_v13_smart_crops/
+
+# Vérifier split train
+python scripts/validation/verify_v13_smart_crops_data.py --family epidermal --split train
+
+# Vérifier split val
+python scripts/validation/verify_v13_smart_crops_data.py --family epidermal --split val
 ```
 
-### 3. Extraire Features H-optimus-0
+### 4. Extraire Features H-optimus-0
 
 ```bash
-python scripts/preprocessing/extract_features_v13_smart_crops.py \
-    --family respiratory --split train
+python scripts/preprocessing/extract_features_v13_smart_crops.py --family epidermal --split train
+python scripts/preprocessing/extract_features_v13_smart_crops.py --family epidermal --split val
 
-python scripts/preprocessing/extract_features_v13_smart_crops.py \
-    --family respiratory --split val
+# Vérifier les features générées
+ls -la data/cache/family_data/
 ```
 
-### 4. Entraînement FPN Chimique
+### 5. Entraînement FPN Chimique
 
 ```bash
 python scripts/training/train_hovernet_family_v13_smart_crops.py \
-    --family respiratory \
+    --family epidermal \
     --epochs 30 \
     --use_hybrid \
     --use_fpn_chimique
@@ -170,21 +183,23 @@ python scripts/training/train_hovernet_family_v13_smart_crops.py \
 
 **⚠️ IMPORTANT:** `--use_fpn_chimique` nécessite TOUJOURS `--use_hybrid`
 
-### 5. Évaluation AJI
+### 6. Évaluation AJI
 
 ```bash
 python scripts/evaluation/test_v13_smart_crops_aji.py \
-    --checkpoint models/checkpoints_v13_smart_crops/hovernet_respiratory_v13_smart_crops_fpn_best.pth \
-    --family respiratory \
-    --n_samples 50
+    --checkpoint models/checkpoints_v13_smart_crops/hovernet_epidermal_v13_smart_crops_hybrid_fpn_best.pth \
+    --family epidermal \
+    --n_samples 50 \
+    --use_hybrid \
+    --use_fpn_chimique
 ```
 
-### 6. Optimisation Watershed (optionnel)
+### 7. Optimisation Watershed (optionnel)
 
 ```bash
 python scripts/evaluation/optimize_watershed_aji.py \
-    --checkpoint models/checkpoints_v13_smart_crops/hovernet_respiratory_v13_smart_crops_fpn_best.pth \
-    --family respiratory \
+    --checkpoint models/checkpoints_v13_smart_crops/hovernet_epidermal_v13_smart_crops_hybrid_fpn_best.pth \
+    --family epidermal \
     --n_samples 50
 ```
 
@@ -232,14 +247,24 @@ features (B, 261, 1536):
 ### 2. FPN Chimique = use_hybrid + use_fpn_chimique
 
 ```bash
-# ✅ CORRECT
+# ✅ CORRECT (Training ET Évaluation)
 --use_hybrid --use_fpn_chimique
 
 # ❌ INCORRECT
 --use_fpn_chimique  # Sans --use_hybrid → Erreur
 ```
 
-### 3. Validation CLS std
+### 3. Nommage des Checkpoints
+
+```bash
+# FPN Chimique checkpoint:
+hovernet_{family}_v13_smart_crops_hybrid_fpn_best.pth
+
+# Exemple:
+hovernet_epidermal_v13_smart_crops_hybrid_fpn_best.pth
+```
+
+### 4. Validation CLS std
 
 Le CLS token std doit être entre **0.70 et 0.90**.
 
