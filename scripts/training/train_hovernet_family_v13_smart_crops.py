@@ -646,11 +646,11 @@ def main():
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--lambda_np", type=float, default=1.0)
     parser.add_argument("--lambda_hv", type=float, default=2.0,
-                       help="Poids branche HV initial (epochs 1-25)")
+                       help="Poids branche HV initial (Phase 1: convergence Dice/NT)")
     parser.add_argument("--lambda_hv_boost", type=float, default=8.0,
-                       help="Poids branche HV boost (epochs 26+) - Fine-tuning final")
-    parser.add_argument("--lambda_hv_boost_epoch", type=int, default=26,
-                       help="Epoch à partir de laquelle booster lambda_hv")
+                       help="Poids branche HV boost (Phase 2: fine-tuning séparation)")
+    parser.add_argument("--lambda_hv_boost_ratio", type=float, default=0.85,
+                       help="Ratio d'epochs avant boost λ_hv (0.85 = boost aux derniers 15%%)")
     parser.add_argument("--lambda_nt", type=float, default=1.0)
     parser.add_argument("--lambda_magnitude", type=float, default=1.0,
                        help="Poids magnitude loss (force gradients HV)")
@@ -691,7 +691,10 @@ def main():
     print(f"  Batch size: {args.batch_size}")
     print(f"  Learning rate: {args.lr}")
     print(f"  Lambda (NP/HV/NT/Mag/Edge): {args.lambda_np}/{args.lambda_hv}/{args.lambda_nt}/{args.lambda_magnitude}/{args.lambda_edge}")
-    print(f"  Lambda HV scheduler: {args.lambda_hv} (epochs 1-{args.lambda_hv_boost_epoch-1}) → {args.lambda_hv_boost} (epochs {args.lambda_hv_boost_epoch}+)")
+    # Calculer l'epoch de boost dynamiquement (adaptatif au nombre total d'epochs)
+    lambda_hv_boost_epoch = int(args.epochs * args.lambda_hv_boost_ratio) + 1
+    print(f"  Lambda HV scheduler: {args.lambda_hv} (epochs 1-{lambda_hv_boost_epoch-1}) → {args.lambda_hv_boost} (epochs {lambda_hv_boost_epoch}+)")
+    print(f"  Lambda HV boost ratio: {args.lambda_hv_boost_ratio} (adaptatif: {lambda_hv_boost_epoch}/{args.epochs})")
     print(f"  Dropout: {args.dropout}")
     print(f"  Augmentation: {args.augment}")
     print(f"  Adaptive loss: {args.adaptive_loss}")
@@ -856,10 +859,11 @@ def main():
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
     for epoch in range(start_epoch + 1, start_epoch + args.epochs + 1):
-        # Lambda HV Scheduler (V13-Hybrid-Final 2025-12-28)
-        # Epochs 1-25: lambda_hv stable pour convergence Dice/NT
-        # Epochs 26+: boost lambda_hv pour affiner séparation membranes
-        if epoch >= args.lambda_hv_boost_epoch:
+        # Lambda HV Scheduler Adaptatif (Expert 2025-12-29)
+        # Phase 1 (epochs 1 → ratio×total): lambda_hv stable pour convergence Dice/NT
+        # Phase 2 (epochs ratio×total → fin): boost lambda_hv pour affiner séparation membranes
+        # Exemple: 30 epochs × 0.85 = epoch 26+, 60 epochs × 0.85 = epoch 52+
+        if epoch >= lambda_hv_boost_epoch:
             current_lambda_hv = args.lambda_hv_boost
         else:
             current_lambda_hv = args.lambda_hv
