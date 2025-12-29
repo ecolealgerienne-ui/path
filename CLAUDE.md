@@ -191,8 +191,17 @@ python scripts/evaluation/test_v13_smart_crops_aji.py \
     --family epidermal \
     --n_samples 50 \
     --use_hybrid \
-    --use_fpn_chimique
+    --use_fpn_chimique \
+    --np_threshold 0.45 \
+    --min_size 40
 ```
+
+**Paramètres Watershed optimisés par famille :**
+
+| Famille | np_threshold | min_size | beta | min_distance |
+|---------|--------------|----------|------|--------------|
+| Respiratory | 0.40 | 30 | 0.50 | 5 |
+| Epidermal | 0.45 | 40 | 0.50 | 5 |
 
 ### 7. Optimisation Watershed (optionnel)
 
