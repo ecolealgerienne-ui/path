@@ -691,10 +691,16 @@ def main():
     print(f"  Batch size: {args.batch_size}")
     print(f"  Learning rate: {args.lr}")
     print(f"  Lambda (NP/HV/NT/Mag/Edge): {args.lambda_np}/{args.lambda_hv}/{args.lambda_nt}/{args.lambda_magnitude}/{args.lambda_edge}")
+
     # Calculer l'epoch de boost dynamiquement (adaptatif au nombre total d'epochs)
-    lambda_hv_boost_epoch = int(args.epochs * args.lambda_hv_boost_ratio) + 1
-    print(f"  Lambda HV scheduler: {args.lambda_hv} (epochs 1-{lambda_hv_boost_epoch-1}) → {args.lambda_hv_boost} (epochs {lambda_hv_boost_epoch}+)")
-    print(f"  Lambda HV boost ratio: {args.lambda_hv_boost_ratio} (adaptatif: {lambda_hv_boost_epoch}/{args.epochs})")
+    # Sécurité: clamp ratio entre 0.0 et 1.0 (règle 20/12/2025 - priorité flux de code)
+    ratio = max(0.0, min(1.0, args.lambda_hv_boost_ratio))
+    lambda_hv_boost_epoch = int(args.epochs * ratio) + 1
+
+    # Log de contrôle stratégie HV (visibilité production)
+    print(f"  🚀 Stratégie HV : Phase 1 (λ={args.lambda_hv}) jusqu'à epoch {lambda_hv_boost_epoch-1}")
+    print(f"  🔥 Stratégie HV : Phase 2 (λ={args.lambda_hv_boost}) à partir de epoch {lambda_hv_boost_epoch}")
+    print(f"  Lambda HV boost ratio: {ratio} (adaptatif: {lambda_hv_boost_epoch}/{args.epochs})")
     print(f"  Dropout: {args.dropout}")
     print(f"  Augmentation: {args.augment}")
     print(f"  Adaptive loss: {args.adaptive_loss}")
