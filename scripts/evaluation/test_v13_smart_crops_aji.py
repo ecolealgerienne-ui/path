@@ -270,6 +270,11 @@ def main():
         action="store_true",
         help="Use FPN Chimique (multi-scale H-injection at 5 levels)"
     )
+    parser.add_argument(
+        "--use_h_alpha",
+        action="store_true",
+        help="Use learnable alpha for H-channel amplification"
+    )
     args = parser.parse_args()
 
     device = torch.device(args.device)
@@ -312,12 +317,19 @@ def main():
         print(f"  ⚠️  Using checkpoint setting: use_fpn_chimique={checkpoint_use_fpn}")
         args.use_fpn_chimique = checkpoint_use_fpn
 
+    # Detect use_h_alpha from checkpoint (check if h_alphas params exist)
+    checkpoint_use_h_alpha = any('h_alphas' in k for k in checkpoint['model_state_dict'].keys())
+    if checkpoint_use_h_alpha:
+        print(f"  ✅ Checkpoint contains h_alphas parameters (use_h_alpha=True)")
+        args.use_h_alpha = True
+
     model = HoVerNetDecoder(
         embed_dim=1536,
         n_classes=n_classes,
         dropout=0.1,
         use_hybrid=args.use_hybrid,
-        use_fpn_chimique=args.use_fpn_chimique
+        use_fpn_chimique=args.use_fpn_chimique,
+        use_h_alpha=args.use_h_alpha
     ).to(device)
 
     model.load_state_dict(checkpoint['model_state_dict'])
