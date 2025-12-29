@@ -1410,6 +1410,107 @@ Décodeur intégré CellViT              Décodeur UNETR custom
 
 ## Journal de Développement
 
+### 2025-12-28 — V13-Hybrid V2: Fix CRITIQUE Alignement Augmentations ✅ IMPLÉMENTÉ
+
+**Contexte:** V13-Hybrid V2 (injection H-channel à 224×224) avec augmentations produisait AJI catastrophique (0.4584) vs sans augmentations (0.5444). Diagnostic Expert a identifié la cause racine.
+
+**Bug Identifié — Désalignement Augmentations:**
+
+```python
+# ❌ AVANT (BUG):
+if self.augmenter is not None and self.split == "train":
+    features, np_target, hv_target, nt_target, weight_map = self.augmenter(...)
+    # NOTE: L'image n'est PAS augmentée avec features car RuifrokExtractor
+    # utilise torch.no_grad() - le gradient ne passe pas par l'image RGB.
+    # L'augmentation géométrique des features suffit.  ← FAUX!
+
+# PROBLÈME:
+# - Features: flippées/rotées via FeatureAugmentation
+# - Image RGB: NON transformée
+# - H-channel extrait depuis image originale
+# - Résultat: H-channel désaligné spatialement avec features et targets
+# - Le modèle reçoit des signaux CONTRADICTOIRES → confusion → AJI catastrophique
+```
+
+**Impact mesuré:**
+
+| Mode | AJI | Over-seg Ratio | Diagnostic |
+|------|-----|----------------|------------|
+| Sans augmentation | 0.5444 | 1.00× | Plafond (manque régularisation) |
+| Avec augmentation DÉSALIGNÉE | 0.4584 | 0.87× | **Catastrophique** (sous-seg) |
+| Avec augmentation ALIGNÉE (cible) | ≥0.60 | ~1.00× | Objectif 0.68 |
+
+**Fix Implémenté:**
+
+```python
+# ✅ APRÈS (CORRECT):
+class FeatureAugmentation:
+    def __call__(self, features, np_target, hv_target, nt_target, weight_map=None, image=None):
+        # Décisions stockées pour appliquer MÊME transformation
+        do_flip = np.random.random() < self.p_flip
+        do_rot = np.random.random() < self.p_rot90
+        rot_k = np.random.choice([1, 2, 3]) if do_rot else 0
+
+        if do_flip:
+            # MÊME flip pour features, targets ET image
+            patches_grid = np.flip(patches_grid, axis=1).copy()
+            if image is not None:
+                image = np.flip(image, axis=1).copy()  # (H, W, C)
+            # ... autres targets
+
+        if do_rot and rot_k > 0:
+            # MÊME rotation pour features, targets ET image
+            patches_grid = np.rot90(patches_grid, rot_k, axes=(0, 1)).copy()
+            if image is not None:
+                image = np.rot90(image, rot_k, axes=(0, 1)).copy()
+            # ... autres targets + HV component swapping
+
+        return features, np_target, hv_target, nt_target, weight_map, image
+```
+
+**Fichiers Modifiés:**
+- `scripts/training/train_hovernet_family_v13_smart_crops.py`
+  - `FeatureAugmentation`: Ajout paramètre `image` + transformations alignées
+  - `__getitem__`: Passage image à travers augmentation
+
+**Commit:** `bacfd12` — "fix(v13-hybrid-v2): Align augmentations between features and RGB images"
+
+**Métriques Attendues:**
+
+| Métrique | Sans Augment | Avec Augment ALIGNÉ (cible) | Gain |
+|----------|--------------|----------------------------|------|
+| Dice | 0.7699 | ≥0.80 | +4% |
+| **AJI** | 0.5444 | **≥0.68** | **+24%** 🎯 |
+| Over-seg | 1.00× | ~1.00× | Maintenu |
+
+**Prochaine étape:**
+
+```bash
+# Training avec augmentations ALIGNÉES
+python scripts/training/train_hovernet_family_v13_smart_crops.py \
+    --family epidermal --epochs 30 --use_hybrid --augment
+
+# Puis évaluation
+python scripts/evaluation/test_v13_smart_crops_aji.py \
+    --family epidermal --n_samples 50 --use_hybrid
+```
+
+**Leçons Apprises:**
+
+1. **Alignement spatial CRITIQUE même sans gradient**
+   - Même si le gradient ne passe pas (torch.no_grad()), l'alignement spatial est crucial
+   - Le H-channel doit correspondre à la même position que les features et targets
+   - Un décalage de quelques pixels suffit à détruire les performances
+
+2. **Over-segmentation ratio = indicateur clé**
+   - Ratio 1.00× = parfait (autant d'instances prédites que GT)
+   - Ratio 0.87× = sous-segmentation (fusions = signaux contradictoires)
+   - La chute de 1.00× → 0.87× a révélé le bug
+
+**Statut:** ✅ Fix implémenté et commité — En attente de validation par l'utilisateur
+
+---
+
 ### 2025-12-27 (Suite) — V13 Smart Crops: Fix CRITICAL - LOCAL Relabeling + Rotation Mathematics ✅ RÉSOLU
 
 **Contexte:** Suite à la validation V13 Smart Crops (inst_maps ajoutés pour TRUE instance evaluation), l'AJI a **DIMINUÉ** de 0.5535 à 0.5055 (-8.7%) au lieu d'augmenter. Investigation révèle **2 bugs critiques** + complexité excessive de l'approche HYBRID.

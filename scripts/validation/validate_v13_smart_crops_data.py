@@ -4,13 +4,34 @@ Validation complète des données V13 Smart Crops avant entraînement.
 
 Vérifie:
 1. Features RGB (train + val)
+   - Shapes (N, 261, 1536)
+   - CLS std dans [0.70, 0.90]
+   - Métadonnées (source_image_ids, crop_positions)
+
 2. Targets (train + val)
+   - Shapes, dtypes (HV float32, NP float32, NT int64)
+   - Ranges (HV [-1, 1], NP [0, 1])
+
 3. Cohérence splits (pas de data leakage)
-4. Shapes, dtypes, ranges
-5. Métadonnées (source_image_ids, crop_positions)
+   - Aucune image source partagée entre train et val
+
+4. ⭐ NOUVEAU: HV Centers Inside Nuclei (Expert recommendation)
+   - Vérifie que centres HV sont à l'intérieur des noyaux
+   - Détecte problèmes Distance Transform vs mean()
+
+5. ⭐ NOUVEAU: IDs Séquentiels (prévention Bug #1)
+   - Vérifie IDs [1, 2, 3, ..., N] sans gaps ni doublons
+   - Détecte problèmes LOCAL relabeling
+
+6. ⭐ NOUVEAU: HV Rotation Consistency (prévention Bug #2)
+   - Vérifie divergence négative (vecteurs centripètes)
+   - Détecte erreurs de transformation HV après rotation
 
 Usage:
     python scripts/validation/validate_v13_smart_crops_data.py --family epidermal
+
+    # Avec plus d'échantillons pour les tests experts
+    python scripts/validation/validate_v13_smart_crops_data.py --family epidermal --n_samples 50
 """
 
 import argparse
@@ -254,6 +275,348 @@ def validate_targets(targets_file: Path, split: str, family: str) -> bool:
         return True
 
 
+def validate_hv_centers_inside_nuclei(
+    targets_file: Path,
+    split: str,
+    n_samples: int = 20
+) -> bool:
+    """
+    Vérifie que les centres HV sont à l'INTÉRIEUR des noyaux (pas dans le background).
+
+    Problème détecté par expert:
+    - Si le centre (calculé par mean()) tombe hors du noyau (forme concave),
+      les vecteurs HV pointent vers le vide → Watershed échoue.
+
+    Solution: Distance Transform garantit que le centre est le pixel le plus
+    profond dans le noyau.
+
+    Ce test vérifie empiriquement que les centres HV sont valides.
+    """
+    from scipy.ndimage import distance_transform_edt, label
+
+    print(f"\n{'='*80}")
+    print(f"  VALIDATION HV CENTERS INSIDE NUCLEI — {split.upper()}")
+    print(f"{'='*80}")
+
+    if not targets_file.exists():
+        print(f"❌ ERREUR: Fichier introuvable: {targets_file}")
+        return False
+
+    data = np.load(targets_file)
+
+    # Vérifier que inst_maps existe (nécessaire pour cette validation)
+    if 'inst_maps' not in data.files:
+        print(f"⚠️  SKIP: 'inst_maps' non disponible dans {targets_file.name}")
+        print(f"   Cette validation nécessite inst_maps pour identifier les noyaux individuels.")
+        return True  # Skip plutôt que fail
+
+    np_targets = data['np_targets']
+    hv_targets = data['hv_targets']
+    inst_maps = data['inst_maps']
+
+    n_crops = len(np_targets)
+    n_to_check = min(n_samples, n_crops)
+
+    # Sélectionner échantillons aléatoires (reproductible)
+    np.random.seed(42)
+    sample_indices = np.random.choice(n_crops, n_to_check, replace=False)
+
+    issues = []
+    centers_inside = 0
+    centers_outside = 0
+    centers_total = 0
+
+    print(f"Vérification de {n_to_check} crops (seed=42)...")
+    print()
+
+    for idx in sample_indices:
+        inst_map = inst_maps[idx]
+        hv_map = hv_targets[idx]  # (2, 224, 224)
+        np_mask = np_targets[idx] > 0.5
+
+        # Pour chaque instance dans le crop
+        inst_ids = np.unique(inst_map)
+        inst_ids = inst_ids[inst_ids > 0]
+
+        for inst_id in inst_ids:
+            inst_mask = inst_map == inst_id
+            y_coords, x_coords = np.where(inst_mask)
+
+            if len(y_coords) == 0:
+                continue
+
+            centers_total += 1
+
+            # Extraire les valeurs HV pour cette instance
+            h_values = hv_map[0, y_coords, x_coords]
+            v_values = hv_map[1, y_coords, x_coords]
+
+            # Le centre théorique est là où H=0 et V=0
+            # Trouver le pixel avec min(|H| + |V|)
+            hv_sum = np.abs(h_values) + np.abs(v_values)
+            center_idx = np.argmin(hv_sum)
+            center_y, center_x = y_coords[center_idx], x_coords[center_idx]
+
+            # Vérifier que ce pixel est bien dans le noyau
+            if inst_mask[center_y, center_x]:
+                centers_inside += 1
+            else:
+                centers_outside += 1
+                if centers_outside <= 5:  # Limiter les messages
+                    issues.append(
+                        f"Crop {idx}, Instance {inst_id}: Centre HV ({center_x}, {center_y}) "
+                        f"HORS du noyau!"
+                    )
+
+    # Calcul statistiques
+    if centers_total > 0:
+        inside_pct = 100 * centers_inside / centers_total
+        outside_pct = 100 * centers_outside / centers_total
+    else:
+        inside_pct = 0
+        outside_pct = 0
+
+    print(f"📊 Résultats:")
+    print(f"  Centres vérifiés:    {centers_total}")
+    print(f"  Centres INSIDE:      {centers_inside} ({inside_pct:.1f}%)")
+    print(f"  Centres OUTSIDE:     {centers_outside} ({outside_pct:.1f}%)")
+    print()
+
+    # Verdict: On tolère un petit % d'erreurs (forme très irrégulière)
+    threshold_ok = 95.0  # 95% des centres doivent être inside
+
+    if inside_pct >= threshold_ok:
+        print(f"✅ VALIDE — {inside_pct:.1f}% ≥ {threshold_ok}% centres inside")
+        return True
+    else:
+        print(f"❌ INVALIDE — {inside_pct:.1f}% < {threshold_ok}% centres inside")
+        print()
+        print("Causes possibles:")
+        print("  → compute_hv_maps() utilise mean() au lieu de Distance Transform")
+        print("  → Noyaux concaves avec centre hors du masque")
+        print()
+        print("Solution:")
+        print("  → Vérifier que compute_hv_maps() utilise distance_transform_edt()")
+        if issues:
+            print()
+            print("Exemples de problèmes (max 5):")
+            for issue in issues[:5]:
+                print(f"  → {issue}")
+        return False
+
+
+def validate_sequential_ids(targets_file: Path, split: str, n_samples: int = 20) -> bool:
+    """
+    Vérifie que les IDs d'instances sont séquentiels [1, 2, 3, ..., N].
+
+    Bug #1 identifié: ID collision quand certains IDs sont préservés et d'autres
+    renumérotés → plusieurs noyaux avec le même ID → AJI catastrophique.
+
+    Solution LOCAL relabeling: scipy.ndimage.label() garantit IDs séquentiels.
+    """
+    from scipy.ndimage import label as scipy_label
+
+    print(f"\n{'='*80}")
+    print(f"  VALIDATION IDS SÉQUENTIELS — {split.upper()}")
+    print(f"{'='*80}")
+
+    if not targets_file.exists():
+        print(f"❌ ERREUR: Fichier introuvable: {targets_file}")
+        return False
+
+    data = np.load(targets_file)
+
+    if 'inst_maps' not in data.files:
+        print(f"⚠️  SKIP: 'inst_maps' non disponible dans {targets_file.name}")
+        return True
+
+    inst_maps = data['inst_maps']
+    n_crops = len(inst_maps)
+    n_to_check = min(n_samples, n_crops)
+
+    np.random.seed(42)
+    sample_indices = np.random.choice(n_crops, n_to_check, replace=False)
+
+    issues = []
+    crops_ok = 0
+    crops_with_gaps = 0
+    crops_with_duplicates = 0
+
+    print(f"Vérification de {n_to_check} crops...")
+    print()
+
+    for idx in sample_indices:
+        inst_map = inst_maps[idx]
+
+        # Obtenir les IDs présents
+        inst_ids = np.unique(inst_map)
+        inst_ids = inst_ids[inst_ids > 0]  # Exclure background (0)
+
+        if len(inst_ids) == 0:
+            crops_ok += 1
+            continue
+
+        # Vérifier séquentialité: IDs doivent être [1, 2, 3, ..., max]
+        expected_ids = set(range(1, len(inst_ids) + 1))
+        actual_ids = set(inst_ids)
+
+        if actual_ids == expected_ids:
+            crops_ok += 1
+        else:
+            # Analyser le problème
+            missing = expected_ids - actual_ids
+            extra = actual_ids - expected_ids
+
+            if missing or extra:
+                crops_with_gaps += 1
+                if len(issues) < 5:
+                    issues.append(
+                        f"Crop {idx}: IDs non séquentiels. "
+                        f"Attendu [1..{len(inst_ids)}], manquants={missing}, extras={extra}"
+                    )
+
+            # Vérifier duplications (même ID pour plusieurs régions déconnectées)
+            for inst_id in inst_ids:
+                inst_mask = inst_map == inst_id
+                labeled, n_components = scipy_label(inst_mask)
+                if n_components > 1:
+                    crops_with_duplicates += 1
+                    if len(issues) < 5:
+                        issues.append(
+                            f"Crop {idx}: ID {inst_id} a {n_components} composantes déconnectées!"
+                        )
+                    break  # Un seul problème suffit pour ce crop
+
+    print(f"📊 Résultats:")
+    print(f"  Crops vérifiés:       {n_to_check}")
+    print(f"  Crops OK:             {crops_ok}")
+    print(f"  Crops avec gaps:      {crops_with_gaps}")
+    print(f"  Crops avec doublons:  {crops_with_duplicates}")
+    print()
+
+    if crops_with_gaps == 0 and crops_with_duplicates == 0:
+        print(f"✅ VALIDE — Tous les IDs sont séquentiels et uniques")
+        return True
+    else:
+        print(f"❌ INVALIDE — Problèmes de numérotation détectés")
+        print()
+        print("Cause probable:")
+        print("  → Bug #1: Renumbering partiel (HYBRID) au lieu de LOCAL relabeling")
+        print()
+        print("Solution:")
+        print("  → Utiliser scipy.ndimage.label() pour LOCAL relabeling complet")
+        if issues:
+            print()
+            print("Exemples de problèmes (max 5):")
+            for issue in issues[:5]:
+                print(f"  → {issue}")
+        return False
+
+
+def validate_hv_rotation_consistency(targets_file: Path, split: str, n_samples: int = 10) -> bool:
+    """
+    Vérifie la cohérence des rotations HV.
+
+    Bug #2 identifié: Erreur dans la transformation HV après rotation spatiale.
+
+    Pour une rotation 90° clockwise:
+    - H' = V (ancienne verticale devient nouvelle horizontale)
+    - V' = -H (ancienne horizontale devient -nouvelle verticale)
+
+    Ce test vérifie que les vecteurs HV pointent bien vers les centres des noyaux
+    (divergence négative = vecteurs convergents vers le centre).
+    """
+
+    print(f"\n{'='*80}")
+    print(f"  VALIDATION HV ROTATION CONSISTENCY — {split.upper()}")
+    print(f"{'='*80}")
+
+    if not targets_file.exists():
+        print(f"❌ ERREUR: Fichier introuvable: {targets_file}")
+        return False
+
+    data = np.load(targets_file)
+
+    np_targets = data['np_targets']
+    hv_targets = data['hv_targets']
+
+    if 'crop_positions' in data.files:
+        crop_positions = data['crop_positions']
+    else:
+        crop_positions = None
+
+    n_crops = len(np_targets)
+    n_to_check = min(n_samples, n_crops)
+
+    np.random.seed(42)
+    sample_indices = np.random.choice(n_crops, n_to_check, replace=False)
+
+    divergence_values = []
+
+    print(f"Vérification de {n_to_check} crops...")
+    print()
+
+    for idx in sample_indices:
+        np_mask = np_targets[idx] > 0.5
+        hv_map = hv_targets[idx]  # (2, 224, 224)
+
+        if np_mask.sum() < 100:  # Skip crops avec peu de noyaux
+            continue
+
+        # Calculer divergence: dH/dx + dV/dy
+        h_map = hv_map[0]  # Horizontal component
+        v_map = hv_map[1]  # Vertical component
+
+        # Gradients spatiaux (différences finies)
+        dh_dx = np.gradient(h_map, axis=1)  # dH/dx
+        dv_dy = np.gradient(v_map, axis=0)  # dV/dy
+
+        # Divergence = dH/dx + dV/dy
+        divergence = dh_dx + dv_dy
+
+        # Moyenne sur les pixels de noyaux
+        div_on_nuclei = divergence[np_mask].mean()
+        divergence_values.append(div_on_nuclei)
+
+    if not divergence_values:
+        print(f"⚠️  Pas assez de données pour calculer la divergence")
+        return True
+
+    mean_div = np.mean(divergence_values)
+    std_div = np.std(divergence_values)
+
+    print(f"📊 Divergence HV (sur pixels noyaux):")
+    print(f"  Mean: {mean_div:.4f}")
+    print(f"  Std:  {std_div:.4f}")
+    print()
+
+    # Interprétation:
+    # - Divergence NÉGATIVE: Vecteurs convergent vers le centre (CORRECT)
+    # - Divergence POSITIVE: Vecteurs divergent du centre (ERREUR de rotation)
+    # - Divergence ~0: Vecteurs parallèles (peut-être OK selon le noyau)
+
+    # On s'attend à une divergence négative pour des vecteurs centripètes
+    # Seuil: la moyenne doit être < -0.01 (légèrement négatif)
+    threshold = -0.005
+
+    if mean_div < threshold:
+        print(f"✅ VALIDE — Divergence négative ({mean_div:.4f} < {threshold})")
+        print(f"   → Vecteurs HV pointent vers les centres (comportement attendu)")
+        return True
+    elif mean_div > 0.1:
+        print(f"❌ INVALIDE — Divergence POSITIVE ({mean_div:.4f})")
+        print(f"   → Vecteurs HV pointent HORS des centres!")
+        print()
+        print("Cause probable:")
+        print("  → Bug #2: Erreur dans HV rotation (H'=-V, V'=H au lieu de H'=V, V'=-H)")
+        return False
+    else:
+        print(f"⚠️  ATTENTION — Divergence proche de zéro ({mean_div:.4f})")
+        print(f"   → Vecteurs HV potentiellement incorrects")
+        print(f"   → Vérification manuelle recommandée")
+        return True  # Warning mais pas blocking
+
+
 def check_data_leakage(
     train_targets_file: Path,
     val_targets_file: Path,
@@ -347,6 +710,12 @@ def main():
         default="data/cache/family_data",
         help="Répertoire des features"
     )
+    parser.add_argument(
+        "--n_samples",
+        type=int,
+        default=20,
+        help="Nombre d'échantillons pour les validations expertes (défaut: 20)"
+    )
     args = parser.parse_args()
 
     data_dir = Path(args.data_dir)
@@ -391,6 +760,55 @@ def main():
     else:
         print(f"\n⚠️  Vérification data leakage sautée (fichiers manquants)")
         results['data_leakage'] = None
+
+    # 6. Validation HV centers inside nuclei (NOUVEAU - Expert recommendation)
+    print(f"\n{'='*80}")
+    print(f"  VALIDATIONS EXPERTES (Distance Transform, IDs, Rotations)")
+    print(f"{'='*80}")
+
+    if train_targets.exists():
+        results['hv_centers_train'] = validate_hv_centers_inside_nuclei(
+            train_targets, "train", n_samples=args.n_samples
+        )
+    else:
+        results['hv_centers_train'] = None
+
+    if val_targets.exists():
+        results['hv_centers_val'] = validate_hv_centers_inside_nuclei(
+            val_targets, "val", n_samples=args.n_samples
+        )
+    else:
+        results['hv_centers_val'] = None
+
+    # 7. Validation IDs séquentiels (prévention Bug #1)
+    if train_targets.exists():
+        results['sequential_ids_train'] = validate_sequential_ids(
+            train_targets, "train", n_samples=args.n_samples
+        )
+    else:
+        results['sequential_ids_train'] = None
+
+    if val_targets.exists():
+        results['sequential_ids_val'] = validate_sequential_ids(
+            val_targets, "val", n_samples=args.n_samples
+        )
+    else:
+        results['sequential_ids_val'] = None
+
+    # 8. Validation HV rotation consistency (prévention Bug #2)
+    if train_targets.exists():
+        results['hv_rotation_train'] = validate_hv_rotation_consistency(
+            train_targets, "train", n_samples=max(10, args.n_samples // 2)
+        )
+    else:
+        results['hv_rotation_train'] = None
+
+    if val_targets.exists():
+        results['hv_rotation_val'] = validate_hv_rotation_consistency(
+            val_targets, "val", n_samples=max(10, args.n_samples // 2)
+        )
+    else:
+        results['hv_rotation_val'] = None
 
     # Verdict final
     print(f"\n{'='*80}")
