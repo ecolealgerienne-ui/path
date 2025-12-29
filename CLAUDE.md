@@ -186,6 +186,29 @@ python scripts/training/train_hovernet_family_v13_smart_crops.py \
 ### 6. Évaluation AJI
 
 ```bash
+# Respiratory (AJI 0.6872 ✅)
+python scripts/evaluation/test_v13_smart_crops_aji.py \
+    --checkpoint models/checkpoints_v13_smart_crops/hovernet_respiratory_v13_smart_crops_hybrid_fpn_best.pth \
+    --family respiratory \
+    --n_samples 50 \
+    --use_hybrid \
+    --use_fpn_chimique \
+    --np_threshold 0.40 \
+    --min_size 30 \
+    --min_distance 5
+
+# Urologic (AJI 0.6743)
+python scripts/evaluation/test_v13_smart_crops_aji.py \
+    --checkpoint models/checkpoints_v13_smart_crops/hovernet_urologic_v13_smart_crops_hybrid_fpn_best.pth \
+    --family urologic \
+    --n_samples 50 \
+    --use_hybrid \
+    --use_fpn_chimique \
+    --np_threshold 0.45 \
+    --min_size 30 \
+    --min_distance 2
+
+# Epidermal (AJI 0.6203)
 python scripts/evaluation/test_v13_smart_crops_aji.py \
     --checkpoint models/checkpoints_v13_smart_crops/hovernet_epidermal_v13_smart_crops_hybrid_fpn_best.pth \
     --family epidermal \
@@ -193,7 +216,9 @@ python scripts/evaluation/test_v13_smart_crops_aji.py \
     --use_hybrid \
     --use_fpn_chimique \
     --np_threshold 0.45 \
-    --min_size 40
+    --min_size 20 \
+    --beta 1.0 \
+    --min_distance 3
 ```
 
 **Paramètres Watershed optimisés par famille :**
