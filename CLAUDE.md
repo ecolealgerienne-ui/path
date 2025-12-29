@@ -253,7 +253,35 @@ features (B, 261, 1536):
 
 > **"On touche pas l'existant"** — Les scripts existants fonctionnent. Toute modification requiert validation explicite.
 
-### 2. FPN Chimique = use_hybrid + use_fpn_chimique
+### 2. Modules Partagés OBLIGATOIRES
+
+> **🚫 JAMAIS de duplication de code critique**
+>
+> Les algorithmes critiques DOIVENT être dans `src/` et importés par tous les scripts.
+> **NE JAMAIS copier-coller** une fonction entre scripts — créer un module partagé.
+
+**Modules partagés existants:**
+
+| Module | Fonction | Usage |
+|--------|----------|-------|
+| `src/postprocessing/watershed.py` | `hv_guided_watershed()` | Segmentation instances |
+| `src/metrics/ground_truth_metrics.py` | `compute_aji()` | Calcul AJI |
+
+**Import obligatoire:**
+
+```python
+# ✅ CORRECT - Single source of truth
+from src.postprocessing import hv_guided_watershed
+from src.metrics.ground_truth_metrics import compute_aji
+
+# ❌ INTERDIT - Duplication de code
+def hv_guided_watershed(...):  # Copie locale
+    ...
+```
+
+**Pourquoi:** Évite les divergences d'algorithme entre scripts (bug découvert 2025-12-29: scipy.ndimage.label vs skimage.measure.label causait -2.8% AJI).
+
+### 3. FPN Chimique = use_hybrid + use_fpn_chimique
 
 ```bash
 # ✅ CORRECT (Training ET Évaluation)
@@ -263,7 +291,7 @@ features (B, 261, 1536):
 --use_fpn_chimique  # Sans --use_hybrid → Erreur
 ```
 
-### 3. Nommage des Checkpoints
+### 4. Nommage des Checkpoints
 
 ```bash
 # FPN Chimique checkpoint:
@@ -273,11 +301,11 @@ hovernet_{family}_v13_smart_crops_hybrid_fpn_best.pth
 hovernet_epidermal_v13_smart_crops_hybrid_fpn_best.pth
 ```
 
-### 4. Validation CLS std
+### 5. Validation CLS std
 
 Le CLS token std doit être entre **0.70 et 0.90**.
 
-### 5. Transfer Learning Inter-Famille (Expert 2025-12-29)
+### 6. Transfer Learning Inter-Famille
 
 Pour transférer un modèle entraîné sur une famille vers une autre (ex: Respiratory → Epidermal):
 
