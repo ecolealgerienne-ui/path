@@ -1410,6 +1410,45 @@ Décodeur intégré CellViT              Décodeur UNETR custom
 
 ## Journal de Développement
 
+### 2025-12-29 — Normalisation Macenko + Préparation FPN Chimique ✅ EN COURS
+
+**Contexte:** Préparation du pipeline FPN Chimique pour atteindre AJI ≥ 0.68 sur famille Glandular. Contraintes RAM/SSD imposent limite de 5000 samples par famille.
+
+**Étape 1: Normalisation Macenko ✅ COMPLÉTÉE**
+
+Script exécuté: `scripts/preprocessing/normalize_staining_source.py`
+
+| Famille | Images | Ref Idx | Std Avant | Std Après | Réduction |
+|---------|--------|---------|-----------|-----------|-----------|
+| **Glandular** | 3391 | 613 | 23.87 | 15.88 | **33.5%** |
+| **Digestive** | 2430 | 1311 | 32.34 | 18.17 | **43.8%** |
+| **Urologic** | 1101 | 419 | 28.87 | 20.21 | **30.0%** |
+| **Respiratory** | 408 | 169 | 21.06 | 14.40 | **31.6%** |
+| **Epidermal** | 574 | 416 | 25.73 | 24.96 | **3.0%** |
+
+**Observations clés:**
+- Digestive: Meilleure réduction (43.8%) mais warning overflow détecté
+- Epidermal: Réduction minimale (3.0%) — structure tissulaire stratifiée difficile à normaliser
+- Moyenne globale: **28.4%** de réduction de variabilité inter-slide
+
+**Étape 2: Refactoring prepare_v13_smart_crops.py ✅ COMPLÉTÉ**
+
+Modifications apportées:
+- Algorithme layer-based: center → top_left → top_right → bottom_left → bottom_right
+- Paramètre `--max_samples` (défaut: 5000) pour contrainte RAM/SSD
+- Suppression du split interne (sera fait en externe via source_image_ids)
+- Output: fichier unique `{family}_data_v13_smart_crops.npz`
+
+**Prochaine étape:** Génération des smart crops sur données normalisées
+
+```bash
+python scripts/preprocessing/prepare_v13_smart_crops.py --family glandular --max_samples 5000
+```
+
+**Documentation:** `docs/sessions/2025-12-29_macenko_normalization_results.md`
+
+---
+
 ### 2025-12-28 — V13-Hybrid V2: Fix CRITIQUE Alignement Augmentations ✅ IMPLÉMENTÉ
 
 **Contexte:** V13-Hybrid V2 (injection H-channel à 224×224) avec augmentations produisait AJI catastrophique (0.4584) vs sans augmentations (0.5444). Diagnostic Expert a identifié la cause racine.
