@@ -268,6 +268,34 @@ hovernet_epidermal_v13_smart_crops_hybrid_fpn_best.pth
 
 Le CLS token std doit être entre **0.70 et 0.90**.
 
+### 5. Transfer Learning Inter-Famille (Expert 2025-12-29)
+
+Pour transférer un modèle entraîné sur une famille vers une autre (ex: Respiratory → Epidermal):
+
+```bash
+python scripts/training/train_hovernet_family_v13_smart_crops.py \
+    --family epidermal \
+    --pretrained_checkpoint models/checkpoints_v13_smart_crops/hovernet_respiratory_v13_smart_crops_hybrid_fpn_best.pth \
+    --finetune_lr 1e-5 \
+    --epochs 30 \
+    --use_hybrid \
+    --use_fpn_chimique
+```
+
+**Différences avec `--resume`:**
+
+| Aspect | `--resume` | `--pretrained_checkpoint` |
+|--------|-----------|---------------------------|
+| Usage | Même famille | Famille différente |
+| Epoch | Continue depuis sauvegardé | Reset à 0 |
+| Optimizer | Reprend état sauvegardé | Nouveau avec LR ultra-bas |
+| LR par défaut | `args.lr` (1e-4) | `args.finetune_lr` (1e-5) |
+
+**Paramètres recommandés:**
+- LR: 1e-5 ou 5e-6 (évite catastrophic forgetting)
+- λ_hv: 10.0 (maintient skills séparation instances)
+- Epochs: 20-30 (adaptation, pas réapprentissage)
+
 ---
 
 ## Environnement
