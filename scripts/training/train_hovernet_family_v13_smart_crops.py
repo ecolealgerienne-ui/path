@@ -668,7 +668,9 @@ def main():
     parser.add_argument("--use_fpn_chimique", action="store_true",
                        help="Activer FPN Chimique (Multi-scale H-Injection) à 5 niveaux: 16, 32, 64, 112, 224")
     parser.add_argument("--use_h_instance_norm", action="store_true",
-                       help="Appliquer InstanceNorm sur H-channel avant fusion (normalise à mean=0, std=1)")
+                       help="[DEPRECATED] InstanceNorm lisse les gradients HV - utiliser --use_h_alpha")
+    parser.add_argument("--use_h_alpha", action="store_true",
+                       help="Activer facteur α learnable pour amplifier H-channel (init=10.0 par niveau)")
     parser.add_argument("--resume", type=str, default=None,
                        help="Chemin vers checkpoint pour reprendre l'entraînement (même famille)")
 
