@@ -1,10 +1,11 @@
-# Session 2025-12-29 — Refactoring Modules Partagés & Résultats Epidermal
+# Session 2025-12-29 — Refactoring Modules Partagés & Résultats 60 Epochs
 
 ## Résumé
 
 - **Découverte bug critique:** Divergence algorithme watershed entre scripts (-2.8% AJI)
 - **Refactoring:** Création de 3 modules partagés (single source of truth)
-- **Résultat Epidermal:** AJI 0.6203 (91.2% de l'objectif 0.68)
+- **Respiratory:** AJI **0.6872** ✅ **OBJECTIF ATTEINT** (101.1%)
+- **Epidermal:** AJI 0.6203 (91.2% de l'objectif)
 - **Découverte:** Notre implémentation calcule AJI+ (one-to-one), pas AJI original
 
 ---
@@ -92,7 +93,47 @@ if pred_id in used_pred:
 
 ---
 
-## 4. Résultats Epidermal
+## 4. Résultats Respiratory ✅ OBJECTIF ATTEINT
+
+### Configuration
+- **Architecture:** V13 Smart Crops + FPN Chimique + H-Alpha
+- **Epochs:** 60
+- **Dataset:** 408 samples (Lung, Liver)
+
+### Métriques Finales
+
+```
+Dice:        0.8470 ± 0.0564
+AJI:         0.6872 ± 0.1012  ✅ > 0.68
+AJI Median:  0.6814
+PQ:          0.6286 ± 0.1074
+
+Instances pred: 22.6
+Instances GT:   23.1
+Over-seg ratio: 0.98×
+```
+
+### Évolution des Résultats
+
+| Configuration | AJI | Progress |
+|---------------|-----|----------|
+| Baseline (sans FPN) | 0.6113 | 89.9% |
+| FPN Chimique 30ep | 0.6527 | 96.0% |
+| FPN + Watershed optimisé | 0.6734 | 99.0% |
+| **60ep + H-Alpha** | **0.6872** | **101.1%** ✅ |
+
+### Paramètres Watershed Optimaux
+
+| Paramètre | Valeur |
+|-----------|--------|
+| np_threshold | 0.40 |
+| min_size | 30 |
+| beta | 0.50 |
+| min_distance | 5 |
+
+---
+
+## 5. Résultats Epidermal
 
 ### Configuration
 - **Architecture:** V13 Smart Crops + FPN Chimique + H-Alpha
@@ -132,16 +173,16 @@ Over-seg ratio: 0.95×
 
 ---
 
-## 5. Paramètres Optimaux par Famille
+## 6. Paramètres Optimaux par Famille
 
-| Famille | np_threshold | min_size | beta | min_distance | AJI |
-|---------|--------------|----------|------|--------------|-----|
-| **Respiratory** | 0.40 | 30 | 0.50 | 5 | 0.6734 |
-| **Epidermal** | 0.45 | 20 | 1.00 | 3 | 0.6203 |
+| Famille | np_threshold | min_size | beta | min_distance | AJI | Status |
+|---------|--------------|----------|------|--------------|-----|--------|
+| **Respiratory** | 0.40 | 30 | 0.50 | 5 | **0.6872** | ✅ Objectif atteint |
+| **Epidermal** | 0.45 | 20 | 1.00 | 3 | 0.6203 | 91.2% |
 
 ---
 
-## 6. Règle Ajoutée à CLAUDE.md
+## 7. Règle Ajoutée à CLAUDE.md
 
 ### Règle #2: Modules Partagés OBLIGATOIRES
 
@@ -152,8 +193,9 @@ Over-seg ratio: 0.95×
 
 ---
 
-## 7. Prochaines Étapes
+## 8. Prochaines Étapes
 
 1. **Glandular** (3391 samples) — Plus grand dataset, attendu >0.68 AJI
 2. **Digestive** (2430 samples) — Deuxième plus grand
-3. Considérer ajout de l'AJI original pour comparaison littérature
+3. **Urologic** (1101 samples) — Tissus denses
+4. Considérer ajout de l'AJI original pour comparaison littérature
