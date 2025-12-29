@@ -5,6 +5,7 @@
 - **Découverte bug critique:** Divergence algorithme watershed entre scripts (-2.8% AJI)
 - **Refactoring:** Création de 3 modules partagés (single source of truth)
 - **Respiratory:** AJI **0.6872** ✅ **OBJECTIF ATTEINT** (101.1%)
+- **Urologic:** AJI **0.6743** (99.2% de l'objectif)
 - **Epidermal:** AJI 0.6203 (91.2% de l'objectif)
 - **Découverte:** Notre implémentation calcule AJI+ (one-to-one), pas AJI original
 
@@ -173,16 +174,56 @@ Over-seg ratio: 0.95×
 
 ---
 
-## 6. Paramètres Optimaux par Famille
+## 6. Résultats Urologic
+
+### Configuration
+- **Architecture:** V13 Smart Crops + FPN Chimique + H-Alpha
+- **Epochs:** 60
+- **Dataset:** 1101 samples (Kidney, Bladder, Testis, Ovarian, Uterus, Cervix)
+
+### Évolution des Résultats
+
+| Configuration | AJI | Progress |
+|---------------|-----|----------|
+| 60 epochs + H-Alpha | 0.6534 | 96.1% |
+| **+ Watershed optimisé** | **0.6743** | **99.2%** |
+
+**Gain optimization:** +3.3%
+
+### Métriques Détaillées
+
+```
+Dice:        0.8565 ± 0.1311
+AJI:         0.6743 ± 0.1642
+PQ:          0.6328 ± 0.1670
+
+Instances pred: 23.9
+Instances GT:   24.3
+Over-seg ratio: 1.01×
+```
+
+### Paramètres Watershed Optimaux
+
+| Paramètre | Valeur |
+|-----------|--------|
+| np_threshold | 0.45 |
+| min_size | 30 |
+| beta | 0.50 |
+| min_distance | 2 |
+
+---
+
+## 7. Paramètres Optimaux par Famille
 
 | Famille | np_threshold | min_size | beta | min_distance | AJI | Status |
 |---------|--------------|----------|------|--------------|-----|--------|
 | **Respiratory** | 0.40 | 30 | 0.50 | 5 | **0.6872** | ✅ Objectif atteint |
+| **Urologic** | 0.45 | 30 | 0.50 | 2 | **0.6743** | 99.2% |
 | **Epidermal** | 0.45 | 20 | 1.00 | 3 | 0.6203 | 91.2% |
 
 ---
 
-## 7. Règle Ajoutée à CLAUDE.md
+## 8. Règle Ajoutée à CLAUDE.md
 
 ### Règle #2: Modules Partagés OBLIGATOIRES
 
@@ -193,9 +234,8 @@ Over-seg ratio: 0.95×
 
 ---
 
-## 8. Prochaines Étapes
+## 9. Prochaines Étapes
 
 1. **Glandular** (3391 samples) — Plus grand dataset, attendu >0.68 AJI
 2. **Digestive** (2430 samples) — Deuxième plus grand
-3. **Urologic** (1101 samples) — Tissus denses
-4. Considérer ajout de l'AJI original pour comparaison littérature
+3. Considérer ajout de l'AJI original pour comparaison littérature
