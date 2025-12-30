@@ -1,7 +1,7 @@
 # CellViT-Optimus — Contexte Projet
 
-> **Version:** V13 Smart Crops + FPN Chimique
-> **Date:** 2025-12-29
+> **Version:** V13 Smart Crops + FPN Chimique (Raw Images)
+> **Date:** 2025-12-30
 > **Objectif:** AJI ≥ 0.68
 
 ---
@@ -36,9 +36,127 @@ Pour l'historique complet du développement (bugs résolus, décisions technique
 
 **CellViT-Optimus** est un système de segmentation et classification de noyaux cellulaires pour l'histopathologie.
 
-**Architecture actuelle:** V13 Smart Crops + FPN Chimique (injection multi-échelle H-channel)
+**Architecture actuelle:** V13 Smart Crops + FPN Chimique (Raw Images — sans normalisation Macenko)
 
-**Résultat Respiratory:** AJI 0.6734 = **99% de l'objectif 0.68** ✅
+**Résultat Respiratory:** AJI 0.6872 = **101% de l'objectif 0.68** ✅
+
+---
+
+## 🔬 Découverte Stratégique: Ruifrok vs Macenko (2025-12-30)
+
+> **VERDICT: Macenko DÉSACTIVÉ pour la production V13**
+
+### Résultat Expérimental
+
+| Configuration | AJI Respiratory | Δ |
+|---------------|-----------------|---|
+| **SANS Macenko (Raw)** | **0.6872** ✅ | Baseline |
+| AVEC Macenko | 0.6576 | **-4.3%** ❌ |
+
+### Analyse Technique: Le "Shift de Projection"
+
+Le FPN Chimique utilise la **déconvolution Ruifrok** pour extraire le canal Hématoxyline (H-channel):
+
+```python
+# Vecteur Ruifrok FIXE (constantes physiques Beer-Lambert)
+stain_matrix = [0.650, 0.704, 0.286]  # Direction pure Hématoxyline
+```
+
+**Le Conflit:**
+1. **Ruifrok** = Projection sur vecteur physique FIXE (absorption optique H&E)
+2. **Macenko** = Rotation ADAPTATIVE dans l'espace OD pour aligner vers une référence
+3. **Résultat:** Macenko déplace la composante Éosine vers le vecteur Hématoxyline
+4. **Conséquence:** Le canal H extrait contient des "fantômes" de cytoplasme → bruit dans HV-MSE
+
+### Pourquoi Raw Images > Macenko pour V13
+
+| Aspect | Ruifrok (FPN Chimique) | Macenko |
+|--------|------------------------|---------|
+| **Philosophie** | Bio-Physique (Loi de Beer-Lambert) | Statistique (SVD/variance) |
+| **Vecteurs** | Fixes (universels) | Adaptatifs (par image) |
+| **Impact ADN** | Préserve contrastes fins (texture) | Lisse intensités (uniformité) |
+| **Score AJI** | **Optimisé (0.6872)** | Dégradé (0.6576) |
+
+### Implication Production
+
+> *"The system leverages physical absorption constants (Ruifrok) which are intrinsically superior to adaptive statistical normalization (Macenko) for preserving nuclear chromatin texture."*
+
+**Recommandations:**
+1. ✅ **Verrouillage:** Macenko désactivé pour V13 production
+2. ✅ **Data Augmentation:** Légère augmentation luminosité/contraste aléatoire (si nécessaire)
+3. ❌ **Éviter:** Normalisation stain lourde qui détruit la texture chromatinienne
+
+---
+
+## Pipeline Complet (Data Flow)
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                   PIPELINE CELLVIT-OPTIMUS (Raw Images)                     │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────┐
+│  PanNuke Dataset    │
+│  (7,904 images)     │
+│  256×256 RGB RAW    │  ← Images brutes (PAS de normalisation Macenko)
+│  fold0/, fold1/,    │
+│  fold2/             │
+└─────────┬───────────┘
+          │
+          ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  ÉTAPE 1: GÉNÉRATION SMART CROPS                                            │
+│  Script: prepare_v13_smart_crops.py                                         │
+│  ─────────────────────────────────────────────────────────────────────────  │
+│  • Source images: PanNuke RAW (fold{N}/images.npy) ← SANS --use_normalized  │
+│  • Source masks: PanNuke raw (fold{N}/masks.npy)                           │
+│  • 5 crops 224×224 par image + rotations déterministes                      │
+│  • Split CTO: train/val par source_image_ids (ZERO leakage)                │
+│  • Sauvegarde: data/family_data_v13_smart_crops/{family}_{split}.npz       │
+└─────────┬───────────────────────────────────────────────────────────────────┘
+          │
+          ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  ÉTAPE 2: EXTRACTION FEATURES H-OPTIMUS-0                                   │
+│  Script: extract_features_v13_smart_crops.py                                │
+│  ─────────────────────────────────────────────────────────────────────────  │
+│  • Backbone: H-optimus-0 (ViT-Giant/14, 1.1B params, GELÉ)                  │
+│  • Entrée: 224×224 RGB                                                      │
+│  • Sortie: (B, 261, 1536) = CLS + 4 registers + 256 patches                 │
+│  • Cache: data/cache/family_data/{family}_{split}_features.pt              │
+└─────────┬───────────────────────────────────────────────────────────────────┘
+          │
+          ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  ÉTAPE 3: ENTRAÎNEMENT HOVERNET DECODER                                     │
+│  Script: train_hovernet_family_v13_smart_crops.py                           │
+│  ─────────────────────────────────────────────────────────────────────────  │
+│  • Architecture: FPN Chimique + h_alpha learnable                           │
+│  • Injection H-channel via Ruifrok: 5 niveaux (16→32→64→112→224)           │
+│  • Losses: NP (BCE) + HV (MSE) + NT (CE)                                    │
+│  • Checkpoint: models/checkpoints_v13_smart_crops/                          │
+└─────────┬───────────────────────────────────────────────────────────────────┘
+          │
+          ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  ÉTAPE 4: ÉVALUATION AJI                                                    │
+│  Script: test_v13_smart_crops_aji.py                                        │
+│  ─────────────────────────────────────────────────────────────────────────  │
+│  • Post-processing: HV-guided Watershed                                     │
+│  • Métriques: AJI, Dice, mPQ                                                │
+│  • Paramètres optimisés par famille                                         │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+> **Note:** Macenko normalization est disponible via `--use_normalized` mais **déconseillée**
+> pour V13 (régression -4.3% AJI due au conflit Ruifrok/Macenko)
+
+### Scripts de Validation
+
+| Script | Usage | Vérifications |
+|--------|-------|---------------|
+| `verify_v13_smart_crops_data.py` | Après étape 2 | HV targets, inst_maps, normalisation Macenko |
+| `verify_pipeline_integrity.py` | Après étape 4 | H-channel, h_alpha, dimensions, gradients |
 
 ---
 
@@ -109,59 +227,151 @@ Chaque image source 256×256 génère 5 crops 224×224 avec rotations:
 
 ---
 
-## Résultats Actuels
+## Résultats Actuels (Raw Images — Production)
 
-### Respiratory (408 images sources)
+> **✅ VALIDÉ (2025-12-30):** Images brutes (sans Macenko) = configuration optimale pour V13.
+> Test comparatif: Macenko cause -4.3% AJI (voir section "Découverte Stratégique").
 
-| Configuration | AJI | Dice | Progress |
-|---------------|-----|------|----------|
-| Baseline (sans FPN) | 0.6113 | 0.8109 | 89.9% |
-| FPN Chimique | 0.6527 | 0.8464 | 96.0% |
-| **FPN + Watershed optimisé** | **0.6734** | 0.8464 | **99.0%** |
+### Récapitulatif 5/5 Familles
 
-### Paramètres Watershed Optimaux
+| Famille | Samples | AJI | Progress | Paramètres Watershed |
+|---------|---------|-----|----------|----------------------|
+| **Respiratory** | 408 | **0.6872** | **101.1%** ✅ | beta=0.50, min_size=30, np_thr=0.40, min_dist=5 |
+| **Urologic** | 1101 | **0.6743** | **99.2%** | beta=0.50, min_size=30, np_thr=0.45, min_dist=2 |
+| **Glandular** | 3391 | **0.6566** | **96.6%** | beta=0.50, min_size=50, np_thr=0.40, min_dist=3 |
+| Epidermal | 574 | 0.6203 | 91.2% | beta=1.00, min_size=20, np_thr=0.45, min_dist=3 |
+| Digestive | 2430 | 0.6160 | 90.6% | beta=2.00, min_size=60, np_thr=0.45, min_dist=5 |
 
-| Paramètre | Valeur |
-|-----------|--------|
-| beta | 0.50 |
-| min_size | 30 |
-| np_threshold | 0.40 |
-| min_distance | 5 |
+**Objectif atteint:** 1/5 (Respiratory) | **Proche (>96%):** 3/5
+
+### Résultats par Organe (Expérimental)
+
+> **Pipeline Organ-Specific:** Permet d'entraîner sur un organe isolé au lieu d'une famille entière.
+> Utile pour identifier les organes "difficiles" ou optimiser par tissu.
+
+| Organe | Famille | Samples | AJI | AJI Median | Progress | Paramètres Watershed |
+|--------|---------|---------|-----|------------|----------|----------------------|
+| **Breast** | Glandular | ~680 | **0.6662** | **0.6933** ✅ | 98.0% | beta=1.50, min_size=30, np_thr=0.40, min_dist=2 |
+| Colon | Digestive | ~500 | 0.5352 | - | 78.7% ❌ | beta=0.50, min_size=60, np_thr=0.40, min_dist=3 |
+
+**Observations Breast (2025-12-30):**
+- AJI Median (0.6933) > Objectif (0.68) → Quelques outliers tirent la moyenne vers le bas
+- Over-seg ratio: 1.00× → Détection d'instances quasi-parfaite
+- NT Accuracy: 89.2% (classification nucléaire excellente)
+- Dice: 0.8243 ± 0.1131
+
+**Observations Colon (2025-12-30) — ÉCHEC:**
+- AJI 0.5352 = -13% vs Digestive family (0.6160)
+- 40% outliers (20/50 samples avec AJI < 0.50)
+- HV MSE: 0.125 (trop élevé, seuil acceptable: <0.08)
+- Cause: Architecture tissulaire trop variable (cryptes, villosités, stroma)
+
+---
+
+## 🎯 Matrice de Décision: Organ-Specific vs Family Training (2025-12-30)
+
+> **Découverte expérimentale:** L'entraînement organ-specific n'est PAS universellement supérieur.
+> Le choix optimal dépend de l'**homogénéité architecturale** du tissu.
+
+### Résultats Comparatifs
+
+| Test | Modèle | AJI | Outliers | Verdict |
+|------|--------|-----|----------|---------|
+| Breast samples | **Breast (organ)** | **0.6662** | 6% | ✅ Organ-specific gagne |
+| Breast samples | Glandular (family) | 0.6427 | 14% | |
+| Colon samples | **Digestive (family)** | **0.6160** | ~15% | ✅ Family gagne |
+| Colon samples | Colon (organ) | 0.5352 | 40% | ❌ Échec |
+
+### Analyse: Pourquoi cette Différence?
+
+**Breast (Organ-specific = Succès):**
+- Architecture **homogène**: Canaux galactophores réguliers
+- Morphologie nucléaire **uniforme** dans tout le tissu
+- Gradients HV **stables** → Le modèle se spécialise efficacement
+
+**Colon (Organ-specific = Échec):**
+- Architecture **hétérogène**: Cryptes, villosités, stroma, inflammation
+- Morphologie nucléaire **variable** selon la zone
+- Gradients HV **instables** → Manque de diversité = mauvaise généralisation
+
+### Nouvelle Stratégie V13 Hybrid V2
+
+Suite à cette découverte, nous ne pouvons plus appliquer la même recette à tout le dataset.
+
+#### Groupe A — Tissus à Architecture Fixe (Organ-Specific Recommandé)
+
+| Organe | Famille | Raison |
+|--------|---------|--------|
+| **Breast** | Glandular | Canaux galactophores uniformes |
+| **Thyroid** | Glandular | Follicules thyroïdiens réguliers |
+| **Skin** | Epidermal | Couches épidermiques structurées |
+
+**Action:** Entraînement organ-specific pour maximiser l'AJI via la spécialisation.
+
+#### Groupe B — Tissus à Architecture Complexe/Variable (Family Training Recommandé)
+
+| Organe | Famille | Raison |
+|--------|---------|--------|
+| **Colon** | Digestive | Cryptes + villosités + stroma + inflammation |
+| **Stomach** | Digestive | Glandes gastriques variables |
+| **Lung** | Respiratory | Alvéoles + bronches + vaisseaux |
+
+**Action:** Entraînement family-level pour stabiliser les gradients HV via la diversité.
+
+### Règle de Décision Simplifiée
+
+```
+SI tissu.architecture == "homogène" ET tissu.morphologie_nucléaire == "uniforme":
+    → Entraînement ORGAN-SPECIFIC
+SINON:
+    → Entraînement FAMILY-LEVEL
+```
 
 ---
 
 ## Pipeline Complet (Commandes)
 
-**Exemple pour famille `epidermal`** — Remplacer par la famille souhaitée.
+**Exemple pour famille `respiratory`** — Remplacer par la famille souhaitée.
 
-### 1. Normalisation Macenko (Staining)
+> **Important:** Adapter `--pannuke_dir` à votre installation locale.
 
-```bash
-python scripts/preprocessing/normalize_staining_source.py --family epidermal
-```
-
-### 2. Générer Smart Crops
+### 1. Générer Smart Crops (Raw Images)
 
 ```bash
+# ✅ PRODUCTION: Images brutes depuis PanNuke (RECOMMANDÉ)
 python scripts/preprocessing/prepare_v13_smart_crops.py \
-    --family epidermal \
+    --family respiratory \
+    --pannuke_dir /chemin/vers/PanNuke \
     --max_samples 5000
+
+# Pour un organe spécifique
+python scripts/preprocessing/prepare_v13_smart_crops.py \
+    --family glandular \
+    --organ Breast \
+    --pannuke_dir /chemin/vers/PanNuke \
+    --max_samples 5000
+
+# ⚠️ DÉCONSEILLÉ: Avec normalisation Macenko (cause -4.3% AJI)
+# python scripts/preprocessing/prepare_v13_smart_crops.py \
+#     --family respiratory --use_normalized --pannuke_dir /chemin/vers/PanNuke
 ```
 
-### 3. Vérifier Données Générées
+### 2. Vérifier Données Générées
 
 ```bash
-# Vérifier les fichiers générés
-ls -la data/family_data_v13_smart_crops/
-
 # Vérifier split train
-python scripts/validation/verify_v13_smart_crops_data.py --family epidermal --split train
+python scripts/validation/verify_v13_smart_crops_data.py --family respiratory --split train
 
 # Vérifier split val
-python scripts/validation/verify_v13_smart_crops_data.py --family epidermal --split val
+python scripts/validation/verify_v13_smart_crops_data.py --family respiratory --split val
+
+# Résultats attendus (Raw Images):
+#   ⚠️ Normalisation Macenko NON détectée (variance > 18) ← CORRECT pour V13
+#   ✅ HV targets: float32 [-1, 1]
+#   ✅ inst_maps: LOCAL relabeling OK
 ```
 
-### 4. Extraire Features H-optimus-0
+### 3. Extraire Features H-optimus-0
 
 ```bash
 python scripts/preprocessing/extract_features_v13_smart_crops.py --family epidermal --split train
@@ -171,19 +381,20 @@ python scripts/preprocessing/extract_features_v13_smart_crops.py --family epider
 ls -la data/cache/family_data/
 ```
 
-### 5. Entraînement FPN Chimique
+### 4. Entraînement FPN Chimique
 
 ```bash
 python scripts/training/train_hovernet_family_v13_smart_crops.py \
     --family epidermal \
-    --epochs 30 \
+    --epochs 60 \
     --use_hybrid \
-    --use_fpn_chimique
+    --use_fpn_chimique \
+    --use_h_alpha
 ```
 
 **⚠️ IMPORTANT:** `--use_fpn_chimique` nécessite TOUJOURS `--use_hybrid`
 
-### 6. Évaluation AJI
+### 5. Évaluation AJI
 
 ```bash
 # Respiratory (AJI 0.6872 ✅)
@@ -220,6 +431,18 @@ python scripts/evaluation/test_v13_smart_crops_aji.py \
     --beta 1.0 \
     --min_distance 3
 
+# Glandular (AJI 0.6566)
+python scripts/evaluation/test_v13_smart_crops_aji.py \
+    --checkpoint models/checkpoints_v13_smart_crops/hovernet_glandular_v13_smart_crops_hybrid_fpn_best.pth \
+    --family glandular \
+    --n_samples 50 \
+    --use_hybrid \
+    --use_fpn_chimique \
+    --np_threshold 0.40 \
+    --min_size 50 \
+    --beta 0.5 \
+    --min_distance 3
+
 # Digestive (AJI 0.6160)
 python scripts/evaluation/test_v13_smart_crops_aji.py \
     --checkpoint models/checkpoints_v13_smart_crops/hovernet_digestive_v13_smart_crops_hybrid_fpn_best.pth \
@@ -231,18 +454,33 @@ python scripts/evaluation/test_v13_smart_crops_aji.py \
     --min_size 60 \
     --beta 2.0 \
     --min_distance 5
+
+# Breast (Organ-specific, AJI 0.6662)
+python scripts/evaluation/test_v13_smart_crops_aji.py \
+    --checkpoint models/checkpoints_v13_smart_crops/hovernet_breast_v13_smart_crops_hybrid_fpn_best.pth \
+    --family glandular \
+    --organ Breast \
+    --n_samples 50 \
+    --use_hybrid \
+    --use_fpn_chimique \
+    --np_threshold 0.40 \
+    --min_size 30 \
+    --beta 1.5 \
+    --min_distance 2
 ```
 
-**Paramètres Watershed optimisés par famille :**
+**Paramètres Watershed optimisés par famille (SANS normalisation):**
 
-| Famille | np_threshold | min_size | beta | min_distance | AJI | Status |
-|---------|--------------|----------|------|--------------|-----|--------|
+| Famille/Organe | np_threshold | min_size | beta | min_distance | AJI | Status |
+|----------------|--------------|----------|------|--------------|-----|--------|
 | Respiratory | 0.40 | 30 | 0.50 | 5 | **0.6872** | ✅ Objectif |
 | Urologic | 0.45 | 30 | 0.50 | 2 | **0.6743** | 99.2% |
+| **Breast** (organ) | 0.40 | 30 | 1.50 | 2 | **0.6662** | 98.0% |
+| Glandular | 0.40 | 50 | 0.50 | 3 | **0.6566** | 96.6% |
 | Epidermal | 0.45 | 20 | 1.00 | 3 | 0.6203 | 91.2% |
 | Digestive | 0.45 | 60 | 2.00 | 5 | 0.6160 | 90.6% |
 
-### 7. Optimisation Watershed (optionnel)
+### 6. Optimisation Watershed (optionnel)
 
 ```bash
 python scripts/evaluation/optimize_watershed_aji.py \
@@ -399,12 +637,26 @@ python scripts/training/train_hovernet_family_v13_smart_crops.py \
 
 ---
 
-## Prochaines Étapes
+## Prochaines Étapes (V13 Hybrid V2)
 
-1. **Glandular** (3391 samples) — Plus grand dataset, attendu >0.68 AJI
-2. **Digestive** (2430 samples) — Deuxième plus grand
-3. **Epidermal** (574 samples) — Challenge tissus stratifiés
-4. **Urologic** (1101 samples) — Tissus denses
+### Groupe A — Organ-Specific Training
+
+| Organe | Famille | Priorité | Justification |
+|--------|---------|----------|---------------|
+| **Thyroid** | Glandular | Haute | Follicules uniformes, attendu ~0.68 |
+| **Skin** | Epidermal | Haute | Couches structurées, potentiel +5% vs family |
+
+### Groupe B — Family Training (Conserver)
+
+| Famille | Organes | Priorité | Justification |
+|---------|---------|----------|---------------|
+| **Digestive** | Colon, Stomach, Esophagus, Bile-duct | ✅ Done | AJI 0.6160 (family) > 0.5352 (Colon organ) |
+| **Respiratory** | Lung, Liver | ✅ Done | AJI 0.6872 — Objectif atteint |
+
+### Tests Comparatifs à Faire
+
+1. **Thyroid organ-specific** vs Glandular family → Valider si Groupe A applicable
+2. **Skin organ-specific** vs Epidermal family → Valider architecture stratifiée
 
 ---
 

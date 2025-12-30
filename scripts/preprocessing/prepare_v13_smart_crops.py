@@ -525,10 +525,12 @@ def generate_smart_crops_from_pannuke(
     pannuke_dir: Path,
     output_dir: Path,
     family: str,
+    organ: str = None,
     folds: list = None,
     max_samples: int = 5000,
     train_ratio: float = 0.8,
-    seed: int = 42
+    seed: int = 42,
+    normalized_data: dict = None
 ) -> Dict[str, int]:
     """
     Génère crops avec split train/val et algorithme par couche.
@@ -546,10 +548,13 @@ def generate_smart_crops_from_pannuke(
         pannuke_dir: Répertoire PanNuke
         output_dir: Répertoire de sortie
         family: Famille tissulaire
+        organ: Organe spécifique (optionnel) - si fourni, filtre pour cet organe uniquement
         folds: Liste des folds (défaut: [0, 1, 2])
         max_samples: Nombre maximum de samples PAR SPLIT (défaut: 5000)
         train_ratio: Ratio train/val (défaut: 0.8)
         seed: Seed pour reproductibilité
+        normalized_data: Données normalisées (optionnel) - si fourni, utilise les images
+                         normalisées depuis {family}_data_FIXED.npz au lieu de PanNuke brut
 
     Returns:
         Statistiques de génération
@@ -557,21 +562,46 @@ def generate_smart_crops_from_pannuke(
     if folds is None:
         folds = [0, 1, 2]
 
+    # Déterminer les organes à traiter et le préfixe de sortie
+    if organ:
+        # Mode organe spécifique
+        organs = [organ]
+        output_prefix = organ.lower()
+        title = f"GÉNÉRATION V13 SMART CROPS - Organe: {organ.upper()}"
+    else:
+        # Mode famille complète
+        organs = [org for org, fam in ORGAN_TO_FAMILY.items() if fam == family]
+        output_prefix = family
+        title = f"GÉNÉRATION V13 SMART CROPS - Famille: {family.upper()}"
+
     print(f"\n{'='*70}")
-    print(f"GÉNÉRATION V13 SMART CROPS - Famille: {family.upper()}")
+    print(title)
     print(f"{'='*70}")
     print(f"Max samples: {max_samples}")
-    print(f"Algorithme: Par couche (center → top_left → top_right → ...)\n")
-
-    # Organes de cette famille
-    organs = [org for org, fam in ORGAN_TO_FAMILY.items() if fam == family]
+    print(f"Algorithme: Par couche (center → top_left → top_right → ...)")
     print(f"Organes: {', '.join(organs)}\n")
+
+    # ========== Préparation index images normalisées (si fourni) ==========
+    normalized_index = {}
+    if normalized_data is not None:
+        print("🎨 Mode NORMALISÉ: Utilisation des images Macenko-normalisées")
+        norm_fold_ids = normalized_data['fold_ids']
+        norm_image_ids = normalized_data['image_ids']
+        norm_images = normalized_data['images']
+        # Créer index (fold_id, image_id) → index dans normalized_data
+        for idx in range(len(norm_fold_ids)):
+            key = (int(norm_fold_ids[idx]), int(norm_image_ids[idx]))
+            normalized_index[key] = idx
+        print(f"   Index créé: {len(normalized_index)} images mappées\n")
+    else:
+        print("📷 Mode STANDARD: Utilisation des images PanNuke brutes\n")
 
     # ========== ÉTAPE 1: Collecter toutes les images sources ==========
     all_source_images = []
     all_source_masks = []
     all_source_ids = []
     all_fold_ids = []
+    all_organ_names = []
 
     for fold in folds:
         fold_dir = pannuke_dir / f"fold{fold}"
@@ -595,11 +625,20 @@ def generate_smart_crops_from_pannuke(
                 continue
 
             # Charger en mémoire uniquement les images de cette famille
-            image = np.array(images[i], dtype=np.uint8)
+            # Si mode normalisé: utiliser image normalisée, sinon: image brute
+            norm_key = (fold, i)
+            if normalized_index and norm_key in normalized_index:
+                norm_idx = normalized_index[norm_key]
+                image = np.array(norm_images[norm_idx], dtype=np.uint8)
+            else:
+                image = np.array(images[i], dtype=np.uint8)
+
+            # Mask toujours depuis PanNuke brut (contient les annotations)
             mask = np.array(masks[i])
 
             all_source_images.append(image)
             all_source_masks.append(mask)
+            all_organ_names.append(organ_name)
             # IMPORTANT: Source ID globalement unique (fold * 10000 + local_index)
             # Évite collision si même index local dans différents folds
             global_source_id = fold * 10000 + i
@@ -654,6 +693,7 @@ def generate_smart_crops_from_pannuke(
             'crop_positions': [],
             'fold_ids': [],
             'rotations': [],
+            'organ_names': [],
         }
 
         split_stats = {
@@ -690,6 +730,7 @@ def generate_smart_crops_from_pannuke(
                 nt_target = all_nt_targets[idx]
                 source_id = all_source_ids[idx]
                 fold_id = all_fold_ids[idx]
+                organ_name = all_organ_names[idx]
 
                 # ÉTAPE 1: Extraire crop RAW
                 crop_raw = extract_raw_crop(
@@ -726,6 +767,7 @@ def generate_smart_crops_from_pannuke(
                 crops_data['crop_positions'].append(pos_name)
                 crops_data['fold_ids'].append(fold_id)
                 crops_data['rotations'].append(rotation)
+                crops_data['organ_names'].append(organ_name)
 
                 layer_kept += 1
                 split_stats['crops_kept'] += 1
@@ -745,7 +787,7 @@ def generate_smart_crops_from_pannuke(
             continue
 
         output_dir.mkdir(parents=True, exist_ok=True)
-        output_file = output_dir / f"{family}_{split_name}_v13_smart_crops.npz"
+        output_file = output_dir / f"{output_prefix}_{split_name}_v13_smart_crops.npz"
 
         print(f"\n💾 Conversion en arrays...")
         images_array = np.stack(crops_data['images'], axis=0)
@@ -758,6 +800,7 @@ def generate_smart_crops_from_pannuke(
         crop_positions_array = np.array(crops_data['crop_positions'])
         fold_ids_array = np.array(crops_data['fold_ids'], dtype=np.int32)
         rotations_array = np.array(crops_data['rotations'])
+        organ_names_array = np.array(crops_data['organ_names'])
 
         print(f"💾 Sauvegarde: {output_file}")
         np.savez_compressed(
@@ -772,6 +815,7 @@ def generate_smart_crops_from_pannuke(
             crop_positions=crop_positions_array,
             fold_ids=fold_ids_array,
             rotations=rotations_array,
+            organ_names=organ_names_array,
         )
 
         file_size_mb = output_file.stat().st_size / (1024 * 1024)
@@ -817,6 +861,12 @@ def main():
         help="Famille tissulaire"
     )
     parser.add_argument(
+        '--organ',
+        type=str,
+        default=None,
+        help="Organe spécifique (optionnel). Ex: Breast, Lung. Si non spécifié, tous les organes de la famille."
+    )
+    parser.add_argument(
         '--folds',
         type=int,
         nargs='+',
@@ -835,6 +885,17 @@ def main():
         default=42,
         help="Seed pour reproductibilité (défaut: 42)"
     )
+    parser.add_argument(
+        '--use_normalized',
+        action='store_true',
+        help="Utiliser les images normalisées Macenko depuis {family}_data_FIXED.npz"
+    )
+    parser.add_argument(
+        '--normalized_dir',
+        type=Path,
+        default=Path('data/family_FIXED'),
+        help="Répertoire contenant les fichiers *_data_FIXED.npz normalisés"
+    )
 
     args = parser.parse_args()
 
@@ -843,14 +904,36 @@ def main():
         print(f"❌ ERREUR: PanNuke directory non trouvé: {args.pannuke_dir}")
         sys.exit(1)
 
+    # Validation organe si spécifié
+    if args.organ:
+        family_organs = [org for org, fam in ORGAN_TO_FAMILY.items() if fam == args.family]
+        if args.organ not in family_organs:
+            print(f"❌ ERREUR: Organe '{args.organ}' n'appartient pas à la famille '{args.family}'")
+            print(f"   Organes valides: {', '.join(family_organs)}")
+            sys.exit(1)
+
+    # Validation données normalisées si demandé
+    normalized_data = None
+    if args.use_normalized:
+        normalized_file = args.normalized_dir / f"{args.family}_data_FIXED.npz"
+        if not normalized_file.exists():
+            print(f"❌ ERREUR: Fichier normalisé non trouvé: {normalized_file}")
+            print(f"   Lancez d'abord: python scripts/preprocessing/normalize_staining_source.py --family {args.family}")
+            sys.exit(1)
+        print(f"📂 Chargement images normalisées: {normalized_file}")
+        normalized_data = np.load(normalized_file, allow_pickle=True)
+        print(f"   ✅ {len(normalized_data['images'])} images normalisées chargées")
+
     # Génération
     stats = generate_smart_crops_from_pannuke(
         pannuke_dir=args.pannuke_dir,
         output_dir=args.output_dir,
         family=args.family,
+        organ=args.organ,
         folds=args.folds,
         max_samples=args.max_samples,
         seed=args.seed,
+        normalized_data=normalized_data,
     )
 
 
