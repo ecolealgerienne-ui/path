@@ -639,17 +639,18 @@ class CellVitEngine:
                 # ===================================================
                 # SYNCHRONISER MORPHOMETRY AVEC PHASE 3 (CRITIQUE)
                 # ===================================================
-                # Le mitotic_index de morphometry utilise ses propres critères.
-                # On le remplace par les candidats Phase 3 pour cohérence.
-                if morphometry is not None and n_mitosis_candidates > 0:
-                    # Recalculer l'index avec les candidats Phase 3
-                    h, w = instance_map.shape
-                    patch_area_mm2 = (h * 0.5) * (w * 0.5) / 1e6  # 0.5 MPP
-                    hpf_equivalent = patch_area_mm2 / 0.196  # 1 HPF ≈ 0.196 mm²
-                    if hpf_equivalent > 0:
-                        morphometry.mitotic_candidates = n_mitosis_candidates
-                        morphometry.mitotic_index_per_10hpf = (n_mitosis_candidates / hpf_equivalent) * 10
-                        morphometry.mitotic_nuclei_ids = mitosis_candidate_ids
+                # Note: On NE recalcule PAS l'index mitotique car le patch
+                # (224×224 à 0.5 MPP = 0.012 mm²) représente seulement 6.4%
+                # d'un HPF (0.196 mm²). L'extrapolation vers 10 HPF n'est
+                # pas fiable pour des échantillons aussi petits.
+                #
+                # On synchronise seulement le COMPTE de candidats (pour cohérence)
+                # tout en gardant l'index de morphometry (basé sur sa détection interne).
+                if morphometry is not None:
+                    # Sync le compte Phase 3 (pour affichage cohérent)
+                    morphometry.mitotic_candidates = n_mitosis_candidates
+                    morphometry.mitotic_nuclei_ids = mitosis_candidate_ids
+                    # Note: mitotic_index_per_10hpf reste celui de morphometry
 
                 logger.info(
                     f"  Phase 3: pleomorphism={pleomorphism_score}, "

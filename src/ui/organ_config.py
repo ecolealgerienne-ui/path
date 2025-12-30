@@ -98,12 +98,13 @@ ORGAN_CHECKPOINTS = {
 # =============================================================================
 # Source: CLAUDE.md - Paramètres optimisés par famille
 
+# Source: CLAUDE.md - Paramètres Watershed optimisés par famille (SANS normalisation)
 FAMILY_WATERSHED_PARAMS = {
-    "respiratory": {"np_threshold": 0.40, "min_size": 30, "beta": 0.50, "min_distance": 5},
-    "urologic": {"np_threshold": 0.45, "min_size": 30, "beta": 0.50, "min_distance": 2},
-    "epidermal": {"np_threshold": 0.45, "min_size": 20, "beta": 1.00, "min_distance": 3},
-    "digestive": {"np_threshold": 0.45, "min_size": 60, "beta": 2.00, "min_distance": 5},
-    "glandular": {"np_threshold": 0.40, "min_size": 30, "beta": 0.50, "min_distance": 5},
+    "respiratory": {"np_threshold": 0.40, "min_size": 30, "beta": 0.50, "min_distance": 5},  # AJI 0.6872
+    "urologic": {"np_threshold": 0.45, "min_size": 30, "beta": 0.50, "min_distance": 2},     # AJI 0.6743
+    "glandular": {"np_threshold": 0.40, "min_size": 50, "beta": 0.50, "min_distance": 3},    # AJI 0.6566
+    "epidermal": {"np_threshold": 0.45, "min_size": 20, "beta": 1.00, "min_distance": 3},    # AJI 0.6203
+    "digestive": {"np_threshold": 0.45, "min_size": 60, "beta": 2.00, "min_distance": 5},    # AJI 0.6160
 }
 
 # Override par organe (optionnel - si vide, utilise les params de la famille)
