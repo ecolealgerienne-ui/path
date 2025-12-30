@@ -145,6 +145,12 @@ def main():
         help="Family to evaluate"
     )
     parser.add_argument(
+        "--organ",
+        type=str,
+        default=None,
+        help="Specific organ (optional). If specified, loads {organ}_val.npz instead of {family}_val.npz"
+    )
+    parser.add_argument(
         "--n_samples",
         type=int,
         default=50,
@@ -199,6 +205,9 @@ def main():
     )
     args = parser.parse_args()
 
+    # Préfixe pour les fichiers de données (organe ou famille)
+    data_prefix = args.organ.lower() if args.organ else args.family
+
     device = torch.device(args.device)
     n_classes = 5
 
@@ -216,6 +225,9 @@ def main():
     print(f"  Hybrid mode: {args.use_hybrid} (H-channel injection)")
     print(f"  FPN Chimique: {args.use_fpn_chimique} (multi-scale H @ 16,32,64,112,224)")
     print(f"  Device: {args.device}")
+    if args.organ:
+        print(f"  Organ filter: {args.organ}")
+        print(f"  Data prefix: {data_prefix}")
 
     # Load model
     print("\n" + "=" * 80)
@@ -269,11 +281,14 @@ def main():
     print("LOADING VALIDATION DATA")
     print("=" * 80)
 
-    val_data_path = Path(f"data/family_data_v13_smart_crops/{args.family}_val_v13_smart_crops.npz")
+    val_data_path = Path(f"data/family_data_v13_smart_crops/{data_prefix}_val_v13_smart_crops.npz")
     if not val_data_path.exists():
         print(f"❌ ERROR: {val_data_path} not found")
         print(f"\nRun first:")
-        print(f"  python scripts/preprocessing/prepare_v13_smart_crops.py --family {args.family}")
+        if args.organ:
+            print(f"  python scripts/preprocessing/prepare_v13_smart_crops.py --family {args.family} --organ {args.organ}")
+        else:
+            print(f"  python scripts/preprocessing/prepare_v13_smart_crops.py --family {args.family}")
         return 1
 
     print(f"Loading {val_data_path.name}...")
@@ -296,11 +311,14 @@ def main():
         all_images = None
 
     # Load PRE-EXTRACTED features (same as training!)
-    features_path = Path(f"data/cache/family_data/{args.family}_rgb_features_v13_smart_crops_val.npz")
+    features_path = Path(f"data/cache/family_data/{data_prefix}_rgb_features_v13_smart_crops_val.npz")
     if not features_path.exists():
         print(f"❌ ERROR: {features_path} not found")
         print(f"\nRun first:")
-        print(f"  python scripts/preprocessing/extract_features_v13_smart_crops.py --family {args.family} --split val")
+        if args.organ:
+            print(f"  python scripts/preprocessing/extract_features_v13_smart_crops.py --family {args.family} --organ {args.organ} --split val")
+        else:
+            print(f"  python scripts/preprocessing/extract_features_v13_smart_crops.py --family {args.family} --split val")
         return 1
 
     print(f"Loading {features_path.name}...")
@@ -477,7 +495,7 @@ def main():
     results_dir.mkdir(parents=True, exist_ok=True)
 
     suffix = "_hybrid" if args.use_hybrid else ""
-    results_file = results_dir / f"{args.family}{suffix}_aji_evaluation_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+    results_file = results_dir / f"{data_prefix}{suffix}_aji_evaluation_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
     with open(results_file, 'w') as f:
         json.dump(results, f, indent=2)
 

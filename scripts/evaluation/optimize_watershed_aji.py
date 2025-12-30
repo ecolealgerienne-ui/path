@@ -32,7 +32,7 @@ from src.evaluation import run_inference, evaluate_batch_with_params
 from src.postprocessing import hv_guided_watershed  # Pour sanity check seulement
 
 
-def load_model_and_data(checkpoint_path: str, family: str, device: str = "cuda"):
+def load_model_and_data(checkpoint_path: str, family: str, device: str = "cuda", data_prefix: str = None):
     """Load model and validation data - use checkpoint metadata for hybrid mode."""
 
     # Load checkpoint
@@ -67,18 +67,19 @@ def load_model_and_data(checkpoint_path: str, family: str, device: str = "cuda")
     elif use_hybrid:
         print(f"  ✅ Mode HYBRID activé: injection H-channel via RuifrokExtractor")
 
-    # Load validation data
+    # Load validation data (utilise data_prefix si spécifié)
+    prefix = data_prefix if data_prefix else family
     data_dir = Path("data/family_data_v13_smart_crops")
-    val_file = data_dir / f"{family}_val_v13_smart_crops.npz"
+    val_file = data_dir / f"{prefix}_val_v13_smart_crops.npz"
 
     if not val_file.exists():
         raise FileNotFoundError(f"Validation data not found: {val_file}")
 
     val_data = np.load(val_file, allow_pickle=True)
 
-    # Load features
+    # Load features (utilise prefix)
     features_dir = Path("data/cache/family_data")
-    rgb_features_file = features_dir / f"{family}_rgb_features_v13_smart_crops_val.npz"
+    rgb_features_file = features_dir / f"{prefix}_rgb_features_v13_smart_crops_val.npz"
 
     if not rgb_features_file.exists():
         raise FileNotFoundError(f"RGB features not found: {rgb_features_file}")
@@ -215,6 +216,8 @@ def main():
     parser = argparse.ArgumentParser(description="Optimize watershed parameters for AJI")
     parser.add_argument("--checkpoint", type=str, required=True, help="Path to model checkpoint")
     parser.add_argument("--family", type=str, default="epidermal", help="Family to evaluate")
+    parser.add_argument("--organ", type=str, default=None,
+                        help="Specific organ (optional). If specified, loads {organ}_val.npz instead of {family}_val.npz")
     parser.add_argument("--n_samples", type=int, default=50, help="Number of samples to evaluate")
     parser.add_argument("--device", type=str, default="cuda", help="Device to use")
     parser.add_argument("--output_dir", type=str, default="results/watershed_optimization",
@@ -227,10 +230,16 @@ def main():
         print("CUDA not available, using CPU")
         args.device = "cpu"
 
+    # Préfixe pour les fichiers de données (organe ou famille)
+    data_prefix = args.organ.lower() if args.organ else args.family
+
     # Load model and data
     print(f"\nLoading model from: {args.checkpoint}")
+    if args.organ:
+        print(f"  Organ filter: {args.organ}")
+        print(f"  Data prefix: {data_prefix}")
     model, val_data, rgb_features, use_hybrid = load_model_and_data(
-        args.checkpoint, args.family, args.device
+        args.checkpoint, args.family, args.device, data_prefix=data_prefix
     )
     print(f"Model loaded. Hybrid mode: {use_hybrid}")
     print(f"Validation samples: {len(val_data['images'])}")
@@ -288,7 +297,7 @@ def main():
     output_dir.mkdir(parents=True, exist_ok=True)
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    results_file = output_dir / f"watershed_optimization_{args.family}_{timestamp}.json"
+    results_file = output_dir / f"watershed_optimization_{data_prefix}_{timestamp}.json"
 
     output_data = {
         'family': args.family,

@@ -466,6 +466,8 @@ def main():
     parser = argparse.ArgumentParser(description="Vérifier les données V13 Smart Crops")
     parser.add_argument("--family", type=str, default="epidermal",
                         help="Famille à vérifier (epidermal, glandular, etc.)")
+    parser.add_argument("--organ", type=str, default=None,
+                        help="Organe spécifique (optionnel). Si spécifié, vérifie {organ}_{split}.npz")
     parser.add_argument("--data_file", type=str, default=None,
                         help="Chemin direct vers le fichier .npz")
     parser.add_argument("--data_dir", type=str,
@@ -478,6 +480,9 @@ def main():
                         help="Split à vérifier (train, val, ou all pour les deux)")
 
     args = parser.parse_args()
+
+    # Préfixe pour les fichiers de données (organe ou famille)
+    data_prefix = args.organ.lower() if args.organ else args.family
 
     # Déterminer les splits à vérifier
     if args.split == "all":
@@ -492,7 +497,7 @@ def main():
         if args.data_file:
             data_path = Path(args.data_file)
         else:
-            data_path = Path(args.data_dir) / f"{args.family}_{split}_v13_smart_crops.npz"
+            data_path = Path(args.data_dir) / f"{data_prefix}_{split}_v13_smart_crops.npz"
 
         results = verify_data_file(data_path, n_samples=args.n_samples)
         all_results[split] = results
