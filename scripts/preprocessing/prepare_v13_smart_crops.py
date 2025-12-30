@@ -528,7 +528,8 @@ def generate_smart_crops_from_pannuke(
     folds: list = None,
     max_samples: int = 5000,
     train_ratio: float = 0.8,
-    seed: int = 42
+    seed: int = 42,
+    normalized_data: dict = None
 ) -> Dict[str, int]:
     """
     Génère crops avec split train/val et algorithme par couche.
@@ -550,6 +551,8 @@ def generate_smart_crops_from_pannuke(
         max_samples: Nombre maximum de samples PAR SPLIT (défaut: 5000)
         train_ratio: Ratio train/val (défaut: 0.8)
         seed: Seed pour reproductibilité
+        normalized_data: Données normalisées (optionnel) - si fourni, utilise les images
+                         normalisées depuis {family}_data_FIXED.npz au lieu de PanNuke brut
 
     Returns:
         Statistiques de génération
@@ -566,6 +569,21 @@ def generate_smart_crops_from_pannuke(
     # Organes de cette famille
     organs = [org for org, fam in ORGAN_TO_FAMILY.items() if fam == family]
     print(f"Organes: {', '.join(organs)}\n")
+
+    # ========== Préparation index images normalisées (si fourni) ==========
+    normalized_index = {}
+    if normalized_data is not None:
+        print("🎨 Mode NORMALISÉ: Utilisation des images Macenko-normalisées")
+        norm_fold_ids = normalized_data['fold_ids']
+        norm_image_ids = normalized_data['image_ids']
+        norm_images = normalized_data['images']
+        # Créer index (fold_id, image_id) → index dans normalized_data
+        for idx in range(len(norm_fold_ids)):
+            key = (int(norm_fold_ids[idx]), int(norm_image_ids[idx]))
+            normalized_index[key] = idx
+        print(f"   Index créé: {len(normalized_index)} images mappées\n")
+    else:
+        print("📷 Mode STANDARD: Utilisation des images PanNuke brutes\n")
 
     # ========== ÉTAPE 1: Collecter toutes les images sources ==========
     all_source_images = []
@@ -595,7 +613,15 @@ def generate_smart_crops_from_pannuke(
                 continue
 
             # Charger en mémoire uniquement les images de cette famille
-            image = np.array(images[i], dtype=np.uint8)
+            # Si mode normalisé: utiliser image normalisée, sinon: image brute
+            norm_key = (fold, i)
+            if normalized_index and norm_key in normalized_index:
+                norm_idx = normalized_index[norm_key]
+                image = np.array(norm_images[norm_idx], dtype=np.uint8)
+            else:
+                image = np.array(images[i], dtype=np.uint8)
+
+            # Mask toujours depuis PanNuke brut (contient les annotations)
             mask = np.array(masks[i])
 
             all_source_images.append(image)
@@ -835,6 +861,17 @@ def main():
         default=42,
         help="Seed pour reproductibilité (défaut: 42)"
     )
+    parser.add_argument(
+        '--use_normalized',
+        action='store_true',
+        help="Utiliser les images normalisées Macenko depuis {family}_data_FIXED.npz"
+    )
+    parser.add_argument(
+        '--normalized_dir',
+        type=Path,
+        default=Path('data/family_FIXED'),
+        help="Répertoire contenant les fichiers *_data_FIXED.npz normalisés"
+    )
 
     args = parser.parse_args()
 
@@ -842,6 +879,18 @@ def main():
     if not args.pannuke_dir.exists():
         print(f"❌ ERREUR: PanNuke directory non trouvé: {args.pannuke_dir}")
         sys.exit(1)
+
+    # Validation données normalisées si demandé
+    normalized_data = None
+    if args.use_normalized:
+        normalized_file = args.normalized_dir / f"{args.family}_data_FIXED.npz"
+        if not normalized_file.exists():
+            print(f"❌ ERREUR: Fichier normalisé non trouvé: {normalized_file}")
+            print(f"   Lancez d'abord: python scripts/preprocessing/normalize_staining_source.py --family {args.family}")
+            sys.exit(1)
+        print(f"📂 Chargement images normalisées: {normalized_file}")
+        normalized_data = np.load(normalized_file, allow_pickle=True)
+        print(f"   ✅ {len(normalized_data['images'])} images normalisées chargées")
 
     # Génération
     stats = generate_smart_crops_from_pannuke(
@@ -851,6 +900,7 @@ def main():
         folds=args.folds,
         max_samples=args.max_samples,
         seed=args.seed,
+        normalized_data=normalized_data,
     )
 
 
