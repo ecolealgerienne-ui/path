@@ -80,7 +80,7 @@ python -m src.ui.app --preload --family respiratory
 
 ### Segmentation
 
-- **Upload image** : Glisser-déposer une image H&E (256×256)
+- **Upload image** : Glisser-déposer une image H&E (224×224)
 - **Analyse automatique** : Segmentation + Morphométrie
 - **Overlays** :
   - Segmentation colorée (par type cellulaire)

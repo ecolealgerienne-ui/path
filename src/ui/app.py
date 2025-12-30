@@ -359,7 +359,7 @@ def create_ui():
                 # Image input/output
                 with gr.Row():
                     input_image = gr.Image(
-                        label="Image H&E (256×256)",
+                        label="Image H&E (224×224)",
                         type="numpy",
                         height=300,
                     )
