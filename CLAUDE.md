@@ -182,7 +182,7 @@ stain_matrix = [0.650, 0.704, 0.286]  # Direction pure Hématoxyline
 │  CLS Token (1536)    │            │  Patch Tokens (256, 1536)            │
 │         │            │            │         │                            │
 │    OrganHead         │            │    FPN Chimique                      │
-│   (99.94% acc)       │            │   + H-Channel Injection              │
+│   (99.75% acc)       │            │   + H-Channel Injection              │
 │         │            │            │         │                            │
 │   19 Organes         │            │  ┌──────┴─────┬───────┐              │
 │   + OOD              │            │  NP       HV       NT               │
