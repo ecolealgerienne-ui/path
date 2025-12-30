@@ -111,6 +111,13 @@ def analyze_image(
         empty = np.zeros((224, 224, 3), dtype=np.uint8)
         return empty, empty, "Aucune image", "", empty, empty
 
+    # Vérification taille 224×224
+    h, w = image.shape[:2]
+    if h != 224 or w != 224:
+        empty = np.zeros((224, 224, 3), dtype=np.uint8)
+        error_msg = f"**Erreur : Image {w}×{h} pixels**\n\nVeuillez charger une image de **224×224 pixels**."
+        return empty, empty, error_msg, "", empty, empty
+
     try:
         # Paramètres watershed personnalisés
         params = {
