@@ -257,8 +257,17 @@ def format_metrics(result: AnalysisResult) -> str:
         model_info = f"### Modèle: {state.engine.family if state.engine else 'N/A'}"
         family_info = f"*Organe sélectionné: {state.engine.organ if state.engine else 'N/A'}*"
 
+    # Amélioration UX: Message contextuel pour organe non déterminé
+    if result.organ_name == "Unknown" or result.organ_confidence < 0.1:
+        if result.n_nuclei < 20:
+            organ_display = "### Organe détecté (IA): *Non déterminable* (surface insuffisante)"
+        else:
+            organ_display = "### Organe détecté (IA): *Non déterminable* (contexte architectural limité)"
+    else:
+        organ_display = f"### Organe détecté (IA): {result.organ_name} ({result.organ_confidence:.1%})"
+
     lines = [
-        f"### Organe détecté (IA): {result.organ_name} ({result.organ_confidence:.1%})",
+        organ_display,
         model_info,
         family_info,
     ]
@@ -272,6 +281,17 @@ def format_metrics(result: AnalysisResult) -> str:
 
     if result.morphometry:
         m = result.morphometry
+
+        # Ratio I/E: non interprétable si dénominateur trop faible
+        inflammatory_count = m.type_counts.get("Inflammatory", 0)
+        epithelial_count = m.type_counts.get("Epithelial", 0)
+        ie_denominator = inflammatory_count + epithelial_count
+
+        if ie_denominator < 3:
+            ie_display = "*non interprétable* (effectif insuffisant)"
+        else:
+            ie_display = f"**{m.immuno_epithelial_ratio:.2f}**"
+
         lines.extend([
             "---",
             "### Morphométrie",
@@ -283,7 +303,7 @@ def format_metrics(result: AnalysisResult) -> str:
             "### Index & Ratios",
             f"- Index mitotique: **{m.mitotic_index_per_10hpf:.1f}**/10 HPF",
             f"- Ratio néoplasique: **{m.neoplastic_ratio:.1%}**",
-            f"- Ratio I/E: **{m.immuno_epithelial_ratio:.2f}**",
+            f"- Ratio I/E: {ie_display}",
             f"- TILs status: **{m.til_status}**",
             "",
             "### Distribution",
@@ -304,14 +324,26 @@ def format_metrics(result: AnalysisResult) -> str:
         score_labels = {1: "Faible", 2: "Modéré", 3: "Sévère"}
         score_emoji = {1: "🟢", 2: "🟡", 3: "🔴"}
 
+        # Badge "surface limitée" si < 20 noyaux
+        if result.n_nuclei < 20:
+            phase3_title = "### Phase 3 — Intelligence Spatiale 🛈 *(surface limitée)*"
+        else:
+            phase3_title = "### Phase 3 — Intelligence Spatiale"
+
+        # Chromatine: message contextuel si entropie élevée mais 0 noyaux hétérogènes
+        if result.n_heterogeneous_nuclei == 0 and result.mean_chromatin_entropy > 4.0:
+            chromatin_display = f"**0** noyaux *(texture globale hétérogène, seuil strict)*"
+        else:
+            chromatin_display = f"**{result.n_heterogeneous_nuclei}** noyaux"
+
         lines.extend([
             "",
             "---",
-            "### Phase 3 — Intelligence Spatiale",
+            phase3_title,
             f"- Pléomorphisme: **{result.pleomorphism_score}/3** {score_emoji.get(result.pleomorphism_score, '')} ({score_labels.get(result.pleomorphism_score, '')})",
             f"- Hotspots: **{result.n_hotspots}** zones haute densité",
             f"- Mitoses candidates: **{result.n_mitosis_candidates}**",
-            f"- Chromatine hétérogène: **{result.n_heterogeneous_nuclei}** noyaux",
+            f"- Chromatine hétérogène: {chromatin_display}",
             f"- Voisins moyens (Voronoï): **{result.mean_neighbors:.1f}**",
             f"- Entropie chromatine: **{result.mean_chromatin_entropy:.2f}**",
         ])
@@ -344,7 +376,12 @@ def format_alerts(result: AnalysisResult) -> str:
         if result.n_mitosis_candidates > 3:
             lines.append(f"- 🔴 **{result.n_mitosis_candidates} mitoses suspectes** — activité proliférative")
         elif result.n_mitosis_candidates > 0:
-            lines.append(f"- 🟡 **{result.n_mitosis_candidates} mitose(s) candidate(s)**")
+            # Ajouter explication si index mitotique = 0 mais candidats détectés
+            mitotic_index = result.morphometry.mitotic_index_per_10hpf if result.morphometry else 0
+            if mitotic_index < 0.1:
+                lines.append(f"- 🟡 **{result.n_mitosis_candidates} mitose(s) candidate(s)** *(figures isolées, index global non impacté)*")
+            else:
+                lines.append(f"- 🟡 **{result.n_mitosis_candidates} mitose(s) candidate(s)**")
 
         if result.n_hotspots > 0:
             lines.append(f"- 🟠 **{result.n_hotspots} hotspot(s)** — zones haute densité")
