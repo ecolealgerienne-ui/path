@@ -182,15 +182,16 @@ class PipelineGuard:
         self.log("Audit 2/5: Extraction H-Channel (Ruifrok)", "INFO")
 
         # Vérifier présence du module
-        has_fpn = hasattr(model, 'fpn_chimique') and model.fpn_chimique is not None
+        # FPN Chimique utilise h_pyramid pour l'extraction multi-échelle
+        has_h_pyramid = hasattr(model, 'h_pyramid') and model.h_pyramid is not None
         has_ruifrok = hasattr(model, 'ruifrok') and model.ruifrok is not None
 
-        if not has_fpn and not has_ruifrok:
+        if not has_h_pyramid and not has_ruifrok:
             return AuditResult(
                 name="Extraction H-Channel",
                 passed=False,
-                message="Ni FPN Chimique ni Ruifrok détecté — H-channel non extrait",
-                details={"has_fpn": False, "has_ruifrok": False}
+                message="Ni h_pyramid ni Ruifrok détecté — H-channel non extrait",
+                details={"has_h_pyramid": False, "has_ruifrok": False}
             )
 
         # Extraire H-channel manuellement pour vérification
@@ -225,7 +226,7 @@ class PipelineGuard:
         is_flat = h_std < 0.01
 
         details = {
-            "has_fpn": has_fpn,
+            "has_h_pyramid": has_h_pyramid,
             "has_ruifrok": has_ruifrok,
             "h_mean": h_mean,
             "h_std": h_std,
@@ -482,19 +483,19 @@ class PipelineGuard:
                     "grad_norm": grad_norm
                 }
 
-        # Vérifier gradient FPN chimique
-        if hasattr(model, 'fpn_chimique') and model.fpn_chimique is not None:
-            # Vérifier première couche du FPN
-            for name, param in model.fpn_chimique.named_parameters():
+        # Vérifier gradient h_pyramid (FPN chimique)
+        if hasattr(model, 'h_pyramid') and model.h_pyramid is not None:
+            # Vérifier première couche du h_pyramid
+            for name, param in model.h_pyramid.named_parameters():
                 if param.grad is not None:
-                    gradient_info["fpn_chimique"] = {
+                    gradient_info["h_pyramid"] = {
                         "has_grad": True,
                         "first_layer": name,
                         "grad_norm": param.grad.norm().item()
                     }
                     break
             else:
-                gradient_info["fpn_chimique"] = {"has_grad": False}
+                gradient_info["h_pyramid"] = {"has_grad": False}
 
         # Vérifier gradient bottleneck
         if hasattr(model, 'bottleneck'):
@@ -514,11 +515,11 @@ class PipelineGuard:
         if "h_alpha_0" in gradient_info:
             h_alpha_ok = gradient_info["h_alpha_0"]["has_grad"]
 
-        fpn_ok = True
-        if "fpn_chimique" in gradient_info:
-            fpn_ok = gradient_info["fpn_chimique"]["has_grad"]
+        h_pyramid_ok = True
+        if "h_pyramid" in gradient_info:
+            h_pyramid_ok = gradient_info["h_pyramid"]["has_grad"]
 
-        all_ok = h_alpha_ok and fpn_ok
+        all_ok = h_alpha_ok and h_pyramid_ok
 
         if not all_ok:
             return AuditResult(
@@ -697,19 +698,26 @@ def main():
     # Charger ou créer modèle
     if args.checkpoint:
         print(f"📂 Chargement checkpoint: {args.checkpoint}")
-        checkpoint = torch.load(args.checkpoint, map_location=args.device)
+        checkpoint = torch.load(args.checkpoint, map_location=args.device, weights_only=False)
 
         # Détecter configuration depuis checkpoint
-        use_fpn = "fpn_chimique" in str(checkpoint.get("model_state_dict", {}).keys())
-        use_h_alpha = "h_alphas" in str(checkpoint.get("model_state_dict", {}).keys())
+        state_dict = checkpoint.get("model_state_dict", {})
+        state_dict_keys = list(state_dict.keys())
+
+        # FPN Chimique utilise h_pyramid.* dans les clés
+        use_fpn = any("h_pyramid" in k for k in state_dict_keys)
+        # h_alpha utilise h_alphas.* dans les clés
+        use_h_alpha = any("h_alphas" in k for k in state_dict_keys)
+
+        print(f"  Détection: FPN Chimique={use_fpn}, h_alpha={use_h_alpha}")
 
         model = HoVerNetDecoder(
             use_hybrid=True,
             use_fpn_chimique=use_fpn,
             use_h_alpha=use_h_alpha
         )
-        model.load_state_dict(checkpoint["model_state_dict"])
-        print(f"  ✅ Modèle chargé (FPN={use_fpn}, h_alpha={use_h_alpha})")
+        model.load_state_dict(state_dict)
+        print(f"  ✅ Modèle chargé")
     else:
         print("📦 Création nouveau modèle (FPN Chimique + h_alpha)")
         model = HoVerNetDecoder(
