@@ -1,0 +1,41 @@
+"""
+CellViT-Optimus UI Core — Logique partagée entre les interfaces.
+
+Ce module contient toute la logique métier partagée entre:
+- app.py (R&D Cockpit)
+- app_pathologist.py (Interface Pathologiste)
+
+Principe: La logique est unique, seul l'affichage diffère.
+"""
+
+from .engine_ops import (
+    UIState,
+    state,
+    load_engine_core,
+    analyze_image_core,
+    change_organ_core,
+    on_image_click_core,
+)
+
+from .export_ops import (
+    export_pdf_core,
+    export_nuclei_csv_core,
+    export_summary_csv_core,
+    export_json_core,
+)
+
+__all__ = [
+    # State
+    "UIState",
+    "state",
+    # Engine operations
+    "load_engine_core",
+    "analyze_image_core",
+    "change_organ_core",
+    "on_image_click_core",
+    # Export operations
+    "export_pdf_core",
+    "export_nuclei_csv_core",
+    "export_summary_csv_core",
+    "export_json_core",
+]

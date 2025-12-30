@@ -2,6 +2,8 @@
 """
 Sauvegarde quelques échantillons PanNuke en PNG pour tester l'IHM Gradio.
 
+Extrait le centre 224×224 des images 256×256 (compatible H-optimus-0).
+
 Usage:
     python scripts/utils/save_pannuke_samples.py --data_dir /chemin/vers/PanNuke
 """
@@ -17,6 +19,11 @@ DEFAULT_DATA_DIR = Path("/home/amar/data/PanNuke")
 OUTPUT_DIR = Path("data/samples")
 N_IMAGES_PER_ORGAN = 5
 ORGANS = ["Prostate", "Breast", "Colon"]  # 3 organes différents
+
+# Crop centre 224×224 depuis image 256×256
+# Mêmes coordonnées que prepare_v13_smart_crops.py
+CROP_CENTER = (16, 16, 240, 240)  # (x1, y1, x2, y2)
+OUTPUT_SIZE = 224
 
 
 def main():
@@ -92,20 +99,26 @@ def main():
             else:
                 img = img.astype(np.uint8)
 
+            # Extraire le centre 224×224 (même logique que prepare_v13_smart_crops.py)
+            x1, y1, x2, y2 = CROP_CENTER
+            img_cropped = img[y1:y2, x1:x2]
+
+            assert img_cropped.shape == (OUTPUT_SIZE, OUTPUT_SIZE, 3), \
+                f"Crop shape incorrect: {img_cropped.shape}, attendu ({OUTPUT_SIZE}, {OUTPUT_SIZE}, 3)"
+
             # Sauvegarder (OpenCV attend BGR)
             filename = f"{organ.lower()}_{i+1:02d}.png"
             filepath = output_dir / filename
 
-            cv2.imwrite(str(filepath), cv2.cvtColor(img, cv2.COLOR_RGB2BGR))
-            print(f"  ✓ {filename}")
+            cv2.imwrite(str(filepath), cv2.cvtColor(img_cropped, cv2.COLOR_RGB2BGR))
+            print(f"  ✓ {filename} (224×224 center crop)")
             saved_count += 1
 
-    print(f"\n✅ {saved_count} images sauvegardées dans {output_dir}/")
+    print(f"\n✅ {saved_count} images 224×224 sauvegardées dans {output_dir}/")
     print(f"\nPour tester dans Gradio:")
-    print(f"  1. Lancer: python scripts/demo/gradio_demo.py")
+    print(f"  1. Lancer: ./scripts/ui_manager.sh start cockpit")
     print(f"  2. Aller sur http://localhost:7860")
-    print(f"  3. Onglet 'Analyser votre Image'")
-    print(f"  4. Uploader les images depuis {output_dir}/")
+    print(f"  3. Uploader les images depuis {output_dir}/")
 
 
 if __name__ == "__main__":

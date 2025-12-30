@@ -7,6 +7,9 @@ du moteur IA de segmentation cellulaire.
 
 Note: Ceci est un outil R&D, pas une IHM clinique.
 
+Architecture: Utilise src.ui.core pour la logique métier partagée
+et src.ui.formatters pour l'affichage R&D (technique).
+
 Usage:
     python -m src.ui.app
     # ou
@@ -32,91 +35,55 @@ PROJECT_ROOT = Path(__file__).parent.parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-# Imports locaux
-from src.ui.inference_engine import (
-    CellVitEngine,
-    AnalysisResult,
-    ORGAN_CHOICES,
+# Imports: Logique partagée (core)
+from src.ui.core import (
+    state,
+    load_engine_core,
+    analyze_image_core,
+    change_organ_core,
+    on_image_click_core,
+    export_pdf_core,
+    export_nuclei_csv_core,
+    export_summary_csv_core,
+    export_json_core,
 )
-from src.ui.organ_config import (
-    ORGANS,
-    get_organ_display_choices,
-    get_model_for_organ,
+
+# Imports: Formatage R&D (technique)
+from src.ui.formatters import (
+    format_metrics_rnd,
+    format_alerts_rnd,
+    format_nucleus_info_rnd,
+    format_load_status_rnd,
+    format_organ_change_rnd,
 )
+
+# Imports: Moteur et configuration
+from src.ui.inference_engine import ORGAN_CHOICES
+from src.ui.organ_config import get_model_for_organ
+
+# Imports: Visualisations
 from src.ui.visualizations import (
     create_segmentation_overlay,
     create_contour_overlay,
     create_uncertainty_overlay,
-    create_uncertainty_map,
     create_density_heatmap,
     create_type_distribution_chart,
-    create_morphometry_summary,
-    create_debug_panel,
-    create_debug_panel_enhanced,  # Phase 2
-    create_anomaly_overlay,        # Phase 2
-    highlight_nuclei,
+    create_anomaly_overlay,
     create_voronoi_overlay,
-    # Phase 3
     create_hotspot_overlay,
     create_mitosis_overlay,
     create_chromatin_overlay,
-    create_spatial_debug_panel,
-    create_phase3_combined_overlay,
-    CELL_COLORS,
-    TYPE_NAMES,
 )
-# Phase 4
-from src.ui.export import (
-    create_audit_metadata,
-    export_nuclei_csv,
-    export_summary_csv,
-    create_report_pdf,
-)
-# FAMILIES imported via inference_engine.MODEL_CHOICES
-import tempfile
-import os
 
 
 # ==============================================================================
-# ÉTAT GLOBAL
-# ==============================================================================
-
-class AppState:
-    """État global de l'application."""
-    engine: Optional[CellVitEngine] = None
-    current_result: Optional[AnalysisResult] = None
-    is_loading: bool = False
-
-
-state = AppState()
-
-
-# ==============================================================================
-# FONCTIONS UTILITAIRES
+# WRAPPERS UI (utilisent core + formatters)
 # ==============================================================================
 
 def load_engine(organ: str, device: str = "cuda") -> str:
-    """Charge le moteur d'inférence."""
-    try:
-        state.is_loading = True
-        organ_info = get_model_for_organ(organ)
-        logger.info(f"Loading engine for organ '{organ}' on {device}...")
-
-        state.engine = CellVitEngine(
-            device=device,
-            organ=organ,
-            load_backbone=True,
-            load_organ_head=True,
-        )
-
-        state.is_loading = False
-        model_type = "dédié" if organ_info["is_dedicated"] else f"famille {organ_info['family']}"
-        return f"Moteur chargé : {organ} ({model_type}) sur {device}"
-
-    except Exception as e:
-        state.is_loading = False
-        logger.error(f"Error loading engine: {e}")
-        return f"Erreur : {e}"
+    """Charge le moteur d'inférence (wrapper UI)."""
+    result = load_engine_core(organ, device)
+    return format_load_status_rnd(result)
 
 
 def analyze_image(
@@ -127,7 +94,7 @@ def analyze_image(
     min_distance: int,
 ) -> Tuple[np.ndarray, np.ndarray, str, str, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """
-    Analyse une image et retourne les visualisations.
+    Analyse une image et retourne les visualisations (wrapper UI).
 
     Returns:
         (overlay, contours, metrics_text, alerts_text, chart, debug, anomaly_overlay, phase3_overlay, phase3_debug)
@@ -136,329 +103,50 @@ def analyze_image(
     empty_debug = np.zeros((100, 400, 3), dtype=np.uint8)
     empty_phase3_debug = np.zeros((80, 400, 3), dtype=np.uint8)
 
-    if state.engine is None:
-        return empty, empty, "Moteur non chargé", "", empty, empty_debug, empty, empty, empty_phase3_debug
+    # Appel core
+    output = analyze_image_core(image, np_threshold, min_size, beta, min_distance)
 
-    if image is None:
-        return empty, empty, "Aucune image", "", empty, empty_debug, empty, empty, empty_phase3_debug
-
-    # Vérification taille 224×224
-    h, w = image.shape[:2]
-    if h != 224 or w != 224:
-        error_msg = f"**Erreur : Image {w}×{h} pixels**\n\nVeuillez charger une image de **224×224 pixels**."
-        return empty, empty, error_msg, "", empty, empty_debug, empty, empty, empty_phase3_debug
-
-    try:
-        # Paramètres watershed personnalisés
-        params = {
-            "np_threshold": np_threshold,
-            "min_size": int(min_size),
-            "beta": beta,
-            "min_distance": int(min_distance),
-        }
-
-        # Analyse
-        result = state.engine.analyze(
-            image,
-            watershed_params=params,
-            compute_morphometry=True,
-            compute_uncertainty=True,
+    if not output.success:
+        error_msg = output.error or "Erreur inconnue"
+        return (
+            output.overlay, output.contours, error_msg, "",
+            output.chart, output.debug, output.anomaly_overlay,
+            output.phase3_overlay, output.phase3_debug
         )
 
-        state.current_result = result
+    # Formatage R&D
+    organ = state.engine.organ if state.engine else None
+    family = state.engine.family if state.engine else None
+    is_dedicated = state.engine.is_dedicated_model if state.engine else False
 
-        # Visualisations
-        overlay = create_segmentation_overlay(
-            result.image_rgb,
-            result.instance_map,
-            result.type_map,
-            alpha=0.4,
-        )
+    metrics_text = format_metrics_rnd(output.result, organ, family, is_dedicated)
+    alerts_text = format_alerts_rnd(output.result)
 
-        contours = create_contour_overlay(
-            result.image_rgb,
-            result.instance_map,
-            result.type_map,
-            thickness=1,
-        )
-
-        # Métriques texte
-        metrics_text = format_metrics(result)
-
-        # Alertes texte (incluant anomalies Phase 2 et Phase 3)
-        alerts_text = format_alerts(result)
-
-        # Chart distribution
-        if result.morphometry:
-            chart = create_type_distribution_chart(result.morphometry.type_counts)
-        else:
-            chart = np.zeros((200, 300, 3), dtype=np.uint8)
-
-        # Debug panel amélioré (Phase 2)
-        debug = create_debug_panel_enhanced(
-            result.np_pred,
-            result.hv_pred,
-            result.instance_map,
-            n_fusions=result.n_fusions,
-            n_over_seg=result.n_over_seg,
-        )
-
-        # Overlay anomalies (Phase 2)
-        anomaly_overlay = create_anomaly_overlay(
-            result.image_rgb,
-            result.instance_map,
-            result.fusion_ids,
-            result.over_seg_ids,
-        )
-
-        # Phase 3: Overlay combiné (hotspots + mitoses + chromatine)
-        phase3_overlay = empty.copy()
-        phase3_debug = empty_phase3_debug.copy()
-
-        if result.spatial_analysis:
-            sa = result.spatial_analysis
-            # Overlay combiné Phase 3
-            phase3_overlay = create_phase3_combined_overlay(
-                result.image_rgb,
-                result.instance_map,
-                hotspot_ids=result.hotspot_ids,
-                mitosis_ids=result.mitosis_candidate_ids,
-                mitosis_scores=sa.mitosis_scores,
-                heterogeneous_ids=sa.heterogeneous_nuclei_ids,
-            )
-
-            # Debug panel Phase 3
-            phase3_debug = create_spatial_debug_panel(
-                pleomorphism_score=result.pleomorphism_score,
-                pleomorphism_description=result.pleomorphism_description,
-                n_hotspots=result.n_hotspots,
-                n_mitosis_candidates=result.n_mitosis_candidates,
-                n_heterogeneous=result.n_heterogeneous_nuclei,
-                mean_neighbors=result.mean_neighbors,
-                mean_entropy=result.mean_chromatin_entropy,
-            )
-
-        return overlay, contours, metrics_text, alerts_text, chart, debug, anomaly_overlay, phase3_overlay, phase3_debug
-
-    except Exception as e:
-        logger.error(f"Analysis error: {e}")
-        import traceback
-        traceback.print_exc()
-        return empty, empty, f"Erreur : {e}", "", empty, empty_debug, empty, empty, empty_phase3_debug
-
-
-def format_metrics(result: AnalysisResult) -> str:
-    """Formate les métriques en texte."""
-    # Afficher le modèle utilisé
-    if state.engine and state.engine.is_dedicated_model:
-        model_info = f"### Modèle: **{state.engine.organ}** ★ (dédié)"
-        family_info = f"*Famille: {state.engine.family}*"
-    else:
-        model_info = f"### Modèle: {state.engine.family if state.engine else 'N/A'}"
-        family_info = f"*Organe sélectionné: {state.engine.organ if state.engine else 'N/A'}*"
-
-    lines = [
-        f"### Organe détecté (IA): {result.organ_name} ({result.organ_confidence:.1%})",
-        model_info,
-        family_info,
-    ]
-
-    lines.extend([
-        "",
-        f"**Noyaux détectés:** {result.n_nuclei}",
-        f"**Temps d'inférence:** {result.inference_time_ms:.0f} ms",
-        "",
-    ])
-
-    if result.morphometry:
-        m = result.morphometry
-        lines.extend([
-            "---",
-            "### Morphométrie",
-            f"- Densité: **{m.nuclei_per_mm2:.0f}** noyaux/mm²",
-            f"- Aire moyenne: **{m.mean_area_um2:.1f}** ± {m.std_area_um2:.1f} µm²",
-            f"- Circularité: **{m.mean_circularity:.2f}** ± {m.std_circularity:.2f}",
-            f"- Hypercellularité: **{m.nuclear_density_percent:.1f}%**",
-            "",
-            "### Index & Ratios",
-            f"- Index mitotique: **{m.mitotic_index_per_10hpf:.1f}**/10 HPF",
-            f"- Ratio néoplasique: **{m.neoplastic_ratio:.1%}**",
-            f"- Ratio I/E: **{m.immuno_epithelial_ratio:.2f}**",
-            f"- TILs status: **{m.til_status}**",
-            "",
-            "### Distribution",
-        ])
-
-        for t in TYPE_NAMES:
-            count = m.type_counts.get(t, 0)
-            pct = m.type_percentages.get(t, 0)
-            lines.append(f"- {t}: {count} ({pct:.1f}%)")
-
-        lines.extend([
-            "",
-            f"**Confiance:** {m.confidence_level}",
-        ])
-
-    # Phase 3: Intelligence Spatiale
-    if result.spatial_analysis:
-        score_labels = {1: "Faible", 2: "Modéré", 3: "Sévère"}
-        score_emoji = {1: "🟢", 2: "🟡", 3: "🔴"}
-
-        lines.extend([
-            "",
-            "---",
-            "### Phase 3 — Intelligence Spatiale",
-            f"- Pléomorphisme: **{result.pleomorphism_score}/3** {score_emoji.get(result.pleomorphism_score, '')} ({score_labels.get(result.pleomorphism_score, '')})",
-            f"- Hotspots: **{result.n_hotspots}** zones haute densité",
-            f"- Mitoses candidates: **{result.n_mitosis_candidates}**",
-            f"- Chromatine hétérogène: **{result.n_heterogeneous_nuclei}** noyaux",
-            f"- Voisins moyens (Voronoï): **{result.mean_neighbors:.1f}**",
-            f"- Entropie chromatine: **{result.mean_chromatin_entropy:.2f}**",
-        ])
-
-    return "\n".join(lines)
-
-
-def format_alerts(result: AnalysisResult) -> str:
-    """Formate les alertes en texte (incluant anomalies Phase 2 et Phase 3)."""
-    lines = ["### Points d'attention", ""]
-
-    # Alertes morphométriques
-    if result.morphometry and result.morphometry.alerts:
-        for alert in result.morphometry.alerts:
-            lines.append(f"- {alert}")
-
-    # Phase 2: Alertes anomalies
-    if result.n_fusions > 0:
-        lines.append(f"- **{result.n_fusions} fusion(s) potentielle(s)** (aire > 2× moyenne)")
-    if result.n_over_seg > 0:
-        lines.append(f"- **{result.n_over_seg} sur-segmentation(s)** (aire < 0.5× moyenne)")
-
-    # Phase 3: Alertes intelligence spatiale
-    if result.spatial_analysis:
-        if result.pleomorphism_score >= 3:
-            lines.append("- 🔴 **Pléomorphisme sévère** — anisocaryose marquée")
-        elif result.pleomorphism_score == 2:
-            lines.append("- 🟡 **Pléomorphisme modéré** — variation notable")
-
-        if result.n_mitosis_candidates > 3:
-            lines.append(f"- 🔴 **{result.n_mitosis_candidates} mitoses suspectes** — activité proliférative")
-        elif result.n_mitosis_candidates > 0:
-            lines.append(f"- 🟡 **{result.n_mitosis_candidates} mitose(s) candidate(s)**")
-
-        if result.n_hotspots > 0:
-            lines.append(f"- 🟠 **{result.n_hotspots} hotspot(s)** — zones haute densité")
-
-        if result.n_heterogeneous_nuclei > 5:
-            lines.append(f"- 🟣 **{result.n_heterogeneous_nuclei} noyaux chromatine hétérogène**")
-
-    if len(lines) == 2:  # Seulement le titre
-        return "Aucune alerte"
-
-    return "\n".join(lines)
+    return (
+        output.overlay, output.contours, metrics_text, alerts_text,
+        output.chart, output.debug, output.anomaly_overlay,
+        output.phase3_overlay, output.phase3_debug
+    )
 
 
 def export_json() -> str:
-    """Exporte les résultats en JSON."""
-    if state.current_result is None:
-        return '{"error": "Aucune analyse disponible"}'
+    """Exporte les résultats en JSON (wrapper UI)."""
+    return export_json_core()
 
-    return state.current_result.to_json(indent=2)
-
-
-# ==============================================================================
-# FONCTIONS EXPORT PHASE 4
-# ==============================================================================
 
 def export_pdf_handler() -> Optional[str]:
-    """Génère et retourne le chemin du rapport PDF."""
-    if state.current_result is None:
-        return None
-
-    try:
-        result = state.current_result
-
-        # Créer l'overlay pour le PDF
-        overlay = create_segmentation_overlay(
-            result.image_rgb,
-            result.instance_map,
-            result.type_map,
-            alpha=0.4,
-        )
-
-        # Créer les métadonnées d'audit
-        audit = create_audit_metadata(result)
-
-        # Générer le PDF en mémoire
-        pdf_content = create_report_pdf(result, overlay, audit)
-
-        # Sauvegarder dans un fichier temporaire
-        temp_dir = tempfile.gettempdir()
-        pdf_path = os.path.join(temp_dir, f"cellvit_report_{audit.analysis_id}.pdf")
-
-        with open(pdf_path, 'wb') as f:
-            f.write(pdf_content)
-
-        logger.info(f"PDF exported to {pdf_path}")
-        return pdf_path
-
-    except Exception as e:
-        logger.error(f"PDF export error: {e}")
-        return None
+    """Génère et retourne le chemin du rapport PDF (wrapper UI)."""
+    return export_pdf_core()
 
 
 def export_nuclei_csv_handler() -> Optional[str]:
-    """Génère et retourne le chemin du CSV des noyaux."""
-    if state.current_result is None:
-        return None
-
-    try:
-        result = state.current_result
-        audit = create_audit_metadata(result)
-
-        # Générer le CSV
-        csv_content = export_nuclei_csv(result)
-
-        # Sauvegarder dans un fichier temporaire
-        temp_dir = tempfile.gettempdir()
-        csv_path = os.path.join(temp_dir, f"cellvit_nuclei_{audit.analysis_id}.csv")
-
-        with open(csv_path, 'w') as f:
-            f.write(csv_content)
-
-        logger.info(f"Nuclei CSV exported to {csv_path}")
-        return csv_path
-
-    except Exception as e:
-        logger.error(f"Nuclei CSV export error: {e}")
-        return None
+    """Génère et retourne le chemin du CSV des noyaux (wrapper UI)."""
+    return export_nuclei_csv_core()
 
 
 def export_summary_csv_handler() -> Optional[str]:
-    """Génère et retourne le chemin du CSV résumé."""
-    if state.current_result is None:
-        return None
-
-    try:
-        result = state.current_result
-        audit = create_audit_metadata(result)
-
-        # Générer le CSV
-        csv_content = export_summary_csv(result, audit)
-
-        # Sauvegarder dans un fichier temporaire
-        temp_dir = tempfile.gettempdir()
-        csv_path = os.path.join(temp_dir, f"cellvit_summary_{audit.analysis_id}.csv")
-
-        with open(csv_path, 'w') as f:
-            f.write(csv_content)
-
-        logger.info(f"Summary CSV exported to {csv_path}")
-        return csv_path
-
-    except Exception as e:
-        logger.error(f"Summary CSV export error: {e}")
-        return None
+    """Génère et retourne le chemin du CSV résumé (wrapper UI)."""
+    return export_summary_csv_core()
 
 
 def on_image_click(evt: gr.SelectData) -> str:
@@ -589,18 +277,9 @@ def update_overlay(
 
 
 def change_organ(organ: str) -> str:
-    """Change l'organe du modèle."""
-    if state.engine is None:
-        return "Moteur non chargé"
-
-    try:
-        state.engine.change_organ(organ)
-        organ_info = get_model_for_organ(organ)
-        model_type = "dédié ★" if organ_info["is_dedicated"] else f"famille ({organ_info['family']})"
-        params = state.engine.watershed_params
-        return f"Organe: {organ} — Modèle {model_type}\nParams: {params}"
-    except Exception as e:
-        return f"Erreur: {e}"
+    """Change l'organe du modèle (wrapper UI)."""
+    result = change_organ_core(organ)
+    return format_organ_change_rnd(result)
 
 
 # ==============================================================================
@@ -612,22 +291,12 @@ def create_ui():
 
     with gr.Blocks(
         title="CellViT-Optimus R&D Cockpit",
-        theme=gr.themes.Soft(),
-        css="""
-        .disclaimer {
-            background-color: #fff3cd;
-            border: 1px solid #ffc107;
-            padding: 10px;
-            border-radius: 5px;
-            margin-bottom: 10px;
-        }
-        """
     ) as app:
 
         # Header
         gr.Markdown("# CellViT-Optimus — R&D Cockpit")
         gr.HTML("""
-        <div class="disclaimer">
+        <div style="background-color: #fff3cd; border: 1px solid #ffc107; padding: 10px; border-radius: 5px; margin-bottom: 10px;">
             <b>Document d'aide à la décision — Validation médicale requise</b><br>
             Ceci est un outil R&D pour l'exploration et la validation du moteur IA.
         </div>
@@ -755,6 +424,25 @@ def create_ui():
             - **Voronoï**: Tessellation pour analyse topologique des voisinages
             """)
 
+        # ================================================================
+        # PANNEAU ZOOM (images agrandies)
+        # ================================================================
+        with gr.Accordion("🔍 Zoom (vue agrandie)", open=False):
+            gr.Markdown("*Images affichées en taille réelle (224×224 → 448×448 pixels)*")
+            with gr.Row():
+                zoom_input = gr.Image(
+                    label="Image Source (zoom)",
+                    type="numpy",
+                    height=450,
+                    interactive=False,
+                )
+                zoom_output = gr.Image(
+                    label="Segmentation (zoom)",
+                    type="numpy",
+                    height=450,
+                    interactive=False,
+                )
+
         # Export Phase 4
         with gr.Accordion("Export Résultats (Phase 4)", open=False):
             gr.Markdown("""
@@ -841,6 +529,18 @@ def create_ui():
         output_image.select(
             fn=on_image_click,
             outputs=[nucleus_info],
+        )
+
+        # Synchroniser le zoom avec les images principales
+        input_image.change(
+            fn=lambda img: img,
+            inputs=[input_image],
+            outputs=[zoom_input],
+        )
+        output_image.change(
+            fn=lambda img: img,
+            inputs=[output_image],
+            outputs=[zoom_output],
         )
 
         # Update overlays (Phase 2 + Phase 3)

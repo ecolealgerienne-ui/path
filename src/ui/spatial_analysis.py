@@ -544,8 +544,13 @@ def detect_mitosis_advanced(
         elif circ < 0.65:
             score += 0.2
 
-        # 2. Taille moyenne-grande (mitoses ne sont pas micro)
-        if 0.7 * mean_area <= area <= 2.0 * mean_area:
+        # 2. Taille compatible avec mitose (seuils ABSOLUS en µm²)
+        # Note: On utilise des seuils absolus car mean_area peut être
+        # faussée par des fusions massives (ex: 176 µm² au lieu de 50)
+        # Mitose typique: 30-150 µm² (source: littérature histopath)
+        MITOSIS_MIN_AREA_UM2 = 25.0
+        MITOSIS_MAX_AREA_UM2 = 180.0
+        if MITOSIS_MIN_AREA_UM2 <= area <= MITOSIS_MAX_AREA_UM2:
             score += 0.2
 
         # 3. Intensité plus foncée (chromatine condensée)

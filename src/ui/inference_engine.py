@@ -179,39 +179,39 @@ class AnalysisResult:
                 "watershed_params": self.watershed_params,
             },
             "summary": {
-                "n_nuclei": self.n_nuclei,
-                "n_fusions": self.n_fusions,
-                "n_over_segmentations": self.n_over_seg,
+                "n_nuclei": int(self.n_nuclei),
+                "n_fusions": int(self.n_fusions),
+                "n_over_segmentations": int(self.n_over_seg),
                 # Phase 3
-                "pleomorphism_score": self.pleomorphism_score,
-                "n_hotspots": self.n_hotspots,
-                "n_mitosis_candidates": self.n_mitosis_candidates,
+                "pleomorphism_score": int(self.pleomorphism_score) if self.pleomorphism_score else 0,
+                "n_hotspots": int(self.n_hotspots) if self.n_hotspots else 0,
+                "n_mitosis_candidates": int(self.n_mitosis_candidates) if self.n_mitosis_candidates else 0,
             },
             "nuclei": [],
         }
 
         for n in self.nucleus_info:
             result["nuclei"].append({
-                "id": n.id,
-                "centroid": list(n.centroid),
+                "id": int(n.id),
+                "centroid": [float(c) for c in n.centroid],
                 "area_um2": float(n.area_um2),
                 "perimeter_um": float(n.perimeter_um),
                 "circularity": float(n.circularity),
                 "cell_type": n.cell_type,
-                "type_idx": n.type_idx,
+                "type_idx": int(n.type_idx),
                 "confidence": float(n.confidence),
-                "is_uncertain": n.is_uncertain,
-                "is_mitotic": n.is_mitotic,
-                "is_potential_fusion": n.is_potential_fusion,
-                "is_potential_over_seg": n.is_potential_over_seg,
+                "is_uncertain": bool(n.is_uncertain),
+                "is_mitotic": bool(n.is_mitotic),
+                "is_potential_fusion": bool(n.is_potential_fusion),
+                "is_potential_over_seg": bool(n.is_potential_over_seg),
                 "anomaly_reason": n.anomaly_reason,
                 # Phase 3
                 "chromatin_entropy": float(n.chromatin_entropy),
-                "chromatin_heterogeneous": n.chromatin_heterogeneous,
-                "is_mitosis_candidate": n.is_mitosis_candidate,
+                "chromatin_heterogeneous": bool(n.chromatin_heterogeneous),
+                "is_mitosis_candidate": bool(n.is_mitosis_candidate),
                 "mitosis_score": float(n.mitosis_score),
-                "n_neighbors": n.n_neighbors,
-                "is_in_hotspot": n.is_in_hotspot,
+                "n_neighbors": int(n.n_neighbors) if n.n_neighbors else 0,
+                "is_in_hotspot": bool(n.is_in_hotspot),
             })
 
         if self.morphometry:
@@ -232,7 +232,7 @@ class AnalysisResult:
             sa = self.spatial_analysis
             result["spatial_analysis"] = {
                 "pleomorphism": {
-                    "score": sa.pleomorphism.score,
+                    "score": int(sa.pleomorphism.score),
                     "area_cv": float(sa.pleomorphism.area_cv),
                     "circularity_cv": float(sa.pleomorphism.circularity_cv),
                     "size_range_ratio": float(sa.pleomorphism.size_range_ratio),
@@ -241,18 +241,18 @@ class AnalysisResult:
                 "chromatin": {
                     "mean_entropy": float(sa.mean_entropy),
                     "n_heterogeneous": len(sa.heterogeneous_nuclei_ids),
-                    "heterogeneous_ids": sa.heterogeneous_nuclei_ids,
+                    "heterogeneous_ids": [int(i) for i in sa.heterogeneous_nuclei_ids],
                 },
                 "topology": {
                     "mean_neighbors": float(sa.mean_neighbors),
                 },
                 "clustering": {
-                    "n_hotspots": sa.n_hotspots,
-                    "hotspot_ids": sa.hotspot_ids,
+                    "n_hotspots": int(sa.n_hotspots),
+                    "hotspot_ids": [int(i) for i in sa.hotspot_ids],
                 },
                 "mitosis": {
                     "n_candidates": len(sa.mitosis_candidates),
-                    "candidate_ids": sa.mitosis_candidates,
+                    "candidate_ids": [int(i) for i in sa.mitosis_candidates],
                     "scores": {str(k): float(v) for k, v in sa.mitosis_scores.items()},
                 },
             }
@@ -335,10 +335,9 @@ class CellVitEngine:
         self._organ_info = get_model_for_organ(organ_name)
         self.watershed_params = self._organ_info["watershed_params"]
 
-        logger.info(
-            f"Organ set to '{organ_name}' → "
-            f"{'dedicated model' if self._organ_info['is_dedicated'] else f'family model ({self._organ_info[\"family\"]})'}"
-        )
+        family_name = self._organ_info["family"]
+        model_desc = "dedicated model" if self._organ_info["is_dedicated"] else f"family model ({family_name})"
+        logger.info(f"Organ set to '{organ_name}' → {model_desc}")
 
     @property
     def organ(self) -> str:
@@ -395,7 +394,6 @@ class CellVitEngine:
         (source: scripts/training/train_hovernet_family_v13_smart_crops.py).
         """
         from src.models.hovernet_decoder import HoVerNetDecoder
-        from src.models.hovernet_decoder_hybrid import HoVerNetDecoderHybrid
 
         checkpoint = torch.load(checkpoint_path, map_location=self.device, weights_only=False)
         state_dict = checkpoint.get("model_state_dict", checkpoint)
@@ -414,18 +412,14 @@ class CellVitEngine:
 
         logger.info(f"  Checkpoint flags: use_hybrid={use_hybrid}, use_fpn_chimique={use_fpn_chimique}, use_h_alpha={use_h_alpha}")
 
-        if use_hybrid:
-            self.hovernet = HoVerNetDecoderHybrid(
-                embed_dim=1536,
-                n_classes=5,
-                use_fpn_chimique=use_fpn_chimique,
-                use_h_alpha=use_h_alpha
-            )
-        else:
-            self.hovernet = HoVerNetDecoder(
-                embed_dim=1536,
-                n_classes=5,
-            )
+        # Utiliser HoVerNetDecoder avec les flags appropriés
+        self.hovernet = HoVerNetDecoder(
+            embed_dim=1536,
+            n_classes=5,
+            use_hybrid=use_hybrid,
+            use_fpn_chimique=use_fpn_chimique,
+            use_h_alpha=use_h_alpha
+        )
 
         # Nettoyer les clés (module. prefix)
         new_state_dict = {}
@@ -530,6 +524,8 @@ class CellVitEngine:
         # Prédiction organe (optionnel)
         organ_name = "Unknown"
         organ_confidence = 0.0
+        predicted_family = self.family  # Par défaut: famille du modèle chargé
+
         if self.organ_head is not None:
             cls_token = features[:, 0, :]  # (1, 1536)
             organ_logits = self.organ_head(cls_token)
@@ -546,6 +542,16 @@ class CellVitEngine:
             ]
             if organ_idx < len(ORGAN_NAMES):
                 organ_name = ORGAN_NAMES[organ_idx]
+                # CRITIQUE: Utiliser la famille et les watershed params de l'organe PRÉDIT
+                try:
+                    predicted_family = get_family_for_organ(organ_name)
+                    # CRITIQUE: Mettre à jour les params watershed pour l'organe prédit
+                    # Cela permet d'appliquer les overrides organ-specific (ex: Breast min_distance=2)
+                    organ_info = get_model_for_organ(organ_name)
+                    params = {**organ_info["watershed_params"], **(watershed_params or {})}
+                    logger.debug(f"Watershed params updated for predicted organ {organ_name}: {params}")
+                except ValueError:
+                    predicted_family = self.family  # Fallback si organe inconnu
 
         # Inférence HoVer-Net (utilise run_inference de src.evaluation)
         # images_rgb passé uniquement si modèle hybrid (FPN Chimique)
@@ -642,6 +648,23 @@ class CellVitEngine:
                 # Enrichir nucleus_info avec données Phase 3
                 self._enrich_nucleus_info_phase3(nucleus_info, spatial_result)
 
+                # ===================================================
+                # FINALISER MORPHOMETRY AVEC PHASE 3 (CRITIQUE)
+                # ===================================================
+                # Phase 3 utilise des seuils absolus (25-180 µm²) plus fiables
+                # que les critères morphométriques internes.
+                #
+                # L'index mitotique reste None car:
+                # - Patch 224×224 à 0.5 MPP = 0.0125 mm² (seulement 6.4% d'un HPF)
+                # - Seuil minimum: 0.1 mm² (sanity check dans morphometry.py)
+                # - Affichage: "X candidats (surface insuffisante pour index/10 HPF)"
+                # ===================================================
+                if morphometry is not None:
+                    # Phase 3 = source autoritative pour les candidats mitose
+                    morphometry.mitotic_candidates = n_mitosis_candidates
+                    morphometry.mitotic_nuclei_ids = mitosis_candidate_ids
+                    # Note: mitotic_index_per_10hpf = None (sanity check morphometry.py)
+
                 logger.info(
                     f"  Phase 3: pleomorphism={pleomorphism_score}, "
                     f"hotspots={spatial_result.n_hotspots}, "
@@ -662,7 +685,7 @@ class CellVitEngine:
             uncertainty_map=uncertainty_map,
             organ_name=organ_name,
             organ_confidence=organ_confidence,
-            family=self.family,
+            family=predicted_family,  # Famille de l'organe PRÉDIT (pas du modèle chargé)
             watershed_params=params,
             inference_time_ms=inference_time,
             # Phase 2: Anomalies

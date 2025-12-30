@@ -7,6 +7,9 @@ Masque les détails techniques et présente des métriques interprétées.
 
 Note: Document d'aide à la décision — Validation médicale requise.
 
+Architecture: Utilise src.ui.core pour la logique métier partagée
+et src.ui.formatters pour l'affichage clinique (simplifié).
+
 Usage:
     python -m src.ui.app_pathologist
     # ou
@@ -31,138 +34,54 @@ PROJECT_ROOT = Path(__file__).parent.parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-# Imports locaux
-from src.ui.inference_engine import (
-    CellVitEngine,
-    AnalysisResult,
-    ORGAN_CHOICES,
+# Imports: Logique partagée (core)
+from src.ui.core import (
+    state,
+    load_engine_core,
+    change_organ_core,
+    export_pdf_core,
 )
-from src.ui.organ_config import (
-    ORGANS,
-    get_model_for_organ,
-    organ_has_dedicated_model,
+
+# Imports: Formatage clinique (simplifié)
+from src.ui.formatters import (
+    format_metrics_clinical,
+    format_alerts_clinical,
+    format_nucleus_info_clinical,
+    format_load_status_clinical,
+    format_organ_change_clinical,
+    format_identification_clinical,
+    format_confidence_badge,
 )
+
+# Imports: Moteur et configuration
+from src.ui.inference_engine import ORGAN_CHOICES
+from src.ui.organ_config import ORGANS, get_model_for_organ
+
+# Imports: Visualisations
 from src.ui.visualizations import (
     create_segmentation_overlay,
     create_contour_overlay,
     create_type_distribution_chart,
     create_hotspot_overlay,
     create_mitosis_overlay,
-    TYPE_NAMES,
 )
-from src.ui.export import (
-    create_audit_metadata,
-    create_report_pdf,
-)
-# FAMILIES imported via inference_engine.MODEL_CHOICES
-import tempfile
-import os
 
 
 # ==============================================================================
-# ÉTAT GLOBAL
+# WRAPPERS UI (utilisent core + formatters cliniques)
 # ==============================================================================
-
-class AppState:
-    """État global de l'application."""
-    engine: Optional[CellVitEngine] = None
-    current_result: Optional[AnalysisResult] = None
-    is_loading: bool = False
-
-
-state = AppState()
-
-
-# ==============================================================================
-# FONCTIONS CLINIQUES
-# ==============================================================================
-
-def compute_confidence_level(result: AnalysisResult) -> Tuple[str, str]:
-    """
-    Calcule le niveau de confiance global de l'IA.
-
-    Returns:
-        (niveau, couleur) - ex: ("Élevée", "green")
-    """
-    if result.uncertainty_map is None:
-        return "Non disponible", "gray"
-
-    # Moyenne d'incertitude
-    mean_uncertainty = result.uncertainty_map.mean()
-
-    # Confiance organe
-    organ_conf = result.organ_confidence
-
-    # Score combiné
-    if mean_uncertainty < 0.3 and organ_conf > 0.9:
-        return "Élevée", "green"
-    elif mean_uncertainty < 0.5 and organ_conf > 0.7:
-        return "Modérée", "orange"
-    else:
-        return "Faible", "red"
-
-
-def interpret_density(density: float) -> str:
-    """Interprète la densité en langage clinique."""
-    if density < 1000:
-        return "Faible"
-    elif density < 2000:
-        return "Normale"
-    elif density < 3500:
-        return "Élevée"
-    else:
-        return "Très élevée"
-
-
-def interpret_pleomorphism(score: int) -> str:
-    """Interprète le score de pléomorphisme."""
-    interpretations = {
-        1: "Faible (compatible grade I)",
-        2: "Modéré (compatible grade II)",
-        3: "Sévère (compatible grade III)",
-    }
-    return interpretations.get(score, "Non évalué")
-
-
-def interpret_mitotic_index(index: float) -> str:
-    """Interprète l'index mitotique."""
-    if index < 3:
-        return f"{index:.0f}/10 HPF (Faible)"
-    elif index < 8:
-        return f"{index:.0f}/10 HPF (Modéré)"
-    else:
-        return f"{index:.0f}/10 HPF (Élevé)"
-
 
 def load_engine(organ: str, device: str = "cuda") -> str:
-    """Charge le moteur d'inférence."""
-    try:
-        state.is_loading = True
-        organ_info = get_model_for_organ(organ)
-        logger.info(f"Loading engine for organ '{organ}' on {device}...")
-
-        state.engine = CellVitEngine(
-            device=device,
-            organ=organ,
-            load_backbone=True,
-            load_organ_head=True,
-        )
-
-        state.is_loading = False
-        model_type = "modèle dédié" if organ_info["is_dedicated"] else f"famille {organ_info['family']}"
-        return f"Prêt : {organ} ({model_type})"
-
-    except Exception as e:
-        state.is_loading = False
-        logger.error(f"Error loading engine: {e}")
-        return f"Erreur : {e}"
+    """Charge le moteur d'inférence (wrapper UI)."""
+    result = load_engine_core(organ, device)
+    return format_load_status_clinical(result)
 
 
 def analyze_image(
     image: np.ndarray,
 ) -> Tuple[np.ndarray, str, str, str, np.ndarray, str]:
     """
-    Analyse une image et retourne les visualisations cliniques.
+    Analyse une image et retourne les visualisations cliniques (wrapper UI).
 
     Returns:
         (overlay, identification, metrics, alerts, chart, confidence_html)
@@ -185,7 +104,7 @@ def analyze_image(
         # Paramètres watershed automatiques (pas de sliders exposés)
         params = state.engine.watershed_params
 
-        # Analyse
+        # Analyse via le moteur
         result = state.engine.analyze(
             image,
             watershed_params=params,
@@ -221,13 +140,13 @@ def analyze_image(
                 result.spatial_analysis.mitosis_scores
             )
 
-        # Identification
-        identification = format_identification(result)
+        # Formatage clinique
+        organ = state.engine.organ
+        family = state.engine.family
+        is_dedicated = state.engine.is_dedicated_model
 
-        # Métriques cliniques
-        metrics = format_metrics_clinical(result)
-
-        # Alertes
+        identification = format_identification_clinical(result, organ, family, is_dedicated)
+        metrics = format_metrics_clinical(result, organ, family, is_dedicated)
         alerts = format_alerts_clinical(result)
 
         # Chart distribution
@@ -246,121 +165,6 @@ def analyze_image(
         import traceback
         traceback.print_exc()
         return empty, f"Erreur : {e}", "", "", empty, ""
-
-
-def format_identification(result: AnalysisResult) -> str:
-    """Formate l'identification de l'organe."""
-    # Afficher le modèle utilisé
-    if state.engine and state.engine.is_dedicated_model:
-        model_line = f"**Modèle:** {state.engine.organ} ★ (dédié)"
-    else:
-        organ_name = state.engine.organ if state.engine else "N/A"
-        family_name = state.engine.family if state.engine else "N/A"
-        model_line = f"**Modèle:** {family_name} (famille)\n*Organe: {organ_name}*"
-
-    return f"""### {result.organ_name}
-**Confiance IA:** {result.organ_confidence:.0%}
-{model_line}"""
-
-
-def format_metrics_clinical(result: AnalysisResult) -> str:
-    """Formate les métriques en langage clinique (pas de valeurs brutes techniques)."""
-    lines = [
-        f"**Noyaux détectés:** {result.n_nuclei}",
-        "",
-    ]
-
-    if result.morphometry:
-        m = result.morphometry
-
-        # Densité interprétée
-        density_label = interpret_density(m.nuclei_per_mm2)
-        lines.append(f"**Densité cellulaire:** {density_label} ({m.nuclei_per_mm2:.0f}/mm²)")
-
-        # Index mitotique interprété
-        mitotic_label = interpret_mitotic_index(m.mitotic_index_per_10hpf)
-        lines.append(f"**Index mitotique:** {mitotic_label}")
-
-        # Ratio néoplasique
-        if m.neoplastic_ratio > 0.5:
-            lines.append(f"**Ratio néoplasique:** Élevé ({m.neoplastic_ratio:.0%})")
-        elif m.neoplastic_ratio > 0.2:
-            lines.append(f"**Ratio néoplasique:** Modéré ({m.neoplastic_ratio:.0%})")
-        else:
-            lines.append(f"**Ratio néoplasique:** Faible ({m.neoplastic_ratio:.0%})")
-
-        # TILs
-        lines.append(f"**TILs:** {m.til_status}")
-
-    # Phase 3: Pléomorphisme (interprété)
-    if result.spatial_analysis:
-        pleo_label = interpret_pleomorphism(result.pleomorphism_score)
-        lines.append("")
-        lines.append(f"**Pléomorphisme:** {pleo_label}")
-
-    return "\n".join(lines)
-
-
-def format_alerts_clinical(result: AnalysisResult) -> str:
-    """Formate les alertes en langage clinique."""
-    alerts = []
-
-    # Phase 3: Alertes spatiales
-    if result.spatial_analysis:
-        if result.pleomorphism_score >= 3:
-            alerts.append("🔴 **Anisocaryose sévère** — forte variation taille/forme nucléaire")
-        elif result.pleomorphism_score == 2:
-            alerts.append("🟡 **Anisocaryose modérée** — variation notable")
-
-        if result.n_mitosis_candidates > 3:
-            alerts.append(f"🔴 **Activité mitotique élevée** — {result.n_mitosis_candidates} figures suspectes")
-        elif result.n_mitosis_candidates > 0:
-            alerts.append(f"🟡 **Mitoses présentes** — {result.n_mitosis_candidates} figure(s)")
-
-        if result.n_hotspots > 0:
-            alerts.append(f"🟠 **Zones hypercellulaires** — {result.n_hotspots} cluster(s) identifié(s)")
-
-    # Morphométrie
-    if result.morphometry:
-        m = result.morphometry
-        if m.neoplastic_ratio > 0.7:
-            alerts.append("🔴 **Prédominance néoplasique** — ratio > 70%")
-
-        if m.mitotic_index_per_10hpf > 10:
-            alerts.append("🔴 **Index mitotique très élevé**")
-
-    if not alerts:
-        return "✅ Aucune alerte particulière"
-
-    return "\n\n".join(alerts)
-
-
-def format_confidence_badge(result: AnalysisResult) -> str:
-    """Crée le badge de confiance HTML."""
-    level, color = compute_confidence_level(result)
-
-    color_map = {
-        "green": "#28a745",
-        "orange": "#fd7e14",
-        "red": "#dc3545",
-        "gray": "#6c757d",
-    }
-
-    bg_color = color_map.get(color, "#6c757d")
-
-    return f"""
-    <div style="
-        display: inline-block;
-        background-color: {bg_color};
-        color: white;
-        padding: 8px 16px;
-        border-radius: 20px;
-        font-weight: bold;
-        text-align: center;
-    ">
-        Confiance IA : {level}
-    </div>
-    """
 
 
 def on_image_click(evt: gr.SelectData) -> str:
@@ -434,54 +238,14 @@ def update_overlay(
 
 
 def export_pdf_handler() -> Optional[str]:
-    """Génère et retourne le chemin du rapport PDF."""
-    if state.current_result is None:
-        return None
-
-    try:
-        result = state.current_result
-
-        # Créer l'overlay pour le PDF
-        overlay = create_segmentation_overlay(
-            result.image_rgb,
-            result.instance_map,
-            result.type_map,
-            alpha=0.4,
-        )
-
-        # Créer les métadonnées d'audit
-        audit = create_audit_metadata(result)
-
-        # Générer le PDF en mémoire
-        pdf_content = create_report_pdf(result, overlay, audit)
-
-        # Sauvegarder dans un fichier temporaire
-        temp_dir = tempfile.gettempdir()
-        pdf_path = os.path.join(temp_dir, f"rapport_analyse_{audit.analysis_id}.pdf")
-
-        with open(pdf_path, 'wb') as f:
-            f.write(pdf_content)
-
-        logger.info(f"PDF exported to {pdf_path}")
-        return pdf_path
-
-    except Exception as e:
-        logger.error(f"PDF export error: {e}")
-        return None
+    """Génère et retourne le chemin du rapport PDF (wrapper UI)."""
+    return export_pdf_core()
 
 
 def change_organ(organ: str) -> str:
-    """Change l'organe du modèle."""
-    if state.engine is None:
-        return "Moteur non chargé"
-
-    try:
-        state.engine.change_organ(organ)
-        organ_info = get_model_for_organ(organ)
-        model_type = "dédié ★" if organ_info["is_dedicated"] else f"famille ({organ_info['family']})"
-        return f"Organe: {organ} — {model_type}"
-    except Exception as e:
-        return f"Erreur: {e}"
+    """Change l'organe du modèle (wrapper UI)."""
+    result = change_organ_core(organ)
+    return format_organ_change_clinical(result)
 
 
 # ==============================================================================
@@ -493,29 +257,12 @@ def create_ui():
 
     with gr.Blocks(
         title="CellViT-Optimus — Analyse Histopathologique",
-        theme=gr.themes.Soft(),
-        css="""
-        .disclaimer {
-            background-color: #fff3cd;
-            border: 1px solid #ffc107;
-            padding: 12px;
-            border-radius: 8px;
-            margin-bottom: 15px;
-            text-align: center;
-        }
-        .clinical-alert {
-            background-color: #f8d7da;
-            border: 1px solid #f5c6cb;
-            padding: 10px;
-            border-radius: 5px;
-        }
-        """
     ) as app:
 
         # Header
         gr.Markdown("# CellViT-Optimus — Analyse Histopathologique")
         gr.HTML("""
-        <div class="disclaimer">
+        <div style="background-color: #fff3cd; border: 1px solid #ffc107; padding: 12px; border-radius: 8px; margin-bottom: 15px; text-align: center;">
             <b>Document d'aide à la décision — Validation médicale requise</b><br>
             Les résultats présentés sont des suggestions algorithmiques et doivent être validés par un pathologiste.
         </div>

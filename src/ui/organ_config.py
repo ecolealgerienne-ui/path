@@ -64,13 +64,13 @@ ORGAN_TO_FAMILY = {
 # =============================================================================
 # ORGANES AVEC MODÈLE DÉDIÉ
 # =============================================================================
-# Ajouter ici les organes pour lesquels un modèle spécifique a été entraîné.
-# Les autres utiliseront le modèle de leur famille.
+# STRATÉGIE V13: Toujours utiliser les modèles par FAMILLE.
+# Les modèles organ-specific ont été abandonnés (voir CLAUDE.md).
+#
+# Note: Garder ce set vide. Si un organe est ajouté ici, il DOIT avoir
+# un checkpoint correspondant dans ORGAN_CHECKPOINTS.
 
-ORGANS_WITH_DEDICATED_MODEL = {
-    "Breast",
-    "Colon",
-}
+ORGANS_WITH_DEDICATED_MODEL = set()  # Vide = tous utilisent le modèle famille
 
 
 # =============================================================================
@@ -88,7 +88,7 @@ FAMILY_CHECKPOINTS = {
 }
 
 ORGAN_CHECKPOINTS = {
-    "Breast": f"{CHECKPOINT_BASE_PATH}/hovernet_Breast_v13_smart_crops_hybrid_fpn_best.pth",
+    "Breast": f"{CHECKPOINT_BASE_PATH}/hovernet_breast_v13_smart_crops_hybrid_fpn_best.pth",
     "Colon": f"{CHECKPOINT_BASE_PATH}/hovernet_Colon_v13_smart_crops_hybrid_fpn_best.pth",
 }
 
@@ -98,18 +98,26 @@ ORGAN_CHECKPOINTS = {
 # =============================================================================
 # Source: CLAUDE.md - Paramètres optimisés par famille
 
+# Source: CLAUDE.md - Paramètres Watershed optimisés par famille (SANS normalisation)
 FAMILY_WATERSHED_PARAMS = {
-    "respiratory": {"np_threshold": 0.40, "min_size": 30, "beta": 0.50, "min_distance": 5},
-    "urologic": {"np_threshold": 0.45, "min_size": 30, "beta": 0.50, "min_distance": 2},
-    "epidermal": {"np_threshold": 0.45, "min_size": 20, "beta": 1.00, "min_distance": 3},
-    "digestive": {"np_threshold": 0.45, "min_size": 60, "beta": 2.00, "min_distance": 5},
-    "glandular": {"np_threshold": 0.40, "min_size": 30, "beta": 0.50, "min_distance": 5},
+    "respiratory": {"np_threshold": 0.40, "min_size": 30, "beta": 0.50, "min_distance": 5},  # AJI 0.6872
+    "urologic": {"np_threshold": 0.45, "min_size": 30, "beta": 0.50, "min_distance": 2},     # AJI 0.6743
+    "glandular": {"np_threshold": 0.40, "min_size": 50, "beta": 0.50, "min_distance": 3},    # AJI 0.6566
+    "epidermal": {"np_threshold": 0.45, "min_size": 20, "beta": 1.00, "min_distance": 3},    # AJI 0.6203
+    "digestive": {"np_threshold": 0.45, "min_size": 60, "beta": 2.00, "min_distance": 5},    # AJI 0.6160
 }
 
 # Override par organe (optionnel - si vide, utilise les params de la famille)
 ORGAN_WATERSHED_PARAMS = {
-    # Exemple: si Breast nécessite des params différents de glandular
-    # "Breast": {"np_threshold": 0.42, "min_size": 25, "beta": 0.45, "min_distance": 4},
+    # Breast: paramètres ajustés après analyse expert (run 3)
+    # Diagnostic: beta=0.75 causait encore sous-segmentation
+    # - np_threshold=0.50: affine contours, décolle noyaux adjacents
+    # - min_distance=2: évite fusions sur noyaux pléomorphes (validé)
+    # - beta=0.50: évite sous-segmentation (0.75/1.5 trop agressifs)
+    "Breast": {"np_threshold": 0.50, "min_size": 30, "beta": 0.50, "min_distance": 2},
+
+    # Colon: paramètres optimisés (source: tests organ-specific)
+    # Architecture variable → params de la famille digestive
 }
 
 

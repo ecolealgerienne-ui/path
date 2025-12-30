@@ -1,8 +1,8 @@
 # CellViT-Optimus R&D Cockpit
 
-> **Version:** POC v4.1 (Sélection par Organe)
+> **Version:** POC v4.2 (Corrections Pipeline)
 > **Date:** 2025-12-30
-> **Status:** Fonctionnel — Phase 4 complète + Sélection par organe
+> **Status:** Fonctionnel — Pipeline aligné avec évaluation
 
 ---
 
@@ -116,63 +116,121 @@ if h != 224 or w != 224:
 
 ## Architecture Technique
 
-### Pipeline d'Inférence
+### Pipeline d'Inférence (Détail)
+
+> **Alignement garanti avec `test_v13_smart_crops_aji.py`** — Même softmax, mêmes paramètres watershed.
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
-│                    IMAGE RGB (224×224, uint8)                           │
+│  ÉTAPE 1: PRÉTRAITEMENT                                                 │
+│  inference_engine.py:456-480                                            │
+│  ─────────────────────────────────────────────────────────────────────  │
+│  • Input: Image RGB 224×224 (uint8)                                     │
+│  • Normalisation H-optimus-0:                                           │
+│    - mean = (0.707223, 0.578729, 0.703617)                              │
+│    - std  = (0.211883, 0.230117, 0.177517)                              │
+│  • Output: tensor (1, 3, 224, 224) float32                              │
 └─────────────────────────────────────────────────────────────────────────┘
-                               │
-          ┌────────────────────┴────────────────────┐
-          ▼                                         ▼
-┌──────────────────────────┐         ┌──────────────────────────────────┐
-│ preprocess_image()       │         │ ToTensor() → [0,1]               │
-│ src.preprocessing        │         │ images_rgb pour FPN Chimique     │
-│ (ToPILImage+Normalize)   │         │                                  │
-└──────────────────────────┘         └──────────────────────────────────┘
-          │                                         │
-          ▼                                         │
-┌──────────────────────────┐                       │
-│ H-optimus-0              │                       │
-│ forward_features()       │                       │
-│ → (1, 261, 1536)         │                       │
-└──────────────────────────┘                       │
-          │                                         │
-          ├──► validate_features()                  │
-          │    CLS std ∈ [0.70, 0.90]              │
-          │                                         │
-          ▼                                         ▼
+                                    │
+                                    ▼
 ┌─────────────────────────────────────────────────────────────────────────┐
-│                    HoVerNetDecoderHybrid                                │
-│  • use_hybrid=True (FPN multi-échelle)                                  │
-│  • use_fpn_chimique=True (H-channel injection)                          │
-│  • use_h_alpha=False (optionnel)                                        │
-│                                                                         │
-│  Forward: model(features, images_rgb=images_rgb)                        │
+│  ÉTAPE 2: EXTRACTION FEATURES (H-OPTIMUS-0)                             │
+│  inference_engine.py:514-522                                            │
+│  ─────────────────────────────────────────────────────────────────────  │
+│  • Backbone: ViT-Giant/14 (1.1B params, GELÉ)                           │
+│  • Output: (1, 261, 1536)                                               │
+│    ├── [:, 0, :]      → CLS token (1536)     → OrganHead                │
+│    ├── [:, 1:5, :]    → 4 Register tokens    → IGNORÉS                  │
+│    └── [:, 5:261, :]  → 256 Patch tokens     → HoVer-Net                │
+│  • Validation: CLS std ∈ [0.70, 0.90]                                   │
 └─────────────────────────────────────────────────────────────────────────┘
-                               │
-          ┌────────────────────┴────────────────────┐
-          ▼                                         ▼
-┌──────────────────────────┐         ┌──────────────────────────────────┐
-│ NP Output (2, H, W)      │         │ HV Output (2, H, W)              │
-│ softmax(dim=1)[1]        │         │ Gradients [-1, 1]                │
-│ → np_pred [0, 1]         │         │                                  │
-└──────────────────────────┘         └──────────────────────────────────┘
-                               │
-                               ▼
+                                    │
+                    ┌───────────────┴───────────────┐
+                    ▼                               ▼
+┌──────────────────────────────────┐    ┌──────────────────────────────────────────┐
+│  ÉTAPE 3a: ORGANHEAD             │    │  ÉTAPE 3b: HOVERNET DECODER              │
+│  inference_engine.py:529-554     │    │  inference_engine.py:556-567             │
+│  ────────────────────────        │    │  ──────────────────────────────────────  │
+│  • Input: CLS token (1536)       │    │  • Input: 256 Patch tokens + RGB image   │
+│  • MLP: 1536→512→19              │    │  • FPN Chimique + H-channel injection    │
+│  • Output:                       │    │  • run_inference() [SSOT]                │
+│    - organ_name                  │    │    → softmax(dim=1)[1] ✅                │
+│    - organ_confidence            │    │  • Output:                               │
+│    - predicted_family            │    │    ├── NP: Probabilité [0, 1]            │
+│    - watershed_params (override) │    │    └── HV: Gradients [-1, 1]             │
+└──────────────────────────────────┘    └──────────────────────────────────────────┘
+                    │                               │
+                    │                               ▼
+                    │               ┌──────────────────────────────────────────────┐
+                    │               │  ÉTAPE 4: WATERSHED                          │
+                    │               │  inference_engine.py:566-571                 │
+                    └──────────────►│  ──────────────────────────────────────────  │
+                                    │  • hv_guided_watershed() [SSOT]              │
+                                    │  • Params = get_model_for_organ(PREDICTED)   │
+                                    │    (Override organ-specific si disponible)   │
+                                    │  • Output: instance_map (224×224)            │
+                                    │    → Chaque noyau = ID unique (FINAL)        │
+                                    └──────────────────────────────────────────────┘
+                                                    │
+                                                    ▼
 ┌─────────────────────────────────────────────────────────────────────────┐
-│                    hv_guided_watershed()                                │
-│  src.postprocessing.watershed (SINGLE SOURCE OF TRUTH)                  │
-│                                                                         │
-│  Paramètres: np_threshold, beta, min_size, min_distance                 │
+│  ÉTAPE 5: MORPHOMÉTRIE (PARTIELLE)                                      │
+│  inference_engine.py:603-616                                            │
+│  ─────────────────────────────────────────────────────────────────────  │
+│  • MorphometryAnalyzer.analyze()                                        │
+│  • Métriques par noyau: area, circularity, perimeter                    │
+│  • Détection anomalies: fusions, sur-segmentations                      │
+│  • ⚠️ mitotic_index_per_10hpf = None si surface < 0.1 mm²               │
+│    (Patch 224×224 = 0.0125 mm² = seulement 6.4% d'un HPF)               │
 └─────────────────────────────────────────────────────────────────────────┘
-                               │
-                               ▼
+                                    │
+                                    ▼
 ┌─────────────────────────────────────────────────────────────────────────┐
-│                    Instance Map (H, W)                                  │
-│  + Morphométrie via MorphometryAnalyzer                                 │
+│  ÉTAPE 6: ANALYSE SPATIALE (Phase 3)                                    │
+│  inference_engine.py:619-649                                            │
+│  ─────────────────────────────────────────────────────────────────────  │
+│  • run_spatial_analysis() — READ-ONLY (ne modifie pas instance_map)     │
+│  • Pléomorphisme: score 1-3 (CV aire + ratio taille)                    │
+│  • Hotspots: zones haute densité (>1.5× moyenne)                        │
+│  • Mitoses candidates: seuils absolus 25-180 µm²                        │
+│  • Chromatine: entropie Shannon, hétérogénéité                          │
+│  • Topologie Voronoï: graphe adjacence                                  │
+└─────────────────────────────────────────────────────────────────────────┘
+                                    │
+                                    ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│  ÉTAPE 5b: FINALISATION MORPHOMETRY                                     │
+│  inference_engine.py:651-666                                            │
+│  ─────────────────────────────────────────────────────────────────────  │
+│  • Phase 3 = source autoritative pour mitoses                           │
+│  • morphometry.mitotic_candidates = n_mitosis_candidates                │
+│  • morphometry.mitotic_nuclei_ids = mitosis_candidate_ids               │
+│  • mitotic_index_per_10hpf reste None (sanity check)                    │
+│  • Affichage: "X candidat(s) (patch unique)"                            │
+└─────────────────────────────────────────────────────────────────────────┘
+                                    │
+                                    ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│  SORTIE: AnalysisResult                                                 │
+│  inference_engine.py:675-706                                            │
+│  ─────────────────────────────────────────────────────────────────────  │
+│  • image_rgb, instance_map, type_map, n_nuclei                          │
+│  • organ_name, organ_confidence, family (PRÉDIT)                        │
+│  • morphometry (finalisée avec Phase 3)                                 │
+│  • spatial_analysis, pleomorphism_score, hotspots, mitosis_candidates   │
+│  • watershed_params (organ-specific)                                    │
 └─────────────────────────────────────────────────────────────────────────┘
 ```
+
+### Points Critiques Pipeline
+
+| Point | Implémentation | Fichier:ligne |
+|-------|----------------|---------------|
+| **Activation NP** | `softmax(dim=1)[1]` (pas sigmoid!) | `instance_evaluation.py:61` |
+| **Watershed Params** | `get_model_for_organ(predicted_organ)` | `inference_engine.py:550-551` |
+| **Phase 3** | READ-ONLY, enrichit métadonnées sans modifier segmentation | `spatial_analysis.py:585` |
+| **HPF Sanity Check** | Si surface < 0.1 mm², index = None | `morphometry.py:220-229` |
+| **Mitoses Absolues** | Seuils 25-180 µm² (pas relatifs à mean_area) | `spatial_analysis.py:264-273` |
 
 ### Modules Partagés (Single Source of Truth)
 
@@ -235,47 +293,44 @@ Fichier source unique de vérité pour le mapping organe → modèle:
 # Les 19 organes PanNuke groupés par famille
 ORGAN_TO_FAMILY = {
     # Glandular (5 organes)
-    "Breast": "glandular",      # ★ modèle dédié
+    "Breast": "glandular",
     "Prostate": "glandular",
     "Thyroid": "glandular",
-    ...
+    "Pancreatic": "glandular",
+    "Adrenal_gland": "glandular",
     # Digestive (4 organes)
-    "Colon": "digestive",       # ★ modèle dédié
+    "Colon": "digestive",
     "Stomach": "digestive",
-    ...
+    "Esophagus": "digestive",
+    "Bile-duct": "digestive",
+    # Urologic (6 organes)
+    "Kidney": "urologic",
+    # ... etc
 }
 
-# Organes avec modèle dédié (entraîné spécifiquement)
-ORGANS_WITH_DEDICATED_MODEL = {"Breast", "Colon"}
+# STRATÉGIE V13: Tous les organes utilisent les modèles par FAMILLE
+# Les modèles organ-specific ont été abandonnés
+ORGANS_WITH_DEDICATED_MODEL = set()  # Vide
 
 # Usage
 from src.ui.organ_config import get_model_for_organ
 
 info = get_model_for_organ("Breast")
 # {
-#   'checkpoint_path': 'models/.../hovernet_Breast_...best.pth',
+#   'checkpoint_path': 'models/.../hovernet_glandular_...best.pth',
 #   'family': 'glandular',
-#   'is_dedicated': True,
-#   'watershed_params': {...},
-#   'display_name': 'Breast ★'
+#   'is_dedicated': False,
+#   'watershed_params': {'np_threshold': 0.40, 'min_size': 50, 'beta': 0.50, 'min_distance': 3},
+#   'display_name': 'Breast (glandular)'
 # }
 
-info = get_model_for_organ("Lung")
-# {
-#   'checkpoint_path': 'models/.../hovernet_respiratory_...best.pth',
-#   'family': 'respiratory',
-#   'is_dedicated': False,
-#   'watershed_params': {...},
-#   'display_name': 'Lung (respiratory)'
-# }
+# Override organ-specific pour watershed (optionnel)
+ORGAN_WATERSHED_PARAMS = {
+    "Breast": {"np_threshold": 0.50, "min_size": 30, "beta": 0.50, "min_distance": 2},
+}
 ```
 
-**Pour ajouter un nouveau modèle dédié:**
-
-1. Entraîner le modèle pour l'organe
-2. Ajouter le checkpoint dans `ORGAN_CHECKPOINTS`
-3. Ajouter l'organe dans `ORGANS_WITH_DEDICATED_MODEL`
-4. Optionnellement, ajouter des params watershed spécifiques dans `ORGAN_WATERSHED_PARAMS`
+**Note:** Les paramètres watershed sont récupérés pour l'organe **prédit** par OrganHead, pas l'organe sélectionné manuellement. Cela garantit que les overrides organ-specific sont appliqués correctement.
 
 ---
 
@@ -330,14 +385,21 @@ Les paramètres sont ajustables en temps réel :
 | Beta | 0.50 | Poids HV magnitude |
 | Distance min | 5 | Distance entre peaks |
 
-### Valeurs optimales par famille
+### Valeurs optimales par famille (Source: CLAUDE.md)
 
-| Famille | NP Thr | Min Size | Beta | Min Dist | AJI |
-|---------|--------|----------|------|----------|-----|
-| Respiratory | 0.40 | 30 | 0.50 | 5 | **0.6872** ✅ |
-| Urologic | 0.45 | 30 | 0.50 | 2 | 0.6743 |
-| Epidermal | 0.45 | 20 | 1.00 | 3 | 0.6203 |
-| Digestive | 0.45 | 60 | 2.00 | 5 | 0.6160 |
+| Famille | NP Thr | Min Size | Beta | Min Dist | AJI | Status |
+|---------|--------|----------|------|----------|-----|--------|
+| **Respiratory** | 0.40 | 30 | 0.50 | 5 | **0.6872** | ✅ Objectif |
+| **Urologic** | 0.45 | 30 | 0.50 | 2 | **0.6743** | 99.2% |
+| **Glandular** | 0.40 | 50 | 0.50 | 3 | **0.6566** | 96.6% |
+| Epidermal | 0.45 | 20 | 1.00 | 3 | 0.6203 | 91.2% |
+| Digestive | 0.45 | 60 | 2.00 | 5 | 0.6160 | 90.6% |
+
+**Override Organ-Specific:**
+
+| Organe | NP Thr | Min Size | Beta | Min Dist | Raison |
+|--------|--------|----------|------|----------|--------|
+| Breast | 0.50 | 30 | 0.50 | 2 | Noyaux pléomorphes denses |
 
 ---
 
