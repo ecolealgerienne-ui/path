@@ -108,8 +108,12 @@ FAMILY_WATERSHED_PARAMS = {
 
 # Override par organe (optionnel - si vide, utilise les params de la famille)
 ORGAN_WATERSHED_PARAMS = {
-    # Exemple: si Breast nécessite des params différents de glandular
-    # "Breast": {"np_threshold": 0.42, "min_size": 25, "beta": 0.45, "min_distance": 4},
+    # Breast: paramètres optimisés (source: CLAUDE.md - AJI 0.6662)
+    # min_distance=2 critique pour éviter les fusions sur cellules pléomorphes
+    "Breast": {"np_threshold": 0.40, "min_size": 30, "beta": 1.50, "min_distance": 2},
+
+    # Colon: paramètres optimisés (source: tests organ-specific)
+    # Architecture variable → params de la famille digestive
 }
 
 
