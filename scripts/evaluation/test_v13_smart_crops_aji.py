@@ -31,9 +31,6 @@ import numpy as np
 import torch
 import torch.nn as nn
 import cv2
-from scipy.ndimage import label, distance_transform_edt
-from skimage.segmentation import watershed
-from skimage.morphology import remove_small_objects
 from typing import Dict
 import json
 from datetime import datetime
@@ -41,6 +38,7 @@ from tqdm import tqdm
 
 from src.models.hovernet_decoder import HoVerNetDecoder
 from src.metrics.ground_truth_metrics import compute_aji  # Centralized AJI
+from src.postprocessing import hv_guided_watershed  # Single source of truth
 
 
 def compute_pq(pred_inst: np.ndarray, gt_inst: np.ndarray, iou_threshold: float = 0.5) -> Dict[str, float]:
@@ -116,82 +114,6 @@ def compute_pq(pred_inst: np.ndarray, gt_inst: np.ndarray, iou_threshold: float 
     }
 
 
-def hv_guided_watershed(
-    np_pred: np.ndarray,
-    hv_pred: np.ndarray,
-    np_threshold: float = 0.45,  # Optimized via grid search (2025-12-28)
-    beta: float = 0.5,   # Optimal: centres nets mais gradients HV bruités
-    min_size: int = 50,  # Optimized via grid search - filtre bruit
-    min_distance: int = 5  # Optimized via grid search - évite sur-segmentation
-) -> np.ndarray:
-    """
-    HV-guided watershed for instance segmentation.
-
-    Uses HV magnitude to suppress markers at cell boundaries where
-    HV gradients are strong.
-
-    Args:
-        np_pred: Nuclear presence probability map (H, W) in [0, 1]
-        hv_pred: HV maps (2, H, W) in [-1, 1]
-        np_threshold: Threshold for NP binarization (default: 0.45, grid-search optimized)
-        beta: HV magnitude exponent (default: 0.5, optimal pour centres nets/gradients bruités)
-        min_size: Minimum instance size in pixels (default: 50, grid-search optimized)
-        min_distance: Minimum distance between peaks (default: 5, grid-search optimized)
-
-    Returns:
-        Instance map (H, W) with instance IDs starting from 1
-    """
-    # Threshold NP to get binary mask (lowered threshold = larger masks = better IoU)
-    np_binary = (np_pred > np_threshold).astype(np.uint8)
-
-    if np_binary.sum() == 0:
-        return np.zeros_like(np_pred, dtype=np.int32)
-
-    # Distance transform
-    dist = distance_transform_edt(np_binary)
-
-    # HV magnitude (range [0, sqrt(2)])
-    hv_h = hv_pred[0]
-    hv_v = hv_pred[1]
-    hv_magnitude = np.sqrt(hv_h**2 + hv_v**2)
-
-    # HV-guided marker energy
-    # Higher HV magnitude → lower marker energy → suppress markers at boundaries
-    marker_energy = dist * (1 - hv_magnitude ** beta)
-
-    # Find local maxima as markers
-    from skimage.feature import peak_local_max
-    markers_coords = peak_local_max(
-        marker_energy,
-        min_distance=min_distance,  # Use parameter (default: 3 for dense nuclei)
-        threshold_abs=0.1,
-        exclude_border=False
-    )
-
-    # Create markers map
-    markers = np.zeros_like(np_binary, dtype=np.int32)
-    for i, (y, x) in enumerate(markers_coords, start=1):
-        markers[y, x] = i
-
-    # If no markers found, return empty
-    if markers.max() == 0:
-        return np.zeros_like(np_pred, dtype=np.int32)
-
-    # Label markers
-    markers = label(markers)[0]
-
-    # Watershed (use distance as elevation map)
-    instances = watershed(-dist, markers, mask=np_binary)
-
-    # Remove small objects
-    instances = remove_small_objects(instances, min_size=min_size)
-
-    # Relabel to ensure consecutive IDs
-    instances = label(instances)[0]
-
-    return instances.astype(np.int32)
-
-
 def compute_dice(pred: np.ndarray, gt: np.ndarray) -> float:
     """Compute Dice coefficient for binary masks."""
     pred_binary = (pred > 0.5).astype(bool)
@@ -228,29 +150,32 @@ def main():
         default=50,
         help="Number of validation samples to evaluate"
     )
+    # === WATERSHED PARAMETERS (Optimized via grid search 2025-12-29) ===
+    # Respiratory optimal: np_threshold=0.40, min_size=30, min_distance=5
+    # Epidermal optimal:   np_threshold=0.45, min_size=40, min_distance=5
     parser.add_argument(
         "--np_threshold",
         type=float,
-        default=0.35,
-        help="NP binarization threshold (default: 0.35 for larger masks)"
+        default=0.40,
+        help="NP binarization threshold (Respiratory=0.40, Epidermal=0.45)"
     )
     parser.add_argument(
         "--beta",
         type=float,
-        default=0.5,
-        help="HV magnitude exponent (default: 0.5 for dense Epidermal tissues)"
+        default=0.50,
+        help="HV magnitude exponent (optimal=0.50 for all families)"
     )
     parser.add_argument(
         "--min_size",
         type=int,
-        default=40,
-        help="Minimum instance size (default: 40 optimized)"
+        default=30,
+        help="Minimum instance size in pixels (Respiratory=30, Epidermal=40)"
     )
     parser.add_argument(
         "--min_distance",
         type=int,
-        default=3,
-        help="Minimum distance between peak markers (default: 3 for dense nuclei)"
+        default=5,
+        help="Minimum distance between peak markers (optimal=5 for all families)"
     )
     parser.add_argument(
         "--device",
@@ -266,6 +191,11 @@ def main():
         "--use_fpn_chimique",
         action="store_true",
         help="Use FPN Chimique (multi-scale H-injection at 5 levels)"
+    )
+    parser.add_argument(
+        "--use_h_alpha",
+        action="store_true",
+        help="Use learnable alpha for H-channel amplification"
     )
     args = parser.parse_args()
 
@@ -309,12 +239,19 @@ def main():
         print(f"  ⚠️  Using checkpoint setting: use_fpn_chimique={checkpoint_use_fpn}")
         args.use_fpn_chimique = checkpoint_use_fpn
 
+    # Detect use_h_alpha from checkpoint (check if h_alphas params exist)
+    checkpoint_use_h_alpha = any('h_alphas' in k for k in checkpoint['model_state_dict'].keys())
+    if checkpoint_use_h_alpha:
+        print(f"  ✅ Checkpoint contains h_alphas parameters (use_h_alpha=True)")
+        args.use_h_alpha = True
+
     model = HoVerNetDecoder(
         embed_dim=1536,
         n_classes=n_classes,
         dropout=0.1,
         use_hybrid=args.use_hybrid,
-        use_fpn_chimique=args.use_fpn_chimique
+        use_fpn_chimique=args.use_fpn_chimique,
+        use_h_alpha=args.use_h_alpha
     ).to(device)
 
     model.load_state_dict(checkpoint['model_state_dict'])

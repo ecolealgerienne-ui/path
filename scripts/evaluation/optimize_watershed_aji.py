@@ -5,14 +5,8 @@ Optimisation des paramètres Watershed pour améliorer l'AJI.
 Ce script effectue un grid search sur les paramètres du watershed post-processing
 pour trouver la configuration optimale qui maximise l'AJI.
 
-L'algorithme hv_to_instances est IDENTIQUE à celui de test_v13_smart_crops_aji.py
-pour garantir la cohérence des résultats.
-
-Paramètres optimisés:
-- beta: Exposant de la magnitude HV pour suppression frontières (expert: ~2.0)
-- min_size: Taille minimale des instances en pixels (expert: ~50)
-- np_threshold: Seuil de binarisation NP (default: 0.35)
-- min_distance: Distance minimale entre pics pour peak_local_max (default: 3)
+UTILISE LE MODULE PARTAGÉ src.evaluation pour garantir la cohérence
+avec test_v13_smart_crops_aji.py (single source of truth).
 
 Usage:
     python scripts/evaluation/optimize_watershed_aji.py \
@@ -24,11 +18,7 @@ Usage:
 import argparse
 import numpy as np
 import torch
-import torch.nn.functional as F
 from pathlib import Path
-from scipy.ndimage import label, distance_transform_edt
-from skimage.segmentation import watershed
-from skimage.morphology import remove_small_objects
 import json
 from datetime import datetime
 from itertools import product
@@ -38,100 +28,8 @@ import sys
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from src.models.hovernet_decoder import HoVerNetDecoder
-from src.metrics.ground_truth_metrics import compute_aji  # Use centralized AJI (GT-centric)
-
-
-def hv_to_instances(
-    np_pred: np.ndarray,
-    hv_pred: np.ndarray,
-    beta: float = 0.5,
-    min_size: int = 40,
-    np_threshold: float = 0.35,
-    min_distance: int = 3,
-    debug: bool = False
-) -> np.ndarray:
-    """
-    HV-guided watershed for instance segmentation.
-
-    IMPORTANT: This function matches test_v13_smart_crops_aji.py exactly.
-
-    Args:
-        np_pred: Nuclear presence mask (H, W) in [0, 1]
-        hv_pred: HV maps (2, H, W) in [-1, 1]
-        beta: HV magnitude exponent for boundary suppression
-        min_size: Minimum instance size in pixels
-        np_threshold: Threshold for NP binarization
-        min_distance: Minimum distance between peaks
-        debug: Print debug info for sanity checking
-
-    Returns:
-        Instance segmentation map (H, W) with unique IDs per instance
-    """
-    from skimage.feature import peak_local_max
-    from skimage.measure import label as skimage_label
-
-    # Threshold NP to get binary mask
-    np_binary = (np_pred > np_threshold).astype(np.uint8)
-
-    if np_binary.sum() == 0:
-        return np.zeros_like(np_pred, dtype=np.int32)
-
-    # Distance transform
-    dist = distance_transform_edt(np_binary)
-
-    # HV magnitude (range [0, sqrt(2)]) - NO NORMALIZATION
-    hv_h = hv_pred[0]
-    hv_v = hv_pred[1]
-    hv_magnitude = np.sqrt(hv_h**2 + hv_v**2)
-
-    # HV-guided marker energy
-    marker_energy = dist * (1 - hv_magnitude ** beta)
-
-    # Find local maxima as markers using peak_local_max
-    markers_coords = peak_local_max(
-        marker_energy,
-        min_distance=min_distance,
-        threshold_abs=0.1,
-        exclude_border=False
-    )
-
-    if debug:
-        print(f"    peak_local_max found {len(markers_coords)} markers")
-
-    # Create markers map with sequential IDs
-    markers = np.zeros_like(np_binary, dtype=np.int32)
-    for i, (y, x) in enumerate(markers_coords, start=1):
-        markers[y, x] = i
-
-    # If no markers found, return empty
-    if markers.max() == 0:
-        if debug:
-            print("    WARNING: No markers found!")
-        return np.zeros_like(np_pred, dtype=np.int32)
-
-    # Watershed - propagates marker IDs to all connected pixels
-    inst_map = watershed(-dist, markers, mask=np_binary)
-
-    if debug:
-        unique_before = np.unique(inst_map)
-        print(f"    After watershed: {len(unique_before)} unique values: {unique_before[:10]}...")
-
-    # Remove small objects - requires labeled input
-    if min_size > 0:
-        # Ensure proper labeling before remove_small_objects
-        inst_map = skimage_label(inst_map)
-        inst_map = remove_small_objects(inst_map.astype(np.int32), min_size=min_size)
-        # Relabel to ensure consecutive IDs after removal
-        inst_map = skimage_label(inst_map)
-
-    if debug:
-        unique_after = np.unique(inst_map)
-        n_instances = len(unique_after) - 1  # Exclude background (0)
-        print(f"    After remove_small_objects: {n_instances} instances")
-        if n_instances <= 1:
-            print(f"    WARNING: Only {n_instances} instance(s)! unique={unique_after}")
-
-    return inst_map.astype(np.int32)
+from src.evaluation import run_inference, evaluate_batch_with_params
+from src.postprocessing import hv_guided_watershed  # Pour sanity check seulement
 
 
 def load_model_and_data(checkpoint_path: str, family: str, device: str = "cuda"):
@@ -147,17 +45,16 @@ def load_model_and_data(checkpoint_path: str, family: str, device: str = "cuda")
 
     print(f"  Checkpoint metadata: use_hybrid={use_hybrid}, use_fpn_chimique={use_fpn_chimique}")
 
-    # Also check head dimensions for additional info
-    if 'np_head.head.0.weight' in state_dict:
-        head_in_channels = state_dict['np_head.head.0.weight'].shape[1]
-        print(f"  Head input channels: {head_in_channels}")
+    # Detect use_h_alpha from checkpoint (check if h_alphas params exist)
+    use_h_alpha = any('h_alphas' in k for k in state_dict.keys())
 
     model = HoVerNetDecoder(
         embed_dim=1536,
         n_classes=5,
         dropout=0.1,
         use_hybrid=use_hybrid,
-        use_fpn_chimique=use_fpn_chimique
+        use_fpn_chimique=use_fpn_chimique,
+        use_h_alpha=use_h_alpha
     ).to(device)
 
     model.load_state_dict(state_dict)
@@ -165,6 +62,8 @@ def load_model_and_data(checkpoint_path: str, family: str, device: str = "cuda")
 
     if use_fpn_chimique:
         print(f"  ✅ Mode FPN CHIMIQUE activé: injection H-channel multi-échelle (5 niveaux)")
+    if use_h_alpha:
+        print(f"  ✅ Mode H-Alpha activé: facteur α learnable par niveau")
     elif use_hybrid:
         print(f"  ✅ Mode HYBRID activé: injection H-channel via RuifrokExtractor")
 
@@ -189,81 +88,57 @@ def load_model_and_data(checkpoint_path: str, family: str, device: str = "cuda")
     return model, val_data, rgb_features, use_hybrid
 
 
-def run_inference(model, rgb_features, images, idx, device, use_hybrid):
-    """Run inference on a single sample."""
+def cache_predictions(model, val_data, rgb_features, use_hybrid, n_samples, device):
+    """Run inference once and cache all predictions."""
+    images = val_data['images']
+    n_to_eval = min(n_samples, len(images))
 
-    # Prepare input
-    features = torch.from_numpy(rgb_features[idx:idx+1]).float().to(device)
+    print("Running inference on validation samples...")
+    predictions = []
 
-    # For hybrid model, need images
-    if use_hybrid:
-        image = images[idx]
-        # Ensure correct format (C, H, W) and normalize
-        if image.shape[-1] == 3:
-            image = np.transpose(image, (2, 0, 1))
-        image_tensor = torch.from_numpy(image).float().unsqueeze(0).to(device)
-        if image_tensor.max() > 1:
-            image_tensor = image_tensor / 255.0
-    else:
-        image_tensor = None
+    for i in range(n_to_eval):
+        # Prepare inputs
+        features = torch.from_numpy(rgb_features[i:i+1]).float().to(device)
 
-    # Run inference
-    with torch.no_grad():
-        outputs = model(features, images_rgb=image_tensor)
+        if use_hybrid:
+            image = images[i]
+            if image.shape[-1] == 3:
+                image = np.transpose(image, (2, 0, 1))
+            image_tensor = torch.from_numpy(image).float().unsqueeze(0).to(device)
+            if image_tensor.max() > 1:
+                image_tensor = image_tensor / 255.0
+        else:
+            image_tensor = None
 
-    # Extract predictions - handle both dict and tuple returns
-    if isinstance(outputs, dict):
-        np_out = outputs['np']
-        hv_out = outputs['hv']
-    else:
-        # Tuple: (np_out, hv_out, nt_out)
-        np_out, hv_out, nt_out = outputs
+        # Use shared inference function
+        np_pred, hv_pred = run_inference(model, features, image_tensor, device)
+        predictions.append((np_pred, hv_pred))
 
-    # CRITICAL: Use SOFTMAX (not sigmoid!) - NP output is 2-channel for CrossEntropyLoss
-    # Channel 0 = Background, Channel 1 = Nuclei
-    np_probs = torch.softmax(np_out, dim=1).cpu().numpy()[0]  # (2, 224, 224)
-    np_pred = np_probs[1]  # Canal 1 = Noyaux (224, 224)
-    hv_pred = hv_out.cpu().numpy()[0]  # (2, 224, 224)
+        if (i + 1) % 10 == 0:
+            print(f"  Inference: {i+1}/{n_to_eval}")
 
-    return np_pred, hv_pred
+    return predictions
 
 
 def grid_search(
-    model,
-    val_data,
-    rgb_features,
-    use_hybrid,
-    n_samples: int,
-    device: str,
+    predictions,
+    gt_instances,
     beta_range: list = [0.5, 1.0, 1.5, 2.0, 2.5],
     min_size_range: list = [20, 30, 40, 50, 60],
     np_threshold_range: list = [0.3, 0.35, 0.4, 0.45],
     min_distance_range: list = [2, 3, 4, 5]
 ):
     """
-    Grid search over watershed parameters.
+    Grid search over watershed parameters using shared evaluation module.
 
-    Parameters optimized (matching test_v13_smart_crops_aji.py):
-    - beta: HV magnitude exponent for boundary suppression (expert suggests ~2.0)
-    - min_size: Minimum instance size in pixels (expert suggests ~50)
-    - np_threshold: NP binarization threshold
-    - min_distance: Minimum distance between peak markers
-
-    Returns:
-        Best parameters and full results grid
+    Uses evaluate_batch_with_params from src.evaluation (single source of truth).
     """
-
-    images = val_data['images']
-    inst_maps = val_data['inst_maps']
-
-    n_to_eval = min(n_samples, len(images))
-
     total_configs = len(beta_range) * len(min_size_range) * len(np_threshold_range) * len(min_distance_range)
 
     print(f"\n{'='*70}")
     print(f"GRID SEARCH WATERSHED PARAMETERS")
     print(f"{'='*70}")
-    print(f"Samples: {n_to_eval}")
+    print(f"Samples: {len(predictions)}")
     print(f"Beta values: {beta_range}")
     print(f"Min size values: {min_size_range}")
     print(f"NP threshold values: {np_threshold_range}")
@@ -271,93 +146,58 @@ def grid_search(
     print(f"Total configurations: {total_configs}")
     print(f"{'='*70}\n")
 
-    # First, run inference on all samples and cache predictions
-    print("Running inference on validation samples...")
-    predictions = []
-    for i in range(n_to_eval):
-        np_pred, hv_pred = run_inference(model, rgb_features, images, i, device, use_hybrid)
-        predictions.append((np_pred, hv_pred))
-        if (i + 1) % 10 == 0:
-            print(f"  Inference: {i+1}/{n_to_eval}")
-
-    # Sanity check: verify labeling works on first 3 samples
-    print("\n🔍 SANITY CHECK: Verifying instance labeling on first 3 samples...")
-    for i in range(min(3, n_to_eval)):
+    # Sanity check
+    print("🔍 SANITY CHECK: Verifying instance labeling on first 3 samples...")
+    for i in range(min(3, len(predictions))):
         np_pred, hv_pred = predictions[i]
-        gt_inst = inst_maps[i]
+        gt_inst = gt_instances[i]
         n_gt = len(np.unique(gt_inst)) - 1
 
-        # Run with debug=True
-        pred_inst = hv_to_instances(
+        pred_inst = hv_guided_watershed(
             np_pred, hv_pred,
             beta=1.5, min_size=40, np_threshold=0.35, min_distance=3,
             debug=True
         )
         n_pred = len(np.unique(pred_inst)) - 1
-
         print(f"  Sample {i}: GT={n_gt} instances, Pred={n_pred} instances")
-
-        if n_pred == 0 or n_pred == 1:
-            print(f"  ⚠️  WARNING: Very few instances detected! Check labeling.")
 
     print("✅ Sanity check complete\n")
 
-    print(f"\nEvaluating {total_configs} configurations...")
+    print(f"Evaluating {total_configs} configurations...")
 
-    # Grid search
+    # Grid search using shared evaluation module
     results = []
     best_aji = 0
     best_params = None
-
     config_idx = 0
 
     for beta, min_size, np_thresh, min_dist in product(beta_range, min_size_range, np_threshold_range, min_distance_range):
         config_idx += 1
 
-        ajis = []
-        n_pred_instances = []
-        n_gt_instances = []
-
-        for i in range(n_to_eval):
-            np_pred, hv_pred = predictions[i]
-            gt_inst = inst_maps[i]
-
-            # Convert to instances with current parameters
-            pred_inst = hv_to_instances(
-                np_pred, hv_pred,
-                beta=beta,
-                min_size=min_size,
-                np_threshold=np_thresh,
-                min_distance=min_dist
-            )
-
-            # Compute AJI
-            aji = compute_aji(pred_inst, gt_inst)
-            ajis.append(aji)
-
-            n_pred_instances.append(len(np.unique(pred_inst)) - 1)  # Exclude background
-            n_gt_instances.append(len(np.unique(gt_inst)) - 1)
-
-        mean_aji = np.mean(ajis)
-        std_aji = np.std(ajis)
-        mean_n_pred = np.mean(n_pred_instances)
-        mean_n_gt = np.mean(n_gt_instances)
-        over_seg_ratio = mean_n_pred / mean_n_gt if mean_n_gt > 0 else 0
+        # Use shared evaluation function (single source of truth)
+        metrics = evaluate_batch_with_params(
+            predictions=predictions,
+            gt_instances=gt_instances,
+            np_threshold=np_thresh,
+            beta=beta,
+            min_size=min_size,
+            min_distance=min_dist
+        )
 
         results.append({
             'beta': beta,
             'min_size': min_size,
             'np_threshold': np_thresh,
             'min_distance': min_dist,
-            'aji_mean': mean_aji,
-            'aji_std': std_aji,
-            'n_pred': mean_n_pred,
-            'n_gt': mean_n_gt,
-            'over_seg_ratio': over_seg_ratio
+            'aji_mean': metrics['aji_mean'],
+            'aji_std': metrics['aji_std'],
+            'n_pred': metrics['n_pred_mean'],
+            'n_gt': metrics['n_gt_mean'],
+            'over_seg_ratio': metrics['over_seg_ratio']
         })
 
-        if mean_aji > best_aji:
-            best_aji = mean_aji
+        if metrics['aji_mean'] > best_aji:
+            best_aji = metrics['aji_mean']
             best_params = {
                 'beta': beta,
                 'min_size': min_size,
@@ -395,11 +235,17 @@ def main():
     print(f"Model loaded. Hybrid mode: {use_hybrid}")
     print(f"Validation samples: {len(val_data['images'])}")
 
-    # Run grid search
-    best_params, results = grid_search(
+    # Cache predictions (inference runs once)
+    predictions = cache_predictions(
         model, val_data, rgb_features, use_hybrid,
         args.n_samples, args.device
     )
+
+    # Get GT instances
+    gt_instances = list(val_data['inst_maps'][:len(predictions)])
+
+    # Run grid search using shared evaluation module
+    best_params, results = grid_search(predictions, gt_instances)
 
     # Sort results by AJI
     results_sorted = sorted(results, key=lambda x: x['aji_mean'], reverse=True)
@@ -427,7 +273,7 @@ def main():
     print(f"  Over-seg Ratio:  {results_sorted[0]['over_seg_ratio']:.2f}")
     print(f"{'='*80}")
 
-    # Compare with default parameters (from test_v13_smart_crops_aji.py)
+    # Compare with default parameters
     default_result = next((r for r in results if r['beta'] == 0.5 and r['min_size'] == 40
                            and r['np_threshold'] == 0.35 and r['min_distance'] == 3), None)
     if default_result:
@@ -462,11 +308,11 @@ def main():
     print(f"\n{'='*80}")
     print("RECOMMENDATION")
     print(f"{'='*80}")
-    print(f"Update hv_guided_watershed() in test_v13_smart_crops_aji.py with:")
-    print(f"  beta={best_params['beta']}")
-    print(f"  min_size={best_params['min_size']}")
-    print(f"  np_threshold={best_params['np_threshold']}")
-    print(f"  min_distance={best_params['min_distance']}")
+    print(f"Use these parameters in test_v13_smart_crops_aji.py:")
+    print(f"  --beta {best_params['beta']}")
+    print(f"  --min_size {best_params['min_size']}")
+    print(f"  --np_threshold {best_params['np_threshold']}")
+    print(f"  --min_distance {best_params['min_distance']}")
     print(f"{'='*80}\n")
 
 

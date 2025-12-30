@@ -186,13 +186,61 @@ python scripts/training/train_hovernet_family_v13_smart_crops.py \
 ### 6. Évaluation AJI
 
 ```bash
+# Respiratory (AJI 0.6872 ✅)
+python scripts/evaluation/test_v13_smart_crops_aji.py \
+    --checkpoint models/checkpoints_v13_smart_crops/hovernet_respiratory_v13_smart_crops_hybrid_fpn_best.pth \
+    --family respiratory \
+    --n_samples 50 \
+    --use_hybrid \
+    --use_fpn_chimique \
+    --np_threshold 0.40 \
+    --min_size 30 \
+    --min_distance 5
+
+# Urologic (AJI 0.6743)
+python scripts/evaluation/test_v13_smart_crops_aji.py \
+    --checkpoint models/checkpoints_v13_smart_crops/hovernet_urologic_v13_smart_crops_hybrid_fpn_best.pth \
+    --family urologic \
+    --n_samples 50 \
+    --use_hybrid \
+    --use_fpn_chimique \
+    --np_threshold 0.45 \
+    --min_size 30 \
+    --min_distance 2
+
+# Epidermal (AJI 0.6203)
 python scripts/evaluation/test_v13_smart_crops_aji.py \
     --checkpoint models/checkpoints_v13_smart_crops/hovernet_epidermal_v13_smart_crops_hybrid_fpn_best.pth \
     --family epidermal \
     --n_samples 50 \
     --use_hybrid \
-    --use_fpn_chimique
+    --use_fpn_chimique \
+    --np_threshold 0.45 \
+    --min_size 20 \
+    --beta 1.0 \
+    --min_distance 3
+
+# Digestive (AJI 0.6160)
+python scripts/evaluation/test_v13_smart_crops_aji.py \
+    --checkpoint models/checkpoints_v13_smart_crops/hovernet_digestive_v13_smart_crops_hybrid_fpn_best.pth \
+    --family digestive \
+    --n_samples 50 \
+    --use_hybrid \
+    --use_fpn_chimique \
+    --np_threshold 0.45 \
+    --min_size 60 \
+    --beta 2.0 \
+    --min_distance 5
 ```
+
+**Paramètres Watershed optimisés par famille :**
+
+| Famille | np_threshold | min_size | beta | min_distance | AJI | Status |
+|---------|--------------|----------|------|--------------|-----|--------|
+| Respiratory | 0.40 | 30 | 0.50 | 5 | **0.6872** | ✅ Objectif |
+| Urologic | 0.45 | 30 | 0.50 | 2 | **0.6743** | 99.2% |
+| Epidermal | 0.45 | 20 | 1.00 | 3 | 0.6203 | 91.2% |
+| Digestive | 0.45 | 60 | 2.00 | 5 | 0.6160 | 90.6% |
 
 ### 7. Optimisation Watershed (optionnel)
 
@@ -244,7 +292,37 @@ features (B, 261, 1536):
 
 > **"On touche pas l'existant"** — Les scripts existants fonctionnent. Toute modification requiert validation explicite.
 
-### 2. FPN Chimique = use_hybrid + use_fpn_chimique
+### 2. Modules Partagés OBLIGATOIRES
+
+> **🚫 JAMAIS de duplication de code critique**
+>
+> Les algorithmes critiques DOIVENT être dans `src/` et importés par tous les scripts.
+> **NE JAMAIS copier-coller** une fonction entre scripts — créer un module partagé.
+
+**Modules partagés existants:**
+
+| Module | Fonction | Usage |
+|--------|----------|-------|
+| `src/postprocessing/watershed.py` | `hv_guided_watershed()` | Segmentation instances |
+| `src/metrics/ground_truth_metrics.py` | `compute_aji()` | Calcul AJI+ |
+| `src/evaluation/instance_evaluation.py` | `run_inference()`, `evaluate_sample()`, `evaluate_batch_with_params()` | Évaluation complète |
+
+**Import obligatoire:**
+
+```python
+# ✅ CORRECT - Single source of truth
+from src.postprocessing import hv_guided_watershed
+from src.metrics.ground_truth_metrics import compute_aji
+from src.evaluation import run_inference, evaluate_batch_with_params
+
+# ❌ INTERDIT - Duplication de code
+def hv_guided_watershed(...):  # Copie locale
+def run_inference(...):        # Copie locale
+```
+
+**Pourquoi:** Évite les divergences d'algorithme entre scripts (bug découvert 2025-12-29: scipy.ndimage.label vs skimage.measure.label causait -2.8% AJI).
+
+### 3. FPN Chimique = use_hybrid + use_fpn_chimique
 
 ```bash
 # ✅ CORRECT (Training ET Évaluation)
@@ -254,7 +332,7 @@ features (B, 261, 1536):
 --use_fpn_chimique  # Sans --use_hybrid → Erreur
 ```
 
-### 3. Nommage des Checkpoints
+### 4. Nommage des Checkpoints
 
 ```bash
 # FPN Chimique checkpoint:
@@ -264,9 +342,37 @@ hovernet_{family}_v13_smart_crops_hybrid_fpn_best.pth
 hovernet_epidermal_v13_smart_crops_hybrid_fpn_best.pth
 ```
 
-### 4. Validation CLS std
+### 5. Validation CLS std
 
 Le CLS token std doit être entre **0.70 et 0.90**.
+
+### 6. Transfer Learning Inter-Famille
+
+Pour transférer un modèle entraîné sur une famille vers une autre (ex: Respiratory → Epidermal):
+
+```bash
+python scripts/training/train_hovernet_family_v13_smart_crops.py \
+    --family epidermal \
+    --pretrained_checkpoint models/checkpoints_v13_smart_crops/hovernet_respiratory_v13_smart_crops_hybrid_fpn_best.pth \
+    --finetune_lr 1e-5 \
+    --epochs 30 \
+    --use_hybrid \
+    --use_fpn_chimique
+```
+
+**Différences avec `--resume`:**
+
+| Aspect | `--resume` | `--pretrained_checkpoint` |
+|--------|-----------|---------------------------|
+| Usage | Même famille | Famille différente |
+| Epoch | Continue depuis sauvegardé | Reset à 0 |
+| Optimizer | Reprend état sauvegardé | Nouveau avec LR ultra-bas |
+| LR par défaut | `args.lr` (1e-4) | `args.finetune_lr` (1e-5) |
+
+**Paramètres recommandés:**
+- LR: 1e-5 ou 5e-6 (évite catastrophic forgetting)
+- λ_hv: 10.0 (maintient skills séparation instances)
+- Epochs: 20-30 (adaptation, pas réapprentissage)
 
 ---
 

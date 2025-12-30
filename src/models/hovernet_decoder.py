@@ -448,6 +448,8 @@ class HoVerNetDecoder(nn.Module):
         use_hybrid: bool = False,  # Activer injection H-channel (obsolète, utiliser use_fpn_chimique)
         use_se_block: bool = False,  # Activer SE-Block après fusion (Hu et al., 2018)
         use_fpn_chimique: bool = False,  # Activer FPN Chimique (injection multi-échelle)
+        use_h_instance_norm: bool = False,  # [DEPRECATED] Lisse les gradients HV
+        use_h_alpha: bool = False,  # Facteur α learnable pour amplifier H-channel
     ):
         super().__init__()
 
@@ -457,6 +459,20 @@ class HoVerNetDecoder(nn.Module):
         self.use_hybrid = use_hybrid
         self.use_se_block = use_se_block
         self.use_fpn_chimique = use_fpn_chimique
+        self.use_h_instance_norm = use_h_instance_norm
+        self.use_h_alpha = use_h_alpha
+
+        # ===== ALPHA LEARNABLE (Expert 2025-12-29) =====
+        # Amplifie le H-channel sans détruire sa topographie locale
+        # Initialisation à 10.0 pour forcer l'écoute au début du training
+        if use_h_alpha and use_fpn_chimique:
+            self.h_alphas = nn.ParameterDict({
+                '16': nn.Parameter(torch.tensor(10.0)),
+                '32': nn.Parameter(torch.tensor(10.0)),
+                '64': nn.Parameter(torch.tensor(10.0)),
+                '112': nn.Parameter(torch.tensor(10.0)),
+                '224': nn.Parameter(torch.tensor(10.0)),
+            })
 
         # ===== BOTTLENECK PARTAGÉ (économie VRAM) =====
         self.bottleneck = nn.Sequential(
@@ -632,6 +648,14 @@ class HoVerNetDecoder(nn.Module):
             h_pyramid = self.h_pyramid(images_rgb)
             # h_pyramid = {16: (B,16,16,16), 32: (B,16,32,32), 64: (B,16,64,64),
             #              112: (B,16,112,112), 224: (B,16,224,224)}
+
+            # Optionnel: Normaliser H-channel à mean=0, std=1 [DEPRECATED - lisse les gradients]
+            if self.use_h_instance_norm:
+                h_pyramid = {k: F.instance_norm(v) for k, v in h_pyramid.items()}
+
+            # Optionnel: Amplifier H-channel via α learnable (préserve topographie)
+            if self.use_h_alpha:
+                h_pyramid = {k: v * self.h_alphas[str(k)] for k, v in h_pyramid.items()}
 
             # Niveau 0: Après bottleneck (16×16)
             x = torch.cat([x, h_pyramid[16]], dim=1)  # (B, 272, 16, 16)
