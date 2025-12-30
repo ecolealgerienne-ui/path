@@ -1,7 +1,7 @@
 # CellViT-Optimus — Contexte Projet
 
-> **Version:** V13 Smart Crops + FPN Chimique
-> **Date:** 2025-12-29
+> **Version:** V13 Smart Crops + FPN Chimique + Macenko
+> **Date:** 2025-12-30
 > **Objectif:** AJI ≥ 0.68
 
 ---
@@ -36,9 +36,89 @@ Pour l'historique complet du développement (bugs résolus, décisions technique
 
 **CellViT-Optimus** est un système de segmentation et classification de noyaux cellulaires pour l'histopathologie.
 
-**Architecture actuelle:** V13 Smart Crops + FPN Chimique (injection multi-échelle H-channel)
+**Architecture actuelle:** V13 Smart Crops + FPN Chimique + Macenko Normalization
 
-**Résultat Respiratory:** AJI 0.6734 = **99% de l'objectif 0.68** ✅
+**Résultat Respiratory:** AJI 0.6872 = **101% de l'objectif 0.68** ✅
+
+---
+
+## Pipeline Complet (Data Flow)
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                         PIPELINE CELLVIT-OPTIMUS                            │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────┐
+│  PanNuke Dataset    │
+│  (7,904 images)     │
+│  256×256 RGB        │
+│  fold0/, fold1/,    │
+│  fold2/             │
+└─────────┬───────────┘
+          │
+          ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  ÉTAPE 1: NORMALISATION MACENKO                                             │
+│  Script: normalize_staining_source.py                                       │
+│  ─────────────────────────────────────────────────────────────────────────  │
+│  • Charge images 256×256 depuis PanNuke                                     │
+│  • Applique Macenko stain normalization (réduction variance ~30%)           │
+│  • Sauvegarde: data/family_FIXED/{family}_data_FIXED.npz                   │
+│  • Contenu: images, fold_ids, image_ids, organ_names                        │
+└─────────┬───────────────────────────────────────────────────────────────────┘
+          │
+          ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  ÉTAPE 2: GÉNÉRATION SMART CROPS                                            │
+│  Script: prepare_v13_smart_crops.py                                         │
+│  ─────────────────────────────────────────────────────────────────────────  │
+│  • Source images: family_FIXED/ (avec --use_normalized)                     │
+│  • Source masks: PanNuke raw (fold{N}/masks.npy)                           │
+│  • 5 crops 224×224 par image + rotations déterministes                      │
+│  • Split CTO: train/val par source_image_ids (ZERO leakage)                │
+│  • Sauvegarde: data/family_data_v13_smart_crops/{family}_{split}.npz       │
+└─────────┬───────────────────────────────────────────────────────────────────┘
+          │
+          ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  ÉTAPE 3: EXTRACTION FEATURES H-OPTIMUS-0                                   │
+│  Script: extract_features_v13_smart_crops.py                                │
+│  ─────────────────────────────────────────────────────────────────────────  │
+│  • Backbone: H-optimus-0 (ViT-Giant/14, 1.1B params, GELÉ)                  │
+│  • Entrée: 224×224 RGB normalisé                                            │
+│  • Sortie: (B, 261, 1536) = CLS + 4 registers + 256 patches                 │
+│  • Cache: data/cache/family_data/{family}_{split}_features.pt              │
+└─────────┬───────────────────────────────────────────────────────────────────┘
+          │
+          ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  ÉTAPE 4: ENTRAÎNEMENT HOVERNET DECODER                                     │
+│  Script: train_hovernet_family_v13_smart_crops.py                           │
+│  ─────────────────────────────────────────────────────────────────────────  │
+│  • Architecture: FPN Chimique + h_alpha learnable                           │
+│  • Injection H-channel: 5 niveaux (16→32→64→112→224)                        │
+│  • Losses: NP (BCE) + HV (MSE) + NT (CE)                                    │
+│  • Checkpoint: models/checkpoints_v13_smart_crops/                          │
+└─────────┬───────────────────────────────────────────────────────────────────┘
+          │
+          ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  ÉTAPE 5: ÉVALUATION AJI                                                    │
+│  Script: test_v13_smart_crops_aji.py                                        │
+│  ─────────────────────────────────────────────────────────────────────────  │
+│  • Post-processing: HV-guided Watershed                                     │
+│  • Métriques: AJI, Dice, mPQ                                                │
+│  • Paramètres optimisés par famille                                         │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Scripts de Validation
+
+| Script | Usage | Vérifications |
+|--------|-------|---------------|
+| `verify_v13_smart_crops_data.py` | Après étape 2 | HV targets, inst_maps, normalisation Macenko |
+| `verify_pipeline_integrity.py` | Après étape 4 | H-channel, h_alpha, dimensions, gradients |
 
 ---
 
@@ -130,46 +210,64 @@ Chaque image source 256×256 génère 5 crops 224×224 avec rotations:
 
 ## Pipeline Complet (Commandes)
 
-**Exemple pour famille `epidermal`** — Remplacer par la famille souhaitée.
+**Exemple pour famille `respiratory`** — Remplacer par la famille souhaitée.
 
-### 1. Normalisation Macenko (Optionnel mais Recommandé)
+> **Important:** Adapter `--pannuke_dir` à votre installation locale.
+
+### 1. Normalisation Macenko (Recommandé)
 
 ```bash
-python scripts/preprocessing/normalize_staining_source.py --family epidermal
+# Charge depuis PanNuke 256×256, sauve dans family_FIXED/
+python scripts/preprocessing/normalize_staining_source.py \
+    --family respiratory \
+    --pannuke_dir /chemin/vers/PanNuke
+
+# Résultat attendu: variance ~21 → ~14 (réduction ~30%)
 ```
+
+**Contenu généré:** `data/family_FIXED/respiratory_data_FIXED.npz`
+- `images`: (N, 256, 256, 3) normalisées
+- `fold_ids`: (N,) origine fold
+- `image_ids`: (N,) index dans fold
+- `organ_names`: (N,) nom organe
 
 ### 2. Générer Smart Crops
 
 ```bash
-# SANS normalisation (résultats actuels)
+# AVEC normalisation Macenko (RECOMMANDÉ)
 python scripts/preprocessing/prepare_v13_smart_crops.py \
-    --family epidermal \
+    --family respiratory \
+    --use_normalized \
+    --pannuke_dir /chemin/vers/PanNuke \
     --max_samples 5000
 
-# AVEC normalisation Macenko (à tester)
+# SANS normalisation (legacy)
 python scripts/preprocessing/prepare_v13_smart_crops.py \
-    --family epidermal \
-    --use_normalized \
+    --family respiratory \
+    --pannuke_dir /chemin/vers/PanNuke \
     --max_samples 5000
 
 # Pour un organe spécifique
 python scripts/preprocessing/prepare_v13_smart_crops.py \
     --family glandular \
     --organ Breast \
+    --pannuke_dir /chemin/vers/PanNuke \
     --max_samples 5000
 ```
 
 ### 3. Vérifier Données Générées
 
 ```bash
-# Vérifier les fichiers générés
-ls -la data/family_data_v13_smart_crops/
-
-# Vérifier split train
-python scripts/validation/verify_v13_smart_crops_data.py --family epidermal --split train
+# Vérifier split train (inclut détection normalisation)
+python scripts/validation/verify_v13_smart_crops_data.py --family respiratory --split train
 
 # Vérifier split val
-python scripts/validation/verify_v13_smart_crops_data.py --family epidermal --split val
+python scripts/validation/verify_v13_smart_crops_data.py --family respiratory --split val
+
+# Résultats attendus:
+#   ✅ Normalisation Macenko DÉTECTÉE (variance < 18)
+#   ✅ HV targets: float32 [-1, 1]
+#   ✅ inst_maps: LOCAL relabeling OK
 ```
 
 ### 4. Extraire Features H-optimus-0
