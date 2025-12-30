@@ -1,6 +1,6 @@
 # CellViT-Optimus R&D Cockpit
 
-> **Version:** POC v4.4 (Lexique Clinique + Small Nuclei Fix)
+> **Version:** POC v4.5 (Enriched Clinical Alerts)
 > **Date:** 2025-12-30
 > **Status:** Fonctionnel — Architecture partagée R&D/Pathologiste
 
@@ -1014,15 +1014,19 @@ Ce lexique facilite l'adoption du R&D Cockpit par les pathologistes en expliquan
 | **Hypercellularité** | Ratio surface noyaux / surface totale | Hypercellularité élevée = encombrement tissulaire lié à prolifération tumorale |
 | **TILs (Ratio I/E)** | Quantification lymphocytes au contact cellules néoplasiques | Indicateur de réponse immunitaire de l'hôte face à la tumeur |
 
-### 5. Seuils d'Alertes Cliniques (v4.3)
+### 5. Seuils d'Alertes Cliniques (v4.5)
 
-| Condition | Seuil | Alerte Affichée |
+> **Principe v4.5:** Langage factuel ("corrélé à", "associé à") — pas d'interprétation ("suspicion de")
+
+| Condition | Seuil | Alerte Enrichie |
 |-----------|-------|-----------------|
-| Mitoses présentes | > 0 | "Mitoses présentes — X figure(s)" |
-| Mitoses élevées | > 3 | "Activité mitotique élevée — X figures suspectes" |
-| Mitoses très élevées | > 10 | 🔴 "Activité mitotique TRÈS élevée — X figures suspectes" |
-| Pléomorphisme sévère | Score = 3 | Dégrade la confiance IA d'un niveau |
-| Chromatine hétérogène | > 20% des noyaux | Dégrade la confiance IA d'un niveau |
+| Mitoses présentes | > 0 | ℹ️ "Mitoses détectées (X) — Figure(s) évocatrice(s) à confirmer visuellement" |
+| Mitoses élevées | > 3 | 🟡 "Activité mitotique élevée (X) — Figures évocatrices identifiées" |
+| Mitoses très élevées | > 10 | 🔴 "Activité mitotique très élevée (X) — Index prolifératif associé aux tumeurs à croissance rapide" |
+| Pléomorphisme sévère | Score = 3 | 🔴 "Pléomorphisme sévère (3/3) — Critère corrélé au grade nucléaire élevé (Nottingham)" |
+| Chromatine hétérogène | > 10% | 🔍 "Chromatine hétérogène (X%) — Texture observée dans cellules à activité métabolique élevée" |
+| Anisocaryose marquée | CV > 0.5 | 🔍 "Anisocaryose marquée (CV=X.XX) — Indicateur d'hétérogénéité morphologique" |
+| TILs froids | Pattern périph. | ❄️ "Infiltrat lymphocytaire périphérique — Pattern associé à l'immuno-exclusion" |
 
 ### 6. Niveaux de Confiance IA
 
