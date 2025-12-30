@@ -109,24 +109,22 @@ Chaque image source 256×256 génère 5 crops 224×224 avec rotations:
 
 ---
 
-## Résultats Actuels
+## Résultats Actuels (SANS Normalisation Macenko)
 
-### Respiratory (408 images sources)
+> **⚠️ IMPORTANT:** Tous les résultats ci-dessous ont été obtenus **SANS normalisation Macenko**.
+> Un test comparatif AVEC normalisation est en cours sur Respiratory.
 
-| Configuration | AJI | Dice | Progress |
-|---------------|-----|------|----------|
-| Baseline (sans FPN) | 0.6113 | 0.8109 | 89.9% |
-| FPN Chimique | 0.6527 | 0.8464 | 96.0% |
-| **FPN + Watershed optimisé** | **0.6734** | 0.8464 | **99.0%** |
+### Récapitulatif 5/5 Familles
 
-### Paramètres Watershed Optimaux
+| Famille | Samples | AJI | Progress | Paramètres Watershed |
+|---------|---------|-----|----------|----------------------|
+| **Respiratory** | 408 | **0.6872** | **101.1%** ✅ | beta=0.50, min_size=30, np_thr=0.40, min_dist=5 |
+| **Urologic** | 1101 | **0.6743** | **99.2%** | beta=0.50, min_size=30, np_thr=0.45, min_dist=2 |
+| **Glandular** | 3391 | **0.6566** | **96.6%** | beta=0.50, min_size=50, np_thr=0.40, min_dist=3 |
+| Epidermal | 574 | 0.6203 | 91.2% | beta=1.00, min_size=20, np_thr=0.45, min_dist=3 |
+| Digestive | 2430 | 0.6160 | 90.6% | beta=2.00, min_size=60, np_thr=0.45, min_dist=5 |
 
-| Paramètre | Valeur |
-|-----------|--------|
-| beta | 0.50 |
-| min_size | 30 |
-| np_threshold | 0.40 |
-| min_distance | 5 |
+**Objectif atteint:** 1/5 (Respiratory) | **Proche (>96%):** 3/5
 
 ---
 
@@ -134,7 +132,7 @@ Chaque image source 256×256 génère 5 crops 224×224 avec rotations:
 
 **Exemple pour famille `epidermal`** — Remplacer par la famille souhaitée.
 
-### 1. Normalisation Macenko (Staining)
+### 1. Normalisation Macenko (Optionnel mais Recommandé)
 
 ```bash
 python scripts/preprocessing/normalize_staining_source.py --family epidermal
@@ -143,8 +141,21 @@ python scripts/preprocessing/normalize_staining_source.py --family epidermal
 ### 2. Générer Smart Crops
 
 ```bash
+# SANS normalisation (résultats actuels)
 python scripts/preprocessing/prepare_v13_smart_crops.py \
     --family epidermal \
+    --max_samples 5000
+
+# AVEC normalisation Macenko (à tester)
+python scripts/preprocessing/prepare_v13_smart_crops.py \
+    --family epidermal \
+    --use_normalized \
+    --max_samples 5000
+
+# Pour un organe spécifique
+python scripts/preprocessing/prepare_v13_smart_crops.py \
+    --family glandular \
+    --organ Breast \
     --max_samples 5000
 ```
 
@@ -176,9 +187,10 @@ ls -la data/cache/family_data/
 ```bash
 python scripts/training/train_hovernet_family_v13_smart_crops.py \
     --family epidermal \
-    --epochs 30 \
+    --epochs 60 \
     --use_hybrid \
-    --use_fpn_chimique
+    --use_fpn_chimique \
+    --use_h_alpha
 ```
 
 **⚠️ IMPORTANT:** `--use_fpn_chimique` nécessite TOUJOURS `--use_hybrid`
@@ -220,6 +232,18 @@ python scripts/evaluation/test_v13_smart_crops_aji.py \
     --beta 1.0 \
     --min_distance 3
 
+# Glandular (AJI 0.6566)
+python scripts/evaluation/test_v13_smart_crops_aji.py \
+    --checkpoint models/checkpoints_v13_smart_crops/hovernet_glandular_v13_smart_crops_hybrid_fpn_best.pth \
+    --family glandular \
+    --n_samples 50 \
+    --use_hybrid \
+    --use_fpn_chimique \
+    --np_threshold 0.40 \
+    --min_size 50 \
+    --beta 0.5 \
+    --min_distance 3
+
 # Digestive (AJI 0.6160)
 python scripts/evaluation/test_v13_smart_crops_aji.py \
     --checkpoint models/checkpoints_v13_smart_crops/hovernet_digestive_v13_smart_crops_hybrid_fpn_best.pth \
@@ -233,12 +257,13 @@ python scripts/evaluation/test_v13_smart_crops_aji.py \
     --min_distance 5
 ```
 
-**Paramètres Watershed optimisés par famille :**
+**Paramètres Watershed optimisés par famille (SANS normalisation):**
 
 | Famille | np_threshold | min_size | beta | min_distance | AJI | Status |
 |---------|--------------|----------|------|--------------|-----|--------|
 | Respiratory | 0.40 | 30 | 0.50 | 5 | **0.6872** | ✅ Objectif |
 | Urologic | 0.45 | 30 | 0.50 | 2 | **0.6743** | 99.2% |
+| Glandular | 0.40 | 50 | 0.50 | 3 | **0.6566** | 96.6% |
 | Epidermal | 0.45 | 20 | 1.00 | 3 | 0.6203 | 91.2% |
 | Digestive | 0.45 | 60 | 2.00 | 5 | 0.6160 | 90.6% |
 
