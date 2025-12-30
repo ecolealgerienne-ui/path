@@ -818,6 +818,25 @@ def create_ui():
             - **Voronoï**: Tessellation pour analyse topologique des voisinages
             """)
 
+        # ================================================================
+        # PANNEAU ZOOM (images agrandies)
+        # ================================================================
+        with gr.Accordion("🔍 Zoom (vue agrandie)", open=False):
+            gr.Markdown("*Images affichées en taille réelle (224×224 → 448×448 pixels)*")
+            with gr.Row():
+                zoom_input = gr.Image(
+                    label="Image Source (zoom)",
+                    type="numpy",
+                    height=450,
+                    interactive=False,
+                )
+                zoom_output = gr.Image(
+                    label="Segmentation (zoom)",
+                    type="numpy",
+                    height=450,
+                    interactive=False,
+                )
+
         # Export Phase 4
         with gr.Accordion("Export Résultats (Phase 4)", open=False):
             gr.Markdown("""
@@ -904,6 +923,18 @@ def create_ui():
         output_image.select(
             fn=on_image_click,
             outputs=[nucleus_info],
+        )
+
+        # Synchroniser le zoom avec les images principales
+        input_image.change(
+            fn=lambda img: img,
+            inputs=[input_image],
+            outputs=[zoom_input],
+        )
+        output_image.change(
+            fn=lambda img: img,
+            inputs=[output_image],
+            outputs=[zoom_output],
         )
 
         # Update overlays (Phase 2 + Phase 3)
