@@ -108,9 +108,11 @@ FAMILY_WATERSHED_PARAMS = {
 
 # Override par organe (optionnel - si vide, utilise les params de la famille)
 ORGAN_WATERSHED_PARAMS = {
-    # Breast: paramètres optimisés (source: CLAUDE.md - AJI 0.6662)
-    # min_distance=2 critique pour éviter les fusions sur cellules pléomorphes
-    "Breast": {"np_threshold": 0.40, "min_size": 30, "beta": 1.50, "min_distance": 2},
+    # Breast: paramètres ajustés après analyse expert
+    # - min_distance=2: évite fusions sur noyaux pléomorphes (validé)
+    # - beta=0.75: compromis entre fusions et sous-segmentation
+    #   (1.5 causait sous-seg, 0.5 causait fusions)
+    "Breast": {"np_threshold": 0.40, "min_size": 30, "beta": 0.75, "min_distance": 2},
 
     # Colon: paramètres optimisés (source: tests organ-specific)
     # Architecture variable → params de la famille digestive
