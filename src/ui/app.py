@@ -56,7 +56,16 @@ from src.ui.visualizations import (
     CELL_COLORS,
     TYPE_NAMES,
 )
+# Phase 4
+from src.ui.export import (
+    create_audit_metadata,
+    export_nuclei_csv,
+    export_summary_csv,
+    create_report_pdf,
+)
 from src.constants import FAMILIES
+import tempfile
+import os
 
 
 # ==============================================================================
@@ -332,6 +341,101 @@ def export_json() -> str:
         return '{"error": "Aucune analyse disponible"}'
 
     return state.current_result.to_json(indent=2)
+
+
+# ==============================================================================
+# FONCTIONS EXPORT PHASE 4
+# ==============================================================================
+
+def export_pdf_handler() -> Optional[str]:
+    """Génère et retourne le chemin du rapport PDF."""
+    if state.current_result is None:
+        return None
+
+    try:
+        result = state.current_result
+
+        # Créer l'overlay pour le PDF
+        overlay = create_segmentation_overlay(
+            result.image_rgb,
+            result.instance_map,
+            result.type_map,
+            alpha=0.4,
+        )
+
+        # Créer les métadonnées d'audit
+        audit = create_audit_metadata(result)
+
+        # Générer le PDF en mémoire
+        pdf_content = create_report_pdf(result, overlay, audit)
+
+        # Sauvegarder dans un fichier temporaire
+        temp_dir = tempfile.gettempdir()
+        pdf_path = os.path.join(temp_dir, f"cellvit_report_{audit.analysis_id}.pdf")
+
+        with open(pdf_path, 'wb') as f:
+            f.write(pdf_content)
+
+        logger.info(f"PDF exported to {pdf_path}")
+        return pdf_path
+
+    except Exception as e:
+        logger.error(f"PDF export error: {e}")
+        return None
+
+
+def export_nuclei_csv_handler() -> Optional[str]:
+    """Génère et retourne le chemin du CSV des noyaux."""
+    if state.current_result is None:
+        return None
+
+    try:
+        result = state.current_result
+        audit = create_audit_metadata(result)
+
+        # Générer le CSV
+        csv_content = export_nuclei_csv(result)
+
+        # Sauvegarder dans un fichier temporaire
+        temp_dir = tempfile.gettempdir()
+        csv_path = os.path.join(temp_dir, f"cellvit_nuclei_{audit.analysis_id}.csv")
+
+        with open(csv_path, 'w') as f:
+            f.write(csv_content)
+
+        logger.info(f"Nuclei CSV exported to {csv_path}")
+        return csv_path
+
+    except Exception as e:
+        logger.error(f"Nuclei CSV export error: {e}")
+        return None
+
+
+def export_summary_csv_handler() -> Optional[str]:
+    """Génère et retourne le chemin du CSV résumé."""
+    if state.current_result is None:
+        return None
+
+    try:
+        result = state.current_result
+        audit = create_audit_metadata(result)
+
+        # Générer le CSV
+        csv_content = export_summary_csv(result, audit)
+
+        # Sauvegarder dans un fichier temporaire
+        temp_dir = tempfile.gettempdir()
+        csv_path = os.path.join(temp_dir, f"cellvit_summary_{audit.analysis_id}.csv")
+
+        with open(csv_path, 'w') as f:
+            f.write(csv_content)
+
+        logger.info(f"Summary CSV exported to {csv_path}")
+        return csv_path
+
+    except Exception as e:
+        logger.error(f"Summary CSV export error: {e}")
+        return None
 
 
 def on_image_click(evt: gr.SelectData) -> str:
@@ -626,15 +730,37 @@ def create_ui():
             - **Voronoï**: Tessellation pour analyse topologique des voisinages
             """)
 
-        # Export JSON (Phase 2)
-        with gr.Accordion("Export Résultats", open=False):
-            export_btn = gr.Button("Exporter en JSON", variant="secondary")
+        # Export Phase 4
+        with gr.Accordion("Export Résultats (Phase 4)", open=False):
+            gr.Markdown("""
+            **Formats d'export disponibles:**
+            - **PDF**: Rapport clinique complet avec visualisations et métriques
+            - **CSV Noyaux**: Données détaillées de chaque noyau détecté
+            - **CSV Résumé**: Métriques globales et paramètres
+            - **JSON**: Données complètes structurées
+            """)
+
+            with gr.Row():
+                export_pdf_btn = gr.Button("Télécharger PDF", variant="primary")
+                export_nuclei_csv_btn = gr.Button("CSV Noyaux", variant="secondary")
+                export_summary_csv_btn = gr.Button("CSV Résumé", variant="secondary")
+                export_json_btn = gr.Button("JSON", variant="secondary")
+
+            with gr.Row():
+                pdf_download = gr.File(label="Rapport PDF", visible=True)
+                nuclei_csv_download = gr.File(label="CSV Noyaux", visible=True)
+                summary_csv_download = gr.File(label="CSV Résumé", visible=True)
+
             json_output = gr.Textbox(
-                label="JSON",
-                lines=10,
-                max_lines=20,
+                label="JSON (prévisualisation)",
+                lines=8,
+                max_lines=15,
                 interactive=False,
             )
+
+            gr.Markdown("""
+            **Note:** Chaque export inclut un identifiant unique d'analyse pour la traçabilité.
+            """)
 
         # ================================================================
         # EVENTS
@@ -668,8 +794,20 @@ def create_ui():
             outputs=[output_image, output_image, metrics_md, alerts_md, type_chart, debug_panel, anomaly_image, phase3_overlay_image, phase3_debug_panel],
         )
 
-        # Export JSON (Phase 2)
-        export_btn.click(
+        # Export Phase 4
+        export_pdf_btn.click(
+            fn=export_pdf_handler,
+            outputs=[pdf_download],
+        )
+        export_nuclei_csv_btn.click(
+            fn=export_nuclei_csv_handler,
+            outputs=[nuclei_csv_download],
+        )
+        export_summary_csv_btn.click(
+            fn=export_summary_csv_handler,
+            outputs=[summary_csv_download],
+        )
+        export_json_btn.click(
             fn=export_json,
             outputs=[json_output],
         )

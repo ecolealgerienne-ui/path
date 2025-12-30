@@ -26,6 +26,18 @@ from .spatial_analysis import (
     PleomorphismScore,
     ChromatinFeatures,
 )
+# Phase 4
+from .export import (
+    AuditMetadata,
+    create_audit_metadata,
+    export_nuclei_csv,
+    export_summary_csv,
+    create_report_pdf,
+    BatchResult,
+    process_batch,
+    export_batch_summary,
+    export_batch_csv,
+)
 
 __all__ = [
     'CellVitEngine',
@@ -44,4 +56,14 @@ __all__ = [
     'create_chromatin_overlay',
     'create_spatial_debug_panel',
     'create_phase3_combined_overlay',
+    # Phase 4
+    'AuditMetadata',
+    'create_audit_metadata',
+    'export_nuclei_csv',
+    'export_summary_csv',
+    'create_report_pdf',
+    'BatchResult',
+    'process_batch',
+    'export_batch_summary',
+    'export_batch_csv',
 ]
