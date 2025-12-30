@@ -69,6 +69,10 @@ class NucleusInfo:
     confidence: float = 1.0
     is_uncertain: bool = False
     is_mitotic: bool = False
+    # Phase 2: Détection anomalies
+    is_potential_fusion: bool = False      # Aire > 2× moyenne
+    is_potential_over_seg: bool = False    # Aire < 0.5× moyenne
+    anomaly_reason: str = ""               # Raison de l'anomalie
 
 
 @dataclass
@@ -108,6 +112,12 @@ class AnalysisResult:
     # Debug info
     inference_time_ms: float = 0.0
 
+    # Phase 2: Anomalies détectées
+    fusion_ids: List[int] = field(default_factory=list)       # IDs noyaux potentiellement fusionnés
+    over_seg_ids: List[int] = field(default_factory=list)     # IDs sur-segmentations
+    n_fusions: int = 0
+    n_over_seg: int = 0
+
     def get_nucleus_at(self, y: int, x: int) -> Optional[NucleusInfo]:
         """Retourne les infos du noyau à la position (y, x)."""
         if self.instance_map is None:
@@ -119,6 +129,78 @@ class AnalysisResult:
             if n.id == nucleus_id:
                 return n
         return None
+
+    def get_anomalies(self) -> Dict[str, List[NucleusInfo]]:
+        """
+        Retourne les noyaux anormaux groupés par type.
+
+        Returns:
+            Dict avec 'fusions' et 'over_segmentations'
+        """
+        return {
+            "fusions": [n for n in self.nucleus_info if n.is_potential_fusion],
+            "over_segmentations": [n for n in self.nucleus_info if n.is_potential_over_seg],
+        }
+
+    def to_dict(self) -> Dict:
+        """
+        Exporte les résultats en dictionnaire (pour JSON).
+
+        Returns:
+            Dict sérialisable en JSON
+        """
+        result = {
+            "metadata": {
+                "organ_name": self.organ_name,
+                "organ_confidence": float(self.organ_confidence),
+                "family": self.family,
+                "inference_time_ms": float(self.inference_time_ms),
+                "watershed_params": self.watershed_params,
+            },
+            "summary": {
+                "n_nuclei": self.n_nuclei,
+                "n_fusions": self.n_fusions,
+                "n_over_segmentations": self.n_over_seg,
+            },
+            "nuclei": [],
+        }
+
+        for n in self.nucleus_info:
+            result["nuclei"].append({
+                "id": n.id,
+                "centroid": list(n.centroid),
+                "area_um2": float(n.area_um2),
+                "perimeter_um": float(n.perimeter_um),
+                "circularity": float(n.circularity),
+                "cell_type": n.cell_type,
+                "type_idx": n.type_idx,
+                "confidence": float(n.confidence),
+                "is_uncertain": n.is_uncertain,
+                "is_mitotic": n.is_mitotic,
+                "is_potential_fusion": n.is_potential_fusion,
+                "is_potential_over_seg": n.is_potential_over_seg,
+                "anomaly_reason": n.anomaly_reason,
+            })
+
+        if self.morphometry:
+            result["morphometry"] = {
+                "nuclei_per_mm2": float(self.morphometry.nuclei_per_mm2),
+                "mean_area_um2": float(self.morphometry.mean_area_um2),
+                "std_area_um2": float(self.morphometry.std_area_um2),
+                "mean_circularity": float(self.morphometry.mean_circularity),
+                "mitotic_index_per_10hpf": float(self.morphometry.mitotic_index_per_10hpf),
+                "neoplastic_ratio": float(self.morphometry.neoplastic_ratio),
+                "til_status": self.morphometry.til_status,
+                "confidence_level": self.morphometry.confidence_level,
+                "alerts": self.morphometry.alerts,
+            }
+
+        return result
+
+    def to_json(self, indent: int = 2) -> str:
+        """Exporte les résultats en JSON."""
+        import json
+        return json.dumps(self.to_dict(), indent=indent, ensure_ascii=False)
 
 
 class CellVitEngine:
@@ -393,18 +475,27 @@ class CellVitEngine:
         if compute_uncertainty:
             uncertainty_map = self._compute_uncertainty(np_pred, hv_pred)
 
-        # Morphométrie
+        # Morphométrie et extraction infos noyaux
         morphometry = None
         nucleus_info = []
+        fusion_ids = []
+        over_seg_ids = []
+
         if compute_morphometry and n_nuclei > 0:
             morphometry = self.morphometry_analyzer.analyze(
                 instance_map, type_map, image=image_224
             )
 
-            # Extraire infos par noyau
-            nucleus_info = self._extract_nucleus_info(
+            # Extraire infos par noyau avec détection anomalies (Phase 2)
+            nucleus_info, fusion_ids, over_seg_ids = self._extract_nucleus_info(
                 instance_map, type_map, np_pred, uncertainty_map
             )
+
+            # Log anomalies détectées
+            if fusion_ids:
+                logger.info(f"  Detected {len(fusion_ids)} potential fusions")
+            if over_seg_ids:
+                logger.info(f"  Detected {len(over_seg_ids)} potential over-segmentations")
 
         inference_time = (time.time() - start_time) * 1000
 
@@ -423,6 +514,11 @@ class CellVitEngine:
             family=self.family,
             watershed_params=params,
             inference_time_ms=inference_time,
+            # Phase 2: Anomalies
+            fusion_ids=fusion_ids,
+            over_seg_ids=over_seg_ids,
+            n_fusions=len(fusion_ids),
+            n_over_seg=len(over_seg_ids),
         )
 
     def _compute_uncertainty(
@@ -456,19 +552,45 @@ class CellVitEngine:
         type_map: np.ndarray,
         np_pred: np.ndarray,
         uncertainty_map: Optional[np.ndarray]
-    ) -> List[NucleusInfo]:
-        """Extrait les informations détaillées par noyau."""
-        nuclei = []
+    ) -> Tuple[List[NucleusInfo], List[int], List[int]]:
+        """
+        Extrait les informations détaillées par noyau avec détection d'anomalies.
 
+        Phase 2: Détecte les fusions potentielles (aire > 2× moyenne)
+        et les sur-segmentations (aire < 0.5× moyenne).
+
+        Returns:
+            Tuple (nuclei_list, fusion_ids, over_seg_ids)
+        """
+        # Première passe: collecter les aires
+        areas_pixels = []
+        inst_ids = []
         for inst_id in np.unique(instance_map):
             if inst_id == 0:
                 continue
+            mask = instance_map == inst_id
+            area = mask.sum()
+            if area >= 10:  # Filtre minimum
+                areas_pixels.append(area)
+                inst_ids.append(inst_id)
 
+        if len(areas_pixels) == 0:
+            return [], [], []
+
+        # Calculer statistiques pour détection anomalies
+        mean_area = np.mean(areas_pixels)
+        std_area = np.std(areas_pixels)
+        fusion_threshold = mean_area * 2.0      # > 2× moyenne = fusion potentielle
+        over_seg_threshold = mean_area * 0.5    # < 0.5× moyenne = sur-segmentation
+
+        # Deuxième passe: créer NucleusInfo avec flags anomalies
+        nuclei = []
+        fusion_ids = []
+        over_seg_ids = []
+
+        for inst_id in inst_ids:
             mask = instance_map == inst_id
             area_pixels = mask.sum()
-
-            if area_pixels < 10:
-                continue
 
             # Centroïde
             coords = np.where(mask)
@@ -492,13 +614,31 @@ class CellVitEngine:
             cell_type = CELL_TYPES[type_idx] if type_idx < len(CELL_TYPES) else "Unknown"
 
             # Confiance (moyenne NP dans le masque)
-            confidence = np_pred[mask].mean()
+            confidence = float(np_pred[mask].mean())
 
             # Incertitude
             is_uncertain = False
             if uncertainty_map is not None:
                 mean_uncertainty = uncertainty_map[mask].mean()
                 is_uncertain = mean_uncertainty > 0.5
+
+            # Phase 2: Détection anomalies
+            is_fusion = area_pixels > fusion_threshold
+            is_over_seg = area_pixels < over_seg_threshold
+            anomaly_reason = ""
+
+            if is_fusion:
+                ratio = area_pixels / mean_area
+                anomaly_reason = f"Aire {ratio:.1f}× moyenne (fusion potentielle)"
+                fusion_ids.append(inst_id)
+            elif is_over_seg:
+                ratio = area_pixels / mean_area
+                anomaly_reason = f"Aire {ratio:.2f}× moyenne (sur-segmentation potentielle)"
+                over_seg_ids.append(inst_id)
+
+            # Critères additionnels pour fusions: faible circularité
+            if is_fusion and circularity < 0.5:
+                anomaly_reason += f", circularité faible ({circularity:.2f})"
 
             nuclei.append(NucleusInfo(
                 id=inst_id,
@@ -510,9 +650,12 @@ class CellVitEngine:
                 type_idx=type_idx,
                 confidence=confidence,
                 is_uncertain=is_uncertain,
+                is_potential_fusion=is_fusion,
+                is_potential_over_seg=is_over_seg,
+                anomaly_reason=anomaly_reason,
             ))
 
-        return nuclei
+        return nuclei, fusion_ids, over_seg_ids
 
     def change_family(self, family: str):
         """Change la famille et recharge HoVer-Net correspondant."""

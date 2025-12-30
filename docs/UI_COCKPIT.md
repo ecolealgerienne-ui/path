@@ -1,8 +1,8 @@
 # CellViT-Optimus R&D Cockpit
 
-> **Version:** POC v1.1 (Phase 1)
+> **Version:** POC v2.0 (Phase 2)
 > **Date:** 2025-12-30
-> **Status:** Fonctionnel — Aligné avec pipeline training/evaluation
+> **Status:** Fonctionnel — Phase 2 complète (détection anomalies, export JSON)
 
 ---
 
@@ -409,18 +409,25 @@ pip install gradio>=4.0.0
 
 ---
 
-### Phase 2 — Couches IA (À venir)
+### Phase 2 — Couches IA ✅ (Complétée)
 
 **Objectif:** Debug pipeline et interaction
 
 | Composant | Status | Description |
 |-----------|--------|-------------|
-| Mode Debug | ⏳ | Panneau dépliable NP/HV/Instances |
-| Détection fusions | ⏳ | Identifier noyaux fusionnés |
-| Détection sur-segmentation | ⏳ | Identifier faux positifs |
-| Comparaison watershed | ⏳ | Avant/après paramètres |
-| Clic sur noyau | ⏳ | Métriques individuelles |
-| Export JSON | ⏳ | Résultats analyse |
+| Mode Debug amélioré | ✅ | Panneau NP/HV/Instances + alertes anomalies |
+| Détection fusions | ✅ | Noyaux avec aire > 2× moyenne (magenta) |
+| Détection sur-segmentation | ✅ | Noyaux avec aire < 0.5× moyenne (cyan) |
+| Clic sur noyau | ✅ | Métriques individuelles + status anomalie |
+| Export JSON | ✅ | `result.to_json()` avec métadonnées complètes |
+| Vue anomalies | ✅ | Overlay avec indicateurs F/S |
+
+**Livrables Phase 2:**
+- `NucleusInfo.is_potential_fusion/is_potential_over_seg` — Flags anomalies
+- `AnalysisResult.fusion_ids/over_seg_ids` — Listes IDs anomalies
+- `AnalysisResult.to_json()` — Export JSON complet
+- `create_anomaly_overlay()` — Visualisation anomalies
+- `create_debug_panel_enhanced()` — Panneau debug avec alertes
 
 **Fonctionnalités Debug:**
 ```
@@ -515,7 +522,7 @@ pleomorphism_score = compute_pleomorphism(
 
 ```
 Phase 1 ████████████████████ 100% ✅ Fondation
-Phase 2 ░░░░░░░░░░░░░░░░░░░░   0%    Couches IA
+Phase 2 ████████████████████ 100% ✅ Couches IA
 Phase 3 ░░░░░░░░░░░░░░░░░░░░   0%    Intelligence Spatiale
 Phase 4 ░░░░░░░░░░░░░░░░░░░░   0%    Polish & Export
 ```

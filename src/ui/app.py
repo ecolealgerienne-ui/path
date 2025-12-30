@@ -43,6 +43,8 @@ from src.ui.visualizations import (
     create_type_distribution_chart,
     create_morphometry_summary,
     create_debug_panel,
+    create_debug_panel_enhanced,  # Phase 2
+    create_anomaly_overlay,        # Phase 2
     highlight_nuclei,
     CELL_COLORS,
     TYPE_NAMES,
@@ -96,27 +98,27 @@ def analyze_image(
     min_size: int,
     beta: float,
     min_distance: int,
-) -> Tuple[np.ndarray, np.ndarray, str, str, np.ndarray, np.ndarray]:
+) -> Tuple[np.ndarray, np.ndarray, str, str, np.ndarray, np.ndarray, np.ndarray]:
     """
     Analyse une image et retourne les visualisations.
 
     Returns:
-        (overlay, contours, metrics_text, alerts_text, chart, debug)
+        (overlay, contours, metrics_text, alerts_text, chart, debug, anomaly_overlay)
     """
+    empty = np.zeros((224, 224, 3), dtype=np.uint8)
+    empty_debug = np.zeros((100, 400, 3), dtype=np.uint8)
+
     if state.engine is None:
-        empty = np.zeros((224, 224, 3), dtype=np.uint8)
-        return empty, empty, "Moteur non chargé", "", empty, empty
+        return empty, empty, "Moteur non chargé", "", empty, empty_debug, empty
 
     if image is None:
-        empty = np.zeros((224, 224, 3), dtype=np.uint8)
-        return empty, empty, "Aucune image", "", empty, empty
+        return empty, empty, "Aucune image", "", empty, empty_debug, empty
 
     # Vérification taille 224×224
     h, w = image.shape[:2]
     if h != 224 or w != 224:
-        empty = np.zeros((224, 224, 3), dtype=np.uint8)
         error_msg = f"**Erreur : Image {w}×{h} pixels**\n\nVeuillez charger une image de **224×224 pixels**."
-        return empty, empty, error_msg, "", empty, empty
+        return empty, empty, error_msg, "", empty, empty_debug, empty
 
     try:
         # Paramètres watershed personnalisés
@@ -155,7 +157,7 @@ def analyze_image(
         # Métriques texte
         metrics_text = format_metrics(result)
 
-        # Alertes texte
+        # Alertes texte (incluant anomalies Phase 2)
         alerts_text = format_alerts(result)
 
         # Chart distribution
@@ -164,21 +166,30 @@ def analyze_image(
         else:
             chart = np.zeros((200, 300, 3), dtype=np.uint8)
 
-        # Debug panel
-        debug = create_debug_panel(
+        # Debug panel amélioré (Phase 2)
+        debug = create_debug_panel_enhanced(
             result.np_pred,
             result.hv_pred,
             result.instance_map,
+            n_fusions=result.n_fusions,
+            n_over_seg=result.n_over_seg,
         )
 
-        return overlay, contours, metrics_text, alerts_text, chart, debug
+        # Overlay anomalies (Phase 2)
+        anomaly_overlay = create_anomaly_overlay(
+            result.image_rgb,
+            result.instance_map,
+            result.fusion_ids,
+            result.over_seg_ids,
+        )
+
+        return overlay, contours, metrics_text, alerts_text, chart, debug, anomaly_overlay
 
     except Exception as e:
         logger.error(f"Analysis error: {e}")
         import traceback
         traceback.print_exc()
-        empty = np.zeros((224, 224, 3), dtype=np.uint8)
-        return empty, empty, f"Erreur : {e}", "", empty, empty
+        return empty, empty, f"Erreur : {e}", "", empty, empty_debug, empty
 
 
 def format_metrics(result: AnalysisResult) -> str:
@@ -225,15 +236,32 @@ def format_metrics(result: AnalysisResult) -> str:
 
 
 def format_alerts(result: AnalysisResult) -> str:
-    """Formate les alertes en texte."""
-    if not result.morphometry or not result.morphometry.alerts:
+    """Formate les alertes en texte (incluant anomalies Phase 2)."""
+    lines = ["### Points d'attention", ""]
+
+    # Alertes morphométriques
+    if result.morphometry and result.morphometry.alerts:
+        for alert in result.morphometry.alerts:
+            lines.append(f"- {alert}")
+
+    # Phase 2: Alertes anomalies
+    if result.n_fusions > 0:
+        lines.append(f"- **{result.n_fusions} fusion(s) potentielle(s)** (aire > 2× moyenne)")
+    if result.n_over_seg > 0:
+        lines.append(f"- **{result.n_over_seg} sur-segmentation(s)** (aire < 0.5× moyenne)")
+
+    if len(lines) == 2:  # Seulement le titre
         return "Aucune alerte"
 
-    lines = ["### Points d'attention", ""]
-    for alert in result.morphometry.alerts:
-        lines.append(f"- {alert}")
-
     return "\n".join(lines)
+
+
+def export_json() -> str:
+    """Exporte les résultats en JSON."""
+    if state.current_result is None:
+        return '{"error": "Aucune analyse disponible"}'
+
+    return state.current_result.to_json(indent=2)
 
 
 def on_image_click(evt: gr.SelectData) -> str:
@@ -259,10 +287,21 @@ def on_image_click(evt: gr.SelectData) -> str:
             f"**Confiance:** {nucleus.confidence:.1%}",
         ]
 
+        # Status spéciaux
         if nucleus.is_uncertain:
             lines.append("**Status:** Incertain")
         if nucleus.is_mitotic:
             lines.append("**Status:** Mitose suspecte")
+
+        # Phase 2: Anomalies
+        if nucleus.is_potential_fusion:
+            lines.append("")
+            lines.append("⚠️ **FUSION POTENTIELLE**")
+            lines.append(f"   {nucleus.anomaly_reason}")
+        if nucleus.is_potential_over_seg:
+            lines.append("")
+            lines.append("⚠️ **SUR-SEGMENTATION**")
+            lines.append(f"   {nucleus.anomaly_reason}")
 
         return "\n".join(lines)
 
@@ -275,6 +314,7 @@ def update_overlay(
     show_contours: bool,
     show_uncertainty: bool,
     show_density: bool,
+    show_anomalies: bool = False,  # Phase 2
 ) -> np.ndarray:
     """Met à jour l'overlay selon les options."""
     if state.current_result is None:
@@ -298,6 +338,12 @@ def update_overlay(
     if show_contours:
         image = create_contour_overlay(
             image, result.instance_map, result.type_map, thickness=1
+        )
+
+    # Phase 2: Overlay anomalies
+    if show_anomalies and (result.fusion_ids or result.over_seg_ids):
+        image = create_anomaly_overlay(
+            image, result.instance_map, result.fusion_ids, result.over_seg_ids
         )
 
     return image
@@ -383,6 +429,7 @@ def create_ui():
                     show_contours = gr.Checkbox(label="Contours", value=True)
                     show_uncertainty = gr.Checkbox(label="Incertitude", value=False)
                     show_density = gr.Checkbox(label="Densité", value=False)
+                    show_anomalies = gr.Checkbox(label="Anomalies", value=False)  # Phase 2
 
                 # Paramètres Watershed
                 with gr.Accordion("Paramètres Watershed", open=False):
@@ -425,15 +472,34 @@ def create_ui():
                 # Chart distribution
                 type_chart = gr.Image(label="Distribution", height=200)
 
-        # Debug panel (accordéon fermé)
+        # Debug panel (accordéon fermé) - Phase 2 amélioré
         with gr.Accordion("Debug IA", open=False):
-            debug_panel = gr.Image(label="Pipeline NP/HV/Instances", height=200)
+            debug_panel = gr.Image(label="Pipeline NP/HV/Instances + Alertes", height=200)
+
+            with gr.Row():
+                anomaly_image = gr.Image(label="Vue Anomalies (F=fusion, S=sur-seg)", height=200)
+
             gr.Markdown("""
-            **Légende:**
+            **Légende Pipeline:**
             - NP Probability: Rouge = haute probabilité nucléaire
             - HV Horizontal/Vertical: Gradients [-1, 1] (bleu = négatif, rouge = positif)
             - Instances: Couleurs aléatoires par instance
+            - Alertes: Fusions (>2× aire moy.) et Sur-segmentations (<0.5× aire moy.)
+
+            **Vue Anomalies:**
+            - **Magenta (F)**: Fusion potentielle - noyaux anormalement grands
+            - **Cyan (S)**: Sur-segmentation - fragments trop petits
             """)
+
+        # Export JSON (Phase 2)
+        with gr.Accordion("Export Résultats", open=False):
+            export_btn = gr.Button("Exporter en JSON", variant="secondary")
+            json_output = gr.Textbox(
+                label="JSON",
+                lines=10,
+                max_lines=20,
+                interactive=False,
+            )
 
         # ================================================================
         # EVENTS
@@ -457,14 +523,20 @@ def create_ui():
         analyze_btn.click(
             fn=analyze_image,
             inputs=[input_image, np_threshold, min_size, beta, min_distance],
-            outputs=[output_image, output_image, metrics_md, alerts_md, type_chart, debug_panel],
+            outputs=[output_image, output_image, metrics_md, alerts_md, type_chart, debug_panel, anomaly_image],
         )
 
         # Auto-analyse quand image uploadée
         input_image.change(
             fn=analyze_image,
             inputs=[input_image, np_threshold, min_size, beta, min_distance],
-            outputs=[output_image, output_image, metrics_md, alerts_md, type_chart, debug_panel],
+            outputs=[output_image, output_image, metrics_md, alerts_md, type_chart, debug_panel, anomaly_image],
+        )
+
+        # Export JSON (Phase 2)
+        export_btn.click(
+            fn=export_json,
+            outputs=[json_output],
         )
 
         # Clic sur l'image
@@ -473,11 +545,11 @@ def create_ui():
             outputs=[nucleus_info],
         )
 
-        # Update overlays
-        for checkbox in [show_seg, show_contours, show_uncertainty, show_density]:
+        # Update overlays (incluant show_anomalies Phase 2)
+        for checkbox in [show_seg, show_contours, show_uncertainty, show_density, show_anomalies]:
             checkbox.change(
                 fn=update_overlay,
-                inputs=[show_seg, show_contours, show_uncertainty, show_density],
+                inputs=[show_seg, show_contours, show_uncertainty, show_density, show_anomalies],
                 outputs=[output_image],
             )
 

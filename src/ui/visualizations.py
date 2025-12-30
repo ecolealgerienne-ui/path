@@ -464,6 +464,147 @@ def create_debug_panel(
     return (img[:, :, :3] * 255).astype(np.uint8)
 
 
+def create_anomaly_overlay(
+    image: np.ndarray,
+    instance_map: np.ndarray,
+    fusion_ids: List[int],
+    over_seg_ids: List[int],
+    thickness: int = 2,
+) -> np.ndarray:
+    """
+    Crée un overlay mettant en évidence les anomalies détectées.
+
+    Phase 2: Surligne les fusions potentielles en magenta et
+    les sur-segmentations en cyan.
+
+    Args:
+        image: Image RGB originale
+        instance_map: Carte d'instances
+        fusion_ids: IDs des noyaux potentiellement fusionnés
+        over_seg_ids: IDs des sur-segmentations
+        thickness: Épaisseur des contours
+
+    Returns:
+        Image avec anomalies surlignées
+    """
+    result = image.copy()
+
+    # Fusions en magenta
+    for nid in fusion_ids:
+        mask = (instance_map == nid).astype(np.uint8)
+        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        cv2.drawContours(result, contours, -1, (255, 0, 255), thickness)  # Magenta
+
+        # Ajouter indicateur "F"
+        coords = np.where(instance_map == nid)
+        if len(coords[0]) > 0:
+            cy, cx = int(coords[0].mean()), int(coords[1].mean())
+            cv2.putText(result, "F", (cx - 5, cy + 5), cv2.FONT_HERSHEY_SIMPLEX,
+                       0.4, (255, 0, 255), 1)
+
+    # Sur-segmentations en cyan
+    for nid in over_seg_ids:
+        mask = (instance_map == nid).astype(np.uint8)
+        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        cv2.drawContours(result, contours, -1, (0, 255, 255), thickness)  # Cyan
+
+        # Ajouter indicateur "S"
+        coords = np.where(instance_map == nid)
+        if len(coords[0]) > 0:
+            cy, cx = int(coords[0].mean()), int(coords[1].mean())
+            cv2.putText(result, "S", (cx - 3, cy + 3), cv2.FONT_HERSHEY_SIMPLEX,
+                       0.3, (0, 255, 255), 1)
+
+    return result
+
+
+def create_debug_panel_enhanced(
+    np_pred: np.ndarray,
+    hv_pred: np.ndarray,
+    instance_map: np.ndarray,
+    n_fusions: int = 0,
+    n_over_seg: int = 0,
+    figsize: Tuple[int, int] = (14, 4),
+) -> np.ndarray:
+    """
+    Crée un panneau de debug amélioré avec alertes anomalies.
+
+    Phase 2: Ajoute un panneau d'alertes à droite.
+
+    Args:
+        np_pred: Prédiction NP (H, W) [0, 1]
+        hv_pred: Prédiction HV (2, H, W) [-1, 1]
+        instance_map: Carte d'instances finale
+        n_fusions: Nombre de fusions détectées
+        n_over_seg: Nombre de sur-segmentations
+
+    Returns:
+        Image RGB du panneau
+    """
+    fig, axes = plt.subplots(1, 5, figsize=figsize, facecolor='white',
+                             gridspec_kw={'width_ratios': [1, 1, 1, 1, 0.6]})
+
+    # 1. NP probability
+    axes[0].imshow(np_pred, cmap='hot', vmin=0, vmax=1)
+    axes[0].set_title("NP Probability")
+    axes[0].axis('off')
+
+    # 2. HV horizontal
+    axes[1].imshow(hv_pred[0], cmap='RdBu', vmin=-1, vmax=1)
+    axes[1].set_title("HV Horizontal")
+    axes[1].axis('off')
+
+    # 3. HV vertical
+    axes[2].imshow(hv_pred[1], cmap='RdBu', vmin=-1, vmax=1)
+    axes[2].set_title("HV Vertical")
+    axes[2].axis('off')
+
+    # 4. Instances
+    axes[3].imshow(instance_map, cmap='nipy_spectral')
+    axes[3].set_title(f"Instances ({instance_map.max()})")
+    axes[3].axis('off')
+
+    # 5. Alertes anomalies
+    axes[4].axis('off')
+    axes[4].set_xlim(0, 1)
+    axes[4].set_ylim(0, 1)
+
+    alert_text = "ALERTES\n" + "─" * 12 + "\n\n"
+
+    if n_fusions > 0:
+        alert_text += f"⚠ {n_fusions} fusion(s)\n"
+        alert_text += "  (aire > 2× moy.)\n\n"
+    else:
+        alert_text += "✓ 0 fusion\n\n"
+
+    if n_over_seg > 0:
+        alert_text += f"⚠ {n_over_seg} sur-seg.\n"
+        alert_text += "  (aire < 0.5× moy.)\n"
+    else:
+        alert_text += "✓ 0 sur-seg.\n"
+
+    # Couleur du texte selon anomalies
+    text_color = 'red' if (n_fusions > 0 or n_over_seg > 0) else 'green'
+
+    axes[4].text(0.1, 0.9, alert_text, transform=axes[4].transAxes,
+                 fontsize=9, verticalalignment='top', fontfamily='monospace',
+                 color=text_color,
+                 bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
+
+    plt.tight_layout()
+
+    # Convertir en image
+    buf = io.BytesIO()
+    plt.savefig(buf, format='png', dpi=100, facecolor='white')
+    plt.close(fig)
+    buf.seek(0)
+
+    img = plt.imread(buf)
+    buf.close()
+
+    return (img[:, :, :3] * 255).astype(np.uint8)
+
+
 def create_voronoi_overlay(
     image: np.ndarray,
     centroids: List[Tuple[int, int]],
