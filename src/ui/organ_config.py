@@ -108,11 +108,12 @@ FAMILY_WATERSHED_PARAMS = {
 
 # Override par organe (optionnel - si vide, utilise les params de la famille)
 ORGAN_WATERSHED_PARAMS = {
-    # Breast: paramètres ajustés après analyse expert
+    # Breast: paramètres ajustés après analyse expert (run 3)
+    # Diagnostic: beta=0.75 causait encore sous-segmentation
+    # - np_threshold=0.50: affine contours, décolle noyaux adjacents
     # - min_distance=2: évite fusions sur noyaux pléomorphes (validé)
-    # - beta=0.75: compromis entre fusions et sous-segmentation
-    #   (1.5 causait sous-seg, 0.5 causait fusions)
-    "Breast": {"np_threshold": 0.40, "min_size": 30, "beta": 0.75, "min_distance": 2},
+    # - beta=0.50: évite sous-segmentation (0.75/1.5 trop agressifs)
+    "Breast": {"np_threshold": 0.50, "min_size": 30, "beta": 0.50, "min_distance": 2},
 
     # Colon: paramètres optimisés (source: tests organ-specific)
     # Architecture variable → params de la famille digestive
