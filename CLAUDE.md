@@ -244,89 +244,6 @@ Chaque image source 256×256 génère 5 crops 224×224 avec rotations:
 
 **Objectif atteint:** 1/5 (Respiratory) | **Proche (>96%):** 3/5
 
-### Résultats par Organe (Expérimental)
-
-> **Pipeline Organ-Specific:** Permet d'entraîner sur un organe isolé au lieu d'une famille entière.
-> Utile pour identifier les organes "difficiles" ou optimiser par tissu.
-
-| Organe | Famille | Samples | AJI | AJI Median | Progress | Paramètres Watershed |
-|--------|---------|---------|-----|------------|----------|----------------------|
-| **Breast** | Glandular | ~680 | **0.6662** | **0.6933** ✅ | 98.0% | beta=1.50, min_size=30, np_thr=0.40, min_dist=2 |
-| Colon | Digestive | ~500 | 0.5352 | - | 78.7% ❌ | beta=0.50, min_size=60, np_thr=0.40, min_dist=3 |
-
-**Observations Breast (2025-12-30):**
-- AJI Median (0.6933) > Objectif (0.68) → Quelques outliers tirent la moyenne vers le bas
-- Over-seg ratio: 1.00× → Détection d'instances quasi-parfaite
-- NT Accuracy: 89.2% (classification nucléaire excellente)
-- Dice: 0.8243 ± 0.1131
-
-**Observations Colon (2025-12-30) — ÉCHEC:**
-- AJI 0.5352 = -13% vs Digestive family (0.6160)
-- 40% outliers (20/50 samples avec AJI < 0.50)
-- HV MSE: 0.125 (trop élevé, seuil acceptable: <0.08)
-- Cause: Architecture tissulaire trop variable (cryptes, villosités, stroma)
-
----
-
-## 🎯 Matrice de Décision: Organ-Specific vs Family Training (2025-12-30)
-
-> **Découverte expérimentale:** L'entraînement organ-specific n'est PAS universellement supérieur.
-> Le choix optimal dépend de l'**homogénéité architecturale** du tissu.
-
-### Résultats Comparatifs
-
-| Test | Modèle | AJI | Outliers | Verdict |
-|------|--------|-----|----------|---------|
-| Breast samples | **Breast (organ)** | **0.6662** | 6% | ✅ Organ-specific gagne |
-| Breast samples | Glandular (family) | 0.6427 | 14% | |
-| Colon samples | **Digestive (family)** | **0.6160** | ~15% | ✅ Family gagne |
-| Colon samples | Colon (organ) | 0.5352 | 40% | ❌ Échec |
-
-### Analyse: Pourquoi cette Différence?
-
-**Breast (Organ-specific = Succès):**
-- Architecture **homogène**: Canaux galactophores réguliers
-- Morphologie nucléaire **uniforme** dans tout le tissu
-- Gradients HV **stables** → Le modèle se spécialise efficacement
-
-**Colon (Organ-specific = Échec):**
-- Architecture **hétérogène**: Cryptes, villosités, stroma, inflammation
-- Morphologie nucléaire **variable** selon la zone
-- Gradients HV **instables** → Manque de diversité = mauvaise généralisation
-
-### Nouvelle Stratégie V13 Hybrid V2
-
-Suite à cette découverte, nous ne pouvons plus appliquer la même recette à tout le dataset.
-
-#### Groupe A — Tissus à Architecture Fixe (Organ-Specific Recommandé)
-
-| Organe | Famille | Raison |
-|--------|---------|--------|
-| **Breast** | Glandular | Canaux galactophores uniformes |
-| **Thyroid** | Glandular | Follicules thyroïdiens réguliers |
-| **Skin** | Epidermal | Couches épidermiques structurées |
-
-**Action:** Entraînement organ-specific pour maximiser l'AJI via la spécialisation.
-
-#### Groupe B — Tissus à Architecture Complexe/Variable (Family Training Recommandé)
-
-| Organe | Famille | Raison |
-|--------|---------|--------|
-| **Colon** | Digestive | Cryptes + villosités + stroma + inflammation |
-| **Stomach** | Digestive | Glandes gastriques variables |
-| **Lung** | Respiratory | Alvéoles + bronches + vaisseaux |
-
-**Action:** Entraînement family-level pour stabiliser les gradients HV via la diversité.
-
-### Règle de Décision Simplifiée
-
-```
-SI tissu.architecture == "homogène" ET tissu.morphologie_nucléaire == "uniforme":
-    → Entraînement ORGAN-SPECIFIC
-SINON:
-    → Entraînement FAMILY-LEVEL
-```
-
 ---
 
 ## Pipeline Complet (Commandes)
@@ -341,13 +258,6 @@ SINON:
 # ✅ PRODUCTION: Images brutes depuis PanNuke (RECOMMANDÉ)
 python scripts/preprocessing/prepare_v13_smart_crops.py \
     --family respiratory \
-    --pannuke_dir /chemin/vers/PanNuke \
-    --max_samples 5000
-
-# Pour un organe spécifique
-python scripts/preprocessing/prepare_v13_smart_crops.py \
-    --family glandular \
-    --organ Breast \
     --pannuke_dir /chemin/vers/PanNuke \
     --max_samples 5000
 
@@ -454,28 +364,14 @@ python scripts/evaluation/test_v13_smart_crops_aji.py \
     --min_size 60 \
     --beta 2.0 \
     --min_distance 5
-
-# Breast (Organ-specific, AJI 0.6662)
-python scripts/evaluation/test_v13_smart_crops_aji.py \
-    --checkpoint models/checkpoints_v13_smart_crops/hovernet_breast_v13_smart_crops_hybrid_fpn_best.pth \
-    --family glandular \
-    --organ Breast \
-    --n_samples 50 \
-    --use_hybrid \
-    --use_fpn_chimique \
-    --np_threshold 0.40 \
-    --min_size 30 \
-    --beta 1.5 \
-    --min_distance 2
 ```
 
 **Paramètres Watershed optimisés par famille (SANS normalisation):**
 
-| Famille/Organe | np_threshold | min_size | beta | min_distance | AJI | Status |
-|----------------|--------------|----------|------|--------------|-----|--------|
+| Famille | np_threshold | min_size | beta | min_distance | AJI | Status |
+|---------|--------------|----------|------|--------------|-----|--------|
 | Respiratory | 0.40 | 30 | 0.50 | 5 | **0.6872** | ✅ Objectif |
 | Urologic | 0.45 | 30 | 0.50 | 2 | **0.6743** | 99.2% |
-| **Breast** (organ) | 0.40 | 30 | 1.50 | 2 | **0.6662** | 98.0% |
 | Glandular | 0.40 | 50 | 0.50 | 3 | **0.6566** | 96.6% |
 | Epidermal | 0.45 | 20 | 1.00 | 3 | 0.6203 | 91.2% |
 | Digestive | 0.45 | 60 | 2.00 | 5 | 0.6160 | 90.6% |
@@ -637,26 +533,25 @@ python scripts/training/train_hovernet_family_v13_smart_crops.py \
 
 ---
 
-## Prochaines Étapes (V13 Hybrid V2)
+## Prochaines Étapes
 
-### Groupe A — Organ-Specific Training
+> **Stratégie:** Toujours utiliser les modèles par **famille** (pas de modèles organ-specific).
 
-| Organe | Famille | Priorité | Justification |
-|--------|---------|----------|---------------|
-| **Thyroid** | Glandular | Haute | Follicules uniformes, attendu ~0.68 |
-| **Skin** | Epidermal | Haute | Couches structurées, potentiel +5% vs family |
+### Priorités d'Amélioration
 
-### Groupe B — Family Training (Conserver)
+| Famille | AJI Actuel | Gap vs 0.68 | Priorité |
+|---------|------------|-------------|----------|
+| **Epidermal** | 0.6203 | -8.8% | Haute |
+| **Digestive** | 0.6160 | -9.4% | Haute |
+| **Glandular** | 0.6566 | -3.4% | Moyenne |
+| Urologic | 0.6743 | -0.8% | Basse |
+| Respiratory | 0.6872 | ✅ | Done |
 
-| Famille | Organes | Priorité | Justification |
-|---------|---------|----------|---------------|
-| **Digestive** | Colon, Stomach, Esophagus, Bile-duct | ✅ Done | AJI 0.6160 (family) > 0.5352 (Colon organ) |
-| **Respiratory** | Lung, Liver | ✅ Done | AJI 0.6872 — Objectif atteint |
+### Pistes d'Optimisation
 
-### Tests Comparatifs à Faire
-
-1. **Thyroid organ-specific** vs Glandular family → Valider si Groupe A applicable
-2. **Skin organ-specific** vs Epidermal family → Valider architecture stratifiée
+1. **Watershed tuning** — Continuer optimisation des paramètres par famille
+2. **Data augmentation** — Augmentations légères (luminosité, contraste)
+3. **Transfer learning** — Utiliser Respiratory comme pretrained pour les autres familles
 
 ---
 
