@@ -136,7 +136,7 @@ class V13SmartCropsDataset(Dataset):
     - Support mode hybride (charge images RGB pour injection H-channel)
     """
 
-    def __init__(self, family: str, split: str, cache_dir: str = None, augment: bool = False, use_hybrid: bool = False):
+    def __init__(self, family: str, split: str, cache_dir: str = None, augment: bool = False, use_hybrid: bool = False, data_prefix: str = None):
         assert split in ["train", "val"], f"Split doit être 'train' ou 'val', pas '{split}'"
 
         self.family = family
@@ -145,18 +145,22 @@ class V13SmartCropsDataset(Dataset):
         self.use_hybrid = use_hybrid
         self.augmenter = FeatureAugmentation() if augment else None
 
+        # Préfixe pour les fichiers de données (organe ou famille)
+        # Si data_prefix n'est pas spécifié, utiliser family
+        self.data_prefix = data_prefix if data_prefix else family
+
         # Répertoire cache
         if cache_dir is None:
             cache_dir = PROJECT_ROOT / "data/cache/family_data"
         else:
             cache_dir = Path(cache_dir)
 
-        # Chemins fichiers V13 Smart Crops
-        features_path = cache_dir / f"{family}_rgb_features_v13_smart_crops_{split}.npz"
+        # Chemins fichiers V13 Smart Crops (utilise data_prefix pour organe ou famille)
+        features_path = cache_dir / f"{self.data_prefix}_rgb_features_v13_smart_crops_{split}.npz"
 
         # Pour les targets, on utilise le fichier de prepare_v13_smart_crops.py
         targets_dir = PROJECT_ROOT / "data/family_data_v13_smart_crops"
-        targets_path = targets_dir / f"{family}_{split}_v13_smart_crops.npz"
+        targets_path = targets_dir / f"{self.data_prefix}_{split}_v13_smart_crops.npz"
 
         if not features_path.exists():
             raise FileNotFoundError(
@@ -164,7 +168,7 @@ class V13SmartCropsDataset(Dataset):
                 f"Fichier manquant: {features_path}\n\n"
                 f"Lancez d'abord:\n"
                 f"  python scripts/preprocessing/extract_features_v13_smart_crops.py \\\n"
-                f"      --family {family} --split {split}"
+                f"      --family {self.data_prefix} --split {split}"
             )
 
         if not targets_path.exists():
@@ -172,7 +176,7 @@ class V13SmartCropsDataset(Dataset):
                 f"Targets V13 Smart Crops ({split}) non trouvées.\n"
                 f"Fichier manquant: {targets_path}\n\n"
                 f"Lancez d'abord:\n"
-                f"  python scripts/preprocessing/prepare_v13_smart_crops.py --family {family}"
+                f"  python scripts/preprocessing/prepare_v13_smart_crops.py --family {family} --organ {self.data_prefix}"
             )
 
         print(f"\n🏷️ Famille: {family} ({split})")
@@ -218,7 +222,7 @@ class V13SmartCropsDataset(Dataset):
                 raise ValueError(
                     f"Mode hybride activé mais 'images' non trouvées dans {targets_path}.\n"
                     f"Régénérez les données avec:\n"
-                    f"  python scripts/preprocessing/prepare_v13_smart_crops.py --family {family}"
+                    f"  python scripts/preprocessing/prepare_v13_smart_crops.py --family {family} --organ {self.data_prefix}"
                 )
         else:
             self.images = None
@@ -641,6 +645,12 @@ def main():
         choices=FAMILIES,
         help="Famille d'organes"
     )
+    parser.add_argument(
+        "--organ",
+        type=str,
+        default=None,
+        help="Organe spécifique (optionnel). Si spécifié, charge les fichiers {organ}_train.npz au lieu de {family}_train.npz"
+    )
     parser.add_argument("--epochs", type=int, default=30)
     parser.add_argument("--batch_size", type=int, default=16)
     parser.add_argument("--lr", type=float, default=1e-4)
@@ -691,6 +701,8 @@ def main():
     print("=" * 80)
     print(f"\nConfiguration:")
     print(f"  Famille: {args.family}")
+    if args.organ:
+        print(f"  Organe: {args.organ}")
     print(f"  Epochs: {args.epochs}")
     print(f"  Batch size: {args.batch_size}")
     print(f"  Learning rate: {args.lr}")
@@ -718,18 +730,26 @@ def main():
     print("CHARGEMENT DATASETS")
     print("=" * 80)
 
+    # Déterminer le préfixe pour les fichiers de données
+    # Si --organ est spécifié, utiliser le nom de l'organe (en minuscules)
+    data_prefix = args.organ.lower() if args.organ else args.family
+    if args.organ:
+        print(f"  Mode organe: {args.organ} (préfixe: {data_prefix})")
+
     train_dataset = V13SmartCropsDataset(
         family=args.family,
         split="train",
         augment=args.augment,
-        use_hybrid=args.use_hybrid
+        use_hybrid=args.use_hybrid,
+        data_prefix=data_prefix
     )
 
     val_dataset = V13SmartCropsDataset(
         family=args.family,
         split="val",
         augment=False,  # Pas d'augmentation en validation
-        use_hybrid=args.use_hybrid
+        use_hybrid=args.use_hybrid,
+        data_prefix=data_prefix
     )
 
     train_loader = DataLoader(
@@ -934,7 +954,7 @@ def main():
                 suffix += "_hybrid"
             if args.use_fpn_chimique:
                 suffix += "_fpn"
-            checkpoint_path = checkpoint_dir / f"hovernet_{args.family}_v13_smart_crops{suffix}_best.pth"
+            checkpoint_path = checkpoint_dir / f"hovernet_{data_prefix}_v13_smart_crops{suffix}_best.pth"
             torch.save({
                 'epoch': epoch,
                 'model_state_dict': model.state_dict(),
@@ -956,7 +976,7 @@ def main():
         suffix += "_hybrid"
     if args.use_fpn_chimique:
         suffix += "_fpn"
-    history_path = checkpoint_dir / f"hovernet_{args.family}_v13_smart_crops{suffix}_history.json"
+    history_path = checkpoint_dir / f"hovernet_{data_prefix}_v13_smart_crops{suffix}_history.json"
     with open(history_path, 'w') as f:
         json.dump(history, f, indent=2)
 
@@ -965,7 +985,7 @@ def main():
     print("=" * 80)
     print(f"\nBest Dice: {best_dice:.4f}")
     print(f"Best Combined Score: {best_combined_score:.4f}")
-    checkpoint_final = checkpoint_dir / f"hovernet_{args.family}_v13_smart_crops{suffix}_best.pth"
+    checkpoint_final = checkpoint_dir / f"hovernet_{data_prefix}_v13_smart_crops{suffix}_best.pth"
     print(f"\nCheckpoint: {checkpoint_final}")
     print(f"History: {history_path}")
     print("\nProchaine étape:")
@@ -975,7 +995,7 @@ def main():
     if args.use_fpn_chimique:
         flags += " --use_fpn_chimique"
     print(f"  python scripts/evaluation/test_v13_smart_crops_aji.py \\")
-    print(f"      --family {args.family} --n_samples 50{flags}")
+    print(f"      --family {data_prefix} --n_samples 50{flags}")
 
     return 0
 

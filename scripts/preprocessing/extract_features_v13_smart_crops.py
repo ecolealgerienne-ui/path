@@ -41,6 +41,12 @@ def main():
         help="Famille d'organes"
     )
     parser.add_argument(
+        "--organ",
+        type=str,
+        default=None,
+        help="Organe spécifique (optionnel). Si spécifié, charge {organ}_{split}.npz au lieu de {family}_{split}.npz"
+    )
+    parser.add_argument(
         "--split",
         required=True,
         choices=["train", "val"],
@@ -73,18 +79,25 @@ def main():
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    # Préfixe pour les fichiers de données (organe ou famille)
+    data_prefix = args.organ.lower() if args.organ else args.family
+
     # Chemins fichiers
-    data_file = data_dir / f"{args.family}_{args.split}_v13_smart_crops.npz"
-    features_file = output_dir / f"{args.family}_rgb_features_v13_smart_crops_{args.split}.npz"
+    data_file = data_dir / f"{data_prefix}_{args.split}_v13_smart_crops.npz"
+    features_file = output_dir / f"{data_prefix}_rgb_features_v13_smart_crops_{args.split}.npz"
 
     if not data_file.exists():
         print(f"❌ ERREUR: {data_file} introuvable")
         print(f"\nVous devez d'abord générer les données V13 Smart Crops:")
-        print(f"  python scripts/preprocessing/prepare_v13_smart_crops.py --family {args.family}")
+        if args.organ:
+            print(f"  python scripts/preprocessing/prepare_v13_smart_crops.py --family {args.family} --organ {args.organ}")
+        else:
+            print(f"  python scripts/preprocessing/prepare_v13_smart_crops.py --family {args.family}")
         return 1
 
     print("=" * 80)
-    print(f"EXTRACTION FEATURES H-OPTIMUS-0: {args.family} ({args.split})")
+    organ_info = f" (Organe: {args.organ})" if args.organ else ""
+    print(f"EXTRACTION FEATURES H-OPTIMUS-0: {data_prefix}{organ_info} ({args.split})")
     print("=" * 80)
     print("")
 
@@ -202,19 +215,22 @@ def main():
     print(f"Fichier créé:")
     print(f"  - {features_file}")
     print("")
+    # Construire les flags pour les commandes suivantes
+    organ_flag = f" --organ {args.organ}" if args.organ else ""
+
     print(f"Prochaine étape:")
     if args.split == "train":
         print(f"  1. Extraire features VAL:")
         print(f"     python scripts/preprocessing/extract_features_v13_smart_crops.py \\")
-        print(f"         --family {args.family} --split val")
+        print(f"         --family {args.family}{organ_flag} --split val")
         print(f"")
         print(f"  2. Lancer entraînement:")
         print(f"     python scripts/training/train_hovernet_family_v13_smart_crops.py \\")
-        print(f"         --family {args.family} --epochs 30")
+        print(f"         --family {args.family}{organ_flag} --epochs 30")
     else:
         print(f"  Lancer entraînement:")
         print(f"     python scripts/training/train_hovernet_family_v13_smart_crops.py \\")
-        print(f"         --family {args.family} --epochs 30")
+        print(f"         --family {args.family}{organ_flag} --epochs 30")
     print("")
 
     return 0
