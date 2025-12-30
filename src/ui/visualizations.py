@@ -121,15 +121,14 @@ def create_segmentation_overlay(
         mask = instance_map == inst_id
         overlay[mask] = colors[inst_id]
 
-    # Blend
+    # Blend avec numpy (plus robuste que cv2.addWeighted sur masques)
     mask_any = instance_map > 0
-    result[mask_any] = cv2.addWeighted(
-        image[mask_any],
-        1 - alpha,
-        overlay[mask_any],
-        alpha,
-        0
-    )
+    if mask_any.any():
+        blended = (
+            image[mask_any].astype(np.float32) * (1 - alpha) +
+            overlay[mask_any].astype(np.float32) * alpha
+        )
+        result[mask_any] = np.clip(blended, 0, 255).astype(np.uint8)
 
     # Afficher les IDs
     if show_ids:
