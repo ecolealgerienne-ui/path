@@ -54,10 +54,10 @@ def compute_pq(pred_inst: np.ndarray, gt_inst: np.ndarray, iou_threshold: float 
     gt_ids = gt_ids[gt_ids > 0]
 
     if len(gt_ids) == 0:
-        return {"PQ": 1.0 if len(pred_ids) == 0 else 0.0, "DQ": 1.0, "SQ": 1.0}
+        return {"PQ": 1.0 if len(pred_ids) == 0 else 0.0, "DQ": 1.0, "SQ": 1.0, "TP": 0, "FP": len(pred_ids), "FN": 0}
 
     if len(pred_ids) == 0:
-        return {"PQ": 0.0, "DQ": 0.0, "SQ": 0.0}
+        return {"PQ": 0.0, "DQ": 0.0, "SQ": 0.0, "TP": 0, "FP": 0, "FN": len(gt_ids)}
 
     # Compute IoU matrix
     iou_matrix = np.zeros((len(gt_ids), len(pred_ids)))
