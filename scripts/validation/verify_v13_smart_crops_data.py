@@ -100,6 +100,56 @@ def check_inst_map_ids(inst_map: np.ndarray) -> dict:
     }
 
 
+def check_normalization_applied(images: np.ndarray) -> dict:
+    """
+    Détecte si la normalisation Macenko a été appliquée aux images.
+
+    La normalisation Macenko réduit la variance des intensités moyennes
+    entre images. Sans normalisation, la std est typiquement > 20.
+    Avec normalisation, la std est typiquement < 18.
+
+    Args:
+        images: (N, H, W, 3) images RGB uint8
+
+    Returns:
+        {
+            'mean_intensity_std': float,  # Std des intensités moyennes
+            'likely_normalized': bool,    # True si std < seuil
+            'confidence': str,            # 'high', 'medium', 'low'
+            'threshold': float            # Seuil utilisé
+        }
+    """
+    # Calculer intensité moyenne de chaque image
+    mean_intensities = images.mean(axis=(1, 2, 3))
+
+    # Std des intensités moyennes (mesure de variabilité inter-images)
+    intensity_std = mean_intensities.std()
+
+    # Seuils basés sur les résultats Macenko (session 2025-12-29)
+    # Sans normalisation: std typiquement 21-32
+    # Avec normalisation: std typiquement 14-20
+    threshold = 18.0
+
+    likely_normalized = intensity_std < threshold
+
+    # Niveau de confiance
+    if intensity_std < 15:
+        confidence = 'high'  # Très probablement normalisé
+    elif intensity_std < 18:
+        confidence = 'medium'  # Probablement normalisé
+    elif intensity_std < 22:
+        confidence = 'low'  # Incertain
+    else:
+        confidence = 'high'  # Très probablement NON normalisé
+
+    return {
+        'mean_intensity_std': float(intensity_std),
+        'likely_normalized': likely_normalized,
+        'confidence': confidence,
+        'threshold': threshold
+    }
+
+
 def verify_hv_targets(hv_targets: np.ndarray) -> dict:
     """
     Vérifie le format des HV targets.
@@ -301,7 +351,59 @@ def verify_data_file(data_path: Path, n_samples: int = 10, verbose: bool = True)
     else:
         print(f"   ❌ INCOHÉRENCE: Nombres d'échantillons différents!")
 
-    # 5. Résumé
+    # 5. Vérifier normalisation Macenko
+    print(f"\n{'─'*50}")
+    print("5. VÉRIFICATION NORMALISATION MACENKO")
+    print(f"{'─'*50}")
+
+    if 'images' in data:
+        images = data['images']
+        norm_check = check_normalization_applied(images)
+        results['checks']['normalization'] = norm_check
+
+        intensity_std = norm_check['mean_intensity_std']
+        likely_norm = norm_check['likely_normalized']
+        confidence = norm_check['confidence']
+
+        if likely_norm:
+            if confidence == 'high':
+                print(f"   ✅ Normalisation Macenko DÉTECTÉE (confiance: haute)")
+            else:
+                print(f"   ✅ Normalisation Macenko probable (confiance: {confidence})")
+            print(f"   ✅ Variance inter-images: {intensity_std:.2f} (seuil: < 18)")
+        else:
+            if confidence == 'high':
+                print(f"   ⚠️  Normalisation Macenko NON détectée (confiance: haute)")
+            else:
+                print(f"   ⚠️  Normalisation Macenko probablement absente (confiance: {confidence})")
+            print(f"   ⚠️  Variance inter-images: {intensity_std:.2f} (seuil: < 18)")
+            print(f"   ℹ️  Pour normaliser: prepare_v13_smart_crops.py --use_normalized")
+    else:
+        print("   ⚠️ Clé 'images' non trouvée")
+        results['checks']['normalization'] = {'error': 'key not found'}
+
+    # 6. Vérifier métadonnées (organ_names si présent)
+    print(f"\n{'─'*50}")
+    print("6. VÉRIFICATION MÉTADONNÉES")
+    print(f"{'─'*50}")
+
+    if 'organ_names' in data:
+        organ_names = data['organ_names']
+        unique_organs = np.unique(organ_names)
+        print(f"   ✅ organ_names présent: {len(organ_names)} entrées")
+        print(f"   ✅ Organes: {list(unique_organs)}")
+        results['organ_names'] = list(unique_organs)
+    else:
+        print("   ℹ️  organ_names non présent (données pré-v13.1)")
+        results['organ_names'] = None
+
+    if 'source_image_ids' in data:
+        source_ids = data['source_image_ids']
+        print(f"   ✅ source_image_ids présent: {len(np.unique(source_ids))} sources uniques")
+    else:
+        print("   ℹ️  source_image_ids non présent")
+
+    # 7. Résumé
     print(f"\n{'='*70}")
     print("RÉSUMÉ")
     print(f"{'='*70}")
@@ -338,6 +440,15 @@ def verify_data_file(data_path: Path, n_samples: int = 10, verbose: bool = True)
         print("❌ HV divergence: BUG ROTATION")
         all_ok = False
 
+    # Normalisation check (informatif, ne bloque pas)
+    norm_info = results['checks'].get('normalization', {})
+    if norm_info.get('likely_normalized', False):
+        std_val = norm_info.get('mean_intensity_std', 0)
+        print(f"✅ Normalisation: Macenko appliquée (std={std_val:.1f})")
+    else:
+        std_val = norm_info.get('mean_intensity_std', 0)
+        print(f"ℹ️  Normalisation: Non détectée (std={std_val:.1f})")
+
     print(f"\n{'='*70}")
     if all_ok:
         print("🎉 VERDICT: Données V13 Smart Crops VALIDES")
@@ -355,6 +466,8 @@ def main():
     parser = argparse.ArgumentParser(description="Vérifier les données V13 Smart Crops")
     parser.add_argument("--family", type=str, default="epidermal",
                         help="Famille à vérifier (epidermal, glandular, etc.)")
+    parser.add_argument("--organ", type=str, default=None,
+                        help="Organe spécifique (optionnel). Si spécifié, vérifie {organ}_{split}.npz")
     parser.add_argument("--data_file", type=str, default=None,
                         help="Chemin direct vers le fichier .npz")
     parser.add_argument("--data_dir", type=str,
@@ -367,6 +480,9 @@ def main():
                         help="Split à vérifier (train, val, ou all pour les deux)")
 
     args = parser.parse_args()
+
+    # Préfixe pour les fichiers de données (organe ou famille)
+    data_prefix = args.organ.lower() if args.organ else args.family
 
     # Déterminer les splits à vérifier
     if args.split == "all":
@@ -381,7 +497,7 @@ def main():
         if args.data_file:
             data_path = Path(args.data_file)
         else:
-            data_path = Path(args.data_dir) / f"{args.family}_{split}_v13_smart_crops.npz"
+            data_path = Path(args.data_dir) / f"{data_prefix}_{split}_v13_smart_crops.npz"
 
         results = verify_data_file(data_path, n_samples=args.n_samples)
         all_results[split] = results
