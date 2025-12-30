@@ -88,7 +88,7 @@ FAMILY_CHECKPOINTS = {
 }
 
 ORGAN_CHECKPOINTS = {
-    "Breast": f"{CHECKPOINT_BASE_PATH}/hovernet_Breast_v13_smart_crops_hybrid_fpn_best.pth",
+    "Breast": f"{CHECKPOINT_BASE_PATH}/hovernet_breast_v13_smart_crops_hybrid_fpn_best.pth",
     "Colon": f"{CHECKPOINT_BASE_PATH}/hovernet_Colon_v13_smart_crops_hybrid_fpn_best.pth",
 }
 
