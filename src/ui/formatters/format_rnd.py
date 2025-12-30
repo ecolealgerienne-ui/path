@@ -75,14 +75,20 @@ def format_metrics_rnd(
             ie_display = f"**{m.immuno_epithelial_ratio:.2f}**"
 
         # Index mitotique: séparer Signal IA vs Index clinique
+        # Note: mitotic_index_per_10hpf = None si surface < 0.1 mm² (sanity check)
         n_mitosis = result.n_mitosis_candidates if result.spatial_analysis else 0
-        if n_mitosis > 0 and m.mitotic_index_per_10hpf < 0.1:
-            if n_mitosis > result.n_nuclei * 0.5:
-                mitotic_display = f"*non calculé* — ⚠️ Signal IA: **activité élevée** ({n_mitosis} candidats)"
+        index_valid = m.mitotic_index_per_10hpf is not None and m.hpf_extrapolation_valid
+
+        if not index_valid:
+            # Surface insuffisante pour extrapolation HPF
+            if n_mitosis == 0:
+                mitotic_display = "*N/A* — Aucun candidat (patch unique)"
+            elif n_mitosis > result.n_nuclei * 0.5:
+                mitotic_display = f"*N/A* — ⚠️ Signal IA: **activité élevée** ({n_mitosis} candidats)"
             elif n_mitosis > 3:
-                mitotic_display = f"*non calculé* — Signal IA: **activité modérée** ({n_mitosis} candidats)"
+                mitotic_display = f"*N/A* — Signal IA: **activité modérée** ({n_mitosis} candidats)"
             else:
-                mitotic_display = f"*non calculé* — Signal IA: {n_mitosis} candidat(s) isolé(s)"
+                mitotic_display = f"*N/A* — Signal IA: {n_mitosis} candidat(s) détecté(s)"
         else:
             mitotic_display = f"**{m.mitotic_index_per_10hpf:.1f}**/10 HPF"
 
@@ -181,11 +187,8 @@ def format_alerts_rnd(result: AnalysisResult) -> str:
         if result.n_mitosis_candidates > 3:
             lines.append(f"- 🔴 **{result.n_mitosis_candidates} mitoses suspectes** — activité proliférative")
         elif result.n_mitosis_candidates > 0:
-            mitotic_index = result.morphometry.mitotic_index_per_10hpf if result.morphometry else 0
-            if mitotic_index < 0.1:
-                lines.append(f"- 🟡 **{result.n_mitosis_candidates} mitose(s) candidate(s)** *(figures isolées, index global non impacté)*")
-            else:
-                lines.append(f"- 🟡 **{result.n_mitosis_candidates} mitose(s) candidate(s)**")
+            # Note: index peut être None (surface insuffisante)
+            lines.append(f"- 🟡 **{result.n_mitosis_candidates} mitose(s) candidate(s)** *(patch unique)*")
 
         if result.n_hotspots > 0:
             lines.append(f"- 🟠 **{result.n_hotspots} hotspot(s)** — zones haute densité")

@@ -74,8 +74,12 @@ class MorphometryReport:
 
     # Index Mitotique Estimé (NOUVEAU)
     mitotic_candidates: int = 0  # Nombre de figures évocatrices
-    mitotic_index_per_10hpf: float = 0.0  # Index estimé pour 10 HPF
+    mitotic_index_per_10hpf: Optional[float] = None  # Index estimé pour 10 HPF (None si surface insuffisante)
     mitotic_nuclei_ids: List[int] = None  # IDs pour XAI
+
+    # Métadonnées surface (pour sanity check)
+    patch_area_mm2: float = 0.0  # Surface analysée en mm²
+    hpf_extrapolation_valid: bool = False  # True si surface >= 0.1 mm² (seuil clinique)
 
     # Distance au Front d'Invasion (NOUVEAU - TILs hot/cold)
     til_invasion_distance_um: float = 0.0  # Distance moyenne TILs → front tumoral
@@ -204,11 +208,25 @@ class MorphometryAnalyzer:
         mitotic_count = len(mitotic_candidates)
         mitotic_nuclei_ids = [n.id for n in mitotic_candidates]
 
-        # Estimation pour 10 HPF (High Power Fields)
+        # =====================================================================
+        # SANITY CHECK HPF (CRITIQUE)
+        # =====================================================================
         # 1 HPF ≈ 0.196 mm² à 40x, donc 10 HPF ≈ 1.96 mm²
-        # patch_area_mm2 est notre surface analysée
-        hpf_equivalent = patch_area_mm2 / 0.196
-        mitotic_index_per_10hpf = (mitotic_count / hpf_equivalent) * 10 if hpf_equivalent > 0 else 0
+        # Un patch 224×224 à 0.5 MPP = 0.0125 mm² = seulement 6.4% d'un HPF
+        #
+        # Seuil: 0.1 mm² minimum pour extrapolation (≈ 50% d'un HPF)
+        # En dessous, l'extrapolation n'a pas de validité clinique.
+        # =====================================================================
+        MIN_AREA_FOR_HPF_EXTRAPOLATION = 0.1  # mm²
+        hpf_extrapolation_valid = patch_area_mm2 >= MIN_AREA_FOR_HPF_EXTRAPOLATION
+
+        if hpf_extrapolation_valid:
+            hpf_equivalent = patch_area_mm2 / 0.196
+            mitotic_index_per_10hpf = (mitotic_count / hpf_equivalent) * 10
+        else:
+            # Surface insuffisante - NE PAS extrapoler
+            # L'index sera None, seul le compte brut sera affiché
+            mitotic_index_per_10hpf = None
 
         # TILs invasion (hot/cold)
         til_distance, til_status, til_penetration = self._compute_til_invasion_metrics(nuclei)
@@ -242,6 +260,10 @@ class MorphometryAnalyzer:
             mitotic_candidates=mitotic_count,
             mitotic_index_per_10hpf=mitotic_index_per_10hpf,
             mitotic_nuclei_ids=mitotic_nuclei_ids,
+            # Métadonnées surface (sanity check)
+            patch_area_mm2=patch_area_mm2,
+            hpf_extrapolation_valid=hpf_extrapolation_valid,
+            # TILs
             til_invasion_distance_um=til_distance,
             til_status=til_status,
             til_penetration_ratio=til_penetration,
@@ -684,6 +706,13 @@ class MorphometryAnalyzer:
             stroma_tumor_distance_um=0.0,
             spatial_distribution="indéterminée",
             clustering_score=0.0,
+            # Mitotic (None = surface insuffisante ou pas de données)
+            mitotic_candidates=0,
+            mitotic_index_per_10hpf=None,
+            mitotic_nuclei_ids=[],
+            patch_area_mm2=0.0,
+            hpf_extrapolation_valid=False,
+            # Alertes
             alerts=["ℹ️ Aucun noyau détecté sur ce patch"],
             alert_nuclei_ids={},
             confidence_level="Faible",

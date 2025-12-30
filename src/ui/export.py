@@ -213,7 +213,8 @@ def export_summary_csv(result, audit: Optional[AuditMetadata] = None) -> str:
         writer.writerow(["Mean Area (µm²)", f"{m.mean_area_um2:.2f}"])
         writer.writerow(["Std Area (µm²)", f"{m.std_area_um2:.2f}"])
         writer.writerow(["Mean Circularity", f"{m.mean_circularity:.3f}"])
-        writer.writerow(["Mitotic Index (/10 HPF)", f"{m.mitotic_index_per_10hpf:.1f}"])
+        mitotic_display = f"{m.mitotic_index_per_10hpf:.1f}" if m.mitotic_index_per_10hpf is not None else "N/A (patch unique)"
+        writer.writerow(["Mitotic Index (/10 HPF)", mitotic_display])
         writer.writerow(["Neoplastic Ratio", f"{m.neoplastic_ratio:.1%}"])
         writer.writerow(["TILs Status", m.til_status])
         writer.writerow(["Confidence Level", m.confidence_level])
@@ -363,11 +364,18 @@ def create_report_pdf(
         # Section Morphométrie (tableau)
         if result.morphometry:
             m = result.morphometry
+            # Mitotic index: N/A si surface insuffisante
+            if m.mitotic_index_per_10hpf is not None:
+                mitotic_str = f"{m.mitotic_index_per_10hpf:.1f} /10 HPF"
+            else:
+                n_cand = result.n_mitosis_candidates if result.spatial_analysis else m.mitotic_candidates
+                mitotic_str = f"{n_cand} candidat(s)" if n_cand > 0 else "N/A"
+
             morph_data = [
                 ["Densité", f"{m.nuclei_per_mm2:.0f} /mm²"],
                 ["Aire moy.", f"{m.mean_area_um2:.1f} ± {m.std_area_um2:.1f} µm²"],
                 ["Circularité", f"{m.mean_circularity:.2f}"],
-                ["Index mitotique", f"{m.mitotic_index_per_10hpf:.1f} /10 HPF"],
+                ["Index mitotique", mitotic_str],
                 ["Ratio néoplasique", f"{m.neoplastic_ratio:.0%}"],
                 ["TILs", m.til_status],
             ]
@@ -738,11 +746,12 @@ def export_batch_csv(batch: BatchResult) -> str:
 
         if result.morphometry:
             m = result.morphometry
+            mitotic_val = f"{m.mitotic_index_per_10hpf:.1f}" if m.mitotic_index_per_10hpf is not None else "N/A"
             row.extend([
                 f"{m.nuclei_per_mm2:.0f}",
                 f"{m.mean_area_um2:.2f}",
                 f"{m.mean_circularity:.3f}",
-                f"{m.mitotic_index_per_10hpf:.1f}",
+                mitotic_val,
             ])
         else:
             row.extend(["", "", "", ""])

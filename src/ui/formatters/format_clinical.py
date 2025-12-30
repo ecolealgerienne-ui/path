@@ -65,9 +65,21 @@ def interpret_pleomorphism(score: int) -> str:
     return interpretations.get(score, "Non évalué")
 
 
-def interpret_mitotic_index(index: float) -> str:
-    """Interprète l'index mitotique."""
-    if index < 3:
+def interpret_mitotic_index(index: Optional[float], n_candidates: int = 0) -> str:
+    """
+    Interprète l'index mitotique.
+
+    Args:
+        index: Index mitotique (None si surface insuffisante)
+        n_candidates: Nombre de candidats mitose (Phase 3)
+    """
+    if index is None:
+        # Surface insuffisante pour extrapolation HPF
+        if n_candidates == 0:
+            return "N/A (patch unique)"
+        else:
+            return f"{n_candidates} candidat(s) *(patch unique)*"
+    elif index < 3:
         return f"{index:.0f}/10 HPF (Faible)"
     elif index < 8:
         return f"{index:.0f}/10 HPF (Modéré)"
@@ -132,8 +144,9 @@ def format_metrics_clinical(
         density_label = interpret_density(m.nuclei_per_mm2)
         lines.append(f"**Densité cellulaire:** {density_label} ({m.nuclei_per_mm2:.0f}/mm²)")
 
-        # Index mitotique interprété
-        mitotic_label = interpret_mitotic_index(m.mitotic_index_per_10hpf)
+        # Index mitotique interprété (avec n_candidates pour affichage si index=None)
+        n_candidates = result.n_mitosis_candidates if result.spatial_analysis else m.mitotic_candidates
+        mitotic_label = interpret_mitotic_index(m.mitotic_index_per_10hpf, n_candidates)
         lines.append(f"**Index mitotique:** {mitotic_label}")
 
         # Ratio néoplasique
@@ -186,7 +199,8 @@ def format_alerts_clinical(result: AnalysisResult) -> str:
         if m.neoplastic_ratio > 0.7:
             alerts.append("**Prédominance néoplasique** — ratio > 70%")
 
-        if m.mitotic_index_per_10hpf > 10:
+        # Note: mitotic_index peut être None (surface insuffisante)
+        if m.mitotic_index_per_10hpf is not None and m.mitotic_index_per_10hpf > 10:
             alerts.append("**Index mitotique très élevé**")
 
     if not alerts:

@@ -649,20 +649,21 @@ class CellVitEngine:
                 self._enrich_nucleus_info_phase3(nucleus_info, spatial_result)
 
                 # ===================================================
-                # SYNCHRONISER MORPHOMETRY AVEC PHASE 3 (CRITIQUE)
+                # FINALISER MORPHOMETRY AVEC PHASE 3 (CRITIQUE)
                 # ===================================================
-                # Note: On NE recalcule PAS l'index mitotique car le patch
-                # (224×224 à 0.5 MPP = 0.012 mm²) représente seulement 6.4%
-                # d'un HPF (0.196 mm²). L'extrapolation vers 10 HPF n'est
-                # pas fiable pour des échantillons aussi petits.
+                # Phase 3 utilise des seuils absolus (25-180 µm²) plus fiables
+                # que les critères morphométriques internes.
                 #
-                # On synchronise seulement le COMPTE de candidats (pour cohérence)
-                # tout en gardant l'index de morphometry (basé sur sa détection interne).
+                # L'index mitotique reste None car:
+                # - Patch 224×224 à 0.5 MPP = 0.0125 mm² (seulement 6.4% d'un HPF)
+                # - Seuil minimum: 0.1 mm² (sanity check dans morphometry.py)
+                # - Affichage: "X candidats (surface insuffisante pour index/10 HPF)"
+                # ===================================================
                 if morphometry is not None:
-                    # Sync le compte Phase 3 (pour affichage cohérent)
+                    # Phase 3 = source autoritative pour les candidats mitose
                     morphometry.mitotic_candidates = n_mitosis_candidates
                     morphometry.mitotic_nuclei_ids = mitosis_candidate_ids
-                    # Note: mitotic_index_per_10hpf reste celui de morphometry
+                    # Note: mitotic_index_per_10hpf = None (sanity check morphometry.py)
 
                 logger.info(
                     f"  Phase 3: pleomorphism={pleomorphism_score}, "
