@@ -169,8 +169,13 @@ def on_image_click(evt: gr.SelectData) -> str:
             "",
             f"**Type:** {nucleus.cell_type}",
             f"**Aire:** {nucleus.area_um2:.1f} µm²",
-            f"**Forme:** {'Régulière' if nucleus.circularity > 0.7 else 'Irrégulière'}",
         ]
+
+        # Forme (seulement si calculée — petits noyaux n'ont pas de circularité)
+        if nucleus.circularity > 0:
+            lines.append(f"**Forme:** {'Régulière' if nucleus.circularity > 0.7 else 'Irrégulière'}")
+        else:
+            lines.append("**Forme:** *Non évaluée (petit noyau)*")
 
         # Alertes simplifiées
         if nucleus.is_mitosis_candidate:
@@ -179,6 +184,11 @@ def on_image_click(evt: gr.SelectData) -> str:
 
         if nucleus.is_in_hotspot:
             lines.append("🟠 **Zone hypercellulaire**")
+
+        # Info petit noyau
+        if nucleus.anomaly_reason and "Petit noyau" in nucleus.anomaly_reason:
+            lines.append("")
+            lines.append("*⚠️ Petit noyau — mesures limitées*")
 
         return "\n".join(lines)
 

@@ -166,16 +166,25 @@ def on_image_click(evt: gr.SelectData) -> str:
         if nucleus is None:
             return "Clic sur le fond (pas de noyau)"
 
+        # Détection petit noyau (pas de métriques complètes)
+        is_small = nucleus.circularity == 0 and nucleus.perimeter_um == 0
+
         lines = [
             f"### Noyau #{nucleus.id}",
             "",
             f"**Type:** {nucleus.cell_type}",
             f"**Position:** ({nucleus.centroid[1]}, {nucleus.centroid[0]})",
             f"**Aire:** {nucleus.area_um2:.1f} µm²",
-            f"**Périmètre:** {nucleus.perimeter_um:.1f} µm",
-            f"**Circularité:** {nucleus.circularity:.2f}",
-            f"**Confiance:** {nucleus.confidence:.1%}",
         ]
+
+        if is_small:
+            lines.append("**Périmètre:** *N/A (petit noyau)*")
+            lines.append("**Circularité:** *N/A*")
+            lines.append(f"**Confiance:** {nucleus.confidence:.1%} *(réduite)*")
+        else:
+            lines.append(f"**Périmètre:** {nucleus.perimeter_um:.1f} µm")
+            lines.append(f"**Circularité:** {nucleus.circularity:.2f}")
+            lines.append(f"**Confiance:** {nucleus.confidence:.1%}")
 
         # Status spéciaux
         if nucleus.is_uncertain:
@@ -193,19 +202,26 @@ def on_image_click(evt: gr.SelectData) -> str:
             lines.append("⚠️ **SUR-SEGMENTATION**")
             lines.append(f"   {nucleus.anomaly_reason}")
 
-        # Phase 3: Intelligence spatiale
-        lines.append("")
-        lines.append("---")
-        lines.append("### Phase 3")
-        lines.append(f"- Entropie chromatine: **{nucleus.chromatin_entropy:.2f}**")
-        lines.append(f"- Voisins Voronoï: **{nucleus.n_neighbors}**")
+        # Info petit noyau
+        if is_small:
+            lines.append("")
+            lines.append("⚠️ **PETIT NOYAU** (< 10 pixels)")
+            lines.append("   Métriques morphologiques non calculées")
 
-        if nucleus.chromatin_heterogeneous:
-            lines.append("- 🟣 **Chromatine hétérogène**")
-        if nucleus.is_mitosis_candidate:
-            lines.append(f"- 🔴 **Candidat mitose** (score: {nucleus.mitosis_score:.2f})")
-        if nucleus.is_in_hotspot:
-            lines.append("- 🟠 **Dans hotspot** (zone haute densité)")
+        # Phase 3: Intelligence spatiale (seulement si pas petit noyau)
+        if not is_small:
+            lines.append("")
+            lines.append("---")
+            lines.append("### Phase 3")
+            lines.append(f"- Entropie chromatine: **{nucleus.chromatin_entropy:.2f}**")
+            lines.append(f"- Voisins Voronoï: **{nucleus.n_neighbors}**")
+
+            if nucleus.chromatin_heterogeneous:
+                lines.append("- 🟣 **Chromatine hétérogène**")
+            if nucleus.is_mitosis_candidate:
+                lines.append(f"- 🔴 **Candidat mitose** (score: {nucleus.mitosis_score:.2f})")
+            if nucleus.is_in_hotspot:
+                lines.append("- 🟠 **Dans hotspot** (zone haute densité)")
 
         return "\n".join(lines)
 
