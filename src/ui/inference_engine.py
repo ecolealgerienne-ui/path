@@ -335,10 +335,9 @@ class CellVitEngine:
         self._organ_info = get_model_for_organ(organ_name)
         self.watershed_params = self._organ_info["watershed_params"]
 
-        logger.info(
-            f"Organ set to '{organ_name}' → "
-            f"{'dedicated model' if self._organ_info['is_dedicated'] else f'family model ({self._organ_info[\"family\"]})'}"
-        )
+        family_name = self._organ_info["family"]
+        model_desc = "dedicated model" if self._organ_info["is_dedicated"] else f"family model ({family_name})"
+        logger.info(f"Organ set to '{organ_name}' → {model_desc}")
 
     @property
     def organ(self) -> str:
