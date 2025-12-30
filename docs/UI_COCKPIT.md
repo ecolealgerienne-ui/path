@@ -1,6 +1,6 @@
 # CellViT-Optimus R&D Cockpit
 
-> **Version:** POC v4.3 (Auto Params + Phase 3 Sync)
+> **Version:** POC v4.4 (Lexique Clinique + Small Nuclei Fix)
 > **Date:** 2025-12-30
 > **Status:** Fonctionnel — Architecture partagée R&D/Pathologiste
 
@@ -975,6 +975,64 @@ HIDDEN_FOR_PATHOLOGIST = [
 2. **Annotations** — Marquer des régions d'intérêt
 3. **Workflow séquentiel** — Valider et passer au suivant
 4. **Historique** — Traçabilité des validations
+
+---
+
+## Lexique Clinique : Métriques IA vs Pathologie
+
+> **Traduction des calculs algorithmiques vers les observations biologiques standards.**
+
+Ce lexique facilite l'adoption du R&D Cockpit par les pathologistes en expliquant la correspondance entre les données brutes de l'IA et l'aide au diagnostic.
+
+### 1. Gradation et Morphologie
+
+| Métrique IA | Description | Interprétation Clinique |
+|-------------|-------------|-------------------------|
+| **Pléomorphisme (1-3)** | Variance statistique taille/forme des noyaux | Score 3/3 (Sévère) = indicateur fort de haut grade nucléaire, corrélé aux critères de malignité cytologique |
+| **Indice de Circularité** | Régularité des contours nucléaires (0-1) | Circularité < 0.7 = noyaux irréguliers/anguleux, souvent observés dans processus néoplasiques infiltrants |
+| **Anisocaryose (CV Aire)** | Coefficient de variation de la surface nucléaire | CV > 0.5 = hétérogénéité de taille suggérant instabilité génétique |
+
+### 2. Texture et Chromatine (Phase 3)
+
+| Métrique IA | Description | Interprétation Clinique |
+|-------------|-------------|-------------------------|
+| **Entropie Chromatinienne** | Degré de désordre des niveaux de gris (Shannon) | Entropie élevée = chromatine "mottée"/hétérogène, caractéristique de cellules à métabolisme actif ou malin |
+| **Noyaux Atypiques** | Texture LBP déviant de la norme statistique de l'organe | Marqueurs pour identifier des cellules sentinelles potentiellement malignes |
+
+### 3. Activité Proliférative
+
+| Métrique IA | Description | Interprétation Clinique |
+|-------------|-------------|-------------------------|
+| **Mitoses Candidates** | Détection par forme ellipsoïdale + hyperchromasie | Compte > 10/patch = Alerte "Activité Proliférative TRÈS Élevée" |
+| **Index Mitotique** | Extrapolation sur 10 HPF (1.96 mm²) | Affiché "N/A" si surface < 0.1 mm² pour garantir fiabilité statistique |
+
+### 4. Architecture et Micro-environnement
+
+| Métrique IA | Description | Interprétation Clinique |
+|-------------|-------------|-------------------------|
+| **Tessellation Voronoï** | Modélise l'organisation spatiale du tissu | Variation des voisins moyens = perte de polarité cellulaire, déstructuration architecture |
+| **Hypercellularité** | Ratio surface noyaux / surface totale | Hypercellularité élevée = encombrement tissulaire lié à prolifération tumorale |
+| **TILs (Ratio I/E)** | Quantification lymphocytes au contact cellules néoplasiques | Indicateur de réponse immunitaire de l'hôte face à la tumeur |
+
+### 5. Seuils d'Alertes Cliniques (v4.3)
+
+| Condition | Seuil | Alerte Affichée |
+|-----------|-------|-----------------|
+| Mitoses présentes | > 0 | "Mitoses présentes — X figure(s)" |
+| Mitoses élevées | > 3 | "Activité mitotique élevée — X figures suspectes" |
+| Mitoses très élevées | > 10 | 🔴 "Activité mitotique TRÈS élevée — X figures suspectes" |
+| Pléomorphisme sévère | Score = 3 | Dégrade la confiance IA d'un niveau |
+| Chromatine hétérogène | > 20% des noyaux | Dégrade la confiance IA d'un niveau |
+
+### 6. Niveaux de Confiance IA
+
+| Niveau | Badge | Signification |
+|--------|-------|---------------|
+| **Haute** | 🟢 Vert | Analyse fiable, peu de facteurs de complexité |
+| **Modérée** | 🟡 Orange | Complexité détectée, vérification recommandée |
+| **Faible** | 🔴 Rouge | Forte complexité (pléomorphisme 3, >10 mitoses, chromatine hétérogène) |
+
+> **Note:** Le niveau de confiance peut être dégradé après l'analyse Phase 3 si des critères de complexité sont détectés (voir `refresh_confidence_after_phase3()`).
 
 ---
 
