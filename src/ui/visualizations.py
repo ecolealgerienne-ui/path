@@ -32,6 +32,46 @@ CELL_COLORS_BGR = {k: (v[2], v[1], v[0]) for k, v in CELL_COLORS.items()}
 TYPE_NAMES = ["Neoplastic", "Inflammatory", "Connective", "Dead", "Epithelial"]
 
 
+# =============================================================================
+# CONFIGURATION OVERLAYS (Palette R&D standardisée)
+# =============================================================================
+
+OVERLAY_CONFIG = {
+    # Transparence
+    "segmentation_alpha": 0.4,
+    "contour_thickness": 1,
+    "anomaly_alpha": 0.5,
+
+    # Couleurs Phase 1 (RGB)
+    "uncertainty_color": (255, 191, 0),     # Ambre
+    "density_cmap": "YlOrRd",               # Jaune-Orange-Rouge
+
+    # Couleurs Phase 2 (RGB)
+    "fusion_color": (255, 0, 255),          # Magenta
+    "over_seg_color": (0, 255, 255),        # Cyan
+
+    # Couleurs Phase 3 (RGB)
+    "hotspot_color": (255, 165, 0),         # Orange
+    "mitosis_high_color": (255, 0, 0),      # Rouge (score élevé)
+    "mitosis_low_color": (255, 255, 0),     # Jaune (score bas)
+    "chromatin_color": (148, 0, 211),       # Violet
+    "voronoi_color": (100, 100, 100),       # Gris
+}
+
+# Ordre de superposition des overlays (z-index croissant)
+OVERLAY_ORDER = [
+    "density",          # Fond - heatmap densité
+    "segmentation",     # Couleurs par type
+    "contours",         # Bordures des noyaux
+    "voronoi",          # Tessellation spatiale
+    "uncertainty",      # Zones incertaines
+    "hotspots",         # Clusters haute densité
+    "chromatin",        # Noyaux chromatine hétérogène
+    "mitoses",          # Candidats mitose
+    "anomalies",        # Fusions / sur-segmentations (dernier = plus visible)
+]
+
+
 def create_segmentation_overlay(
     image: np.ndarray,
     instance_map: np.ndarray,

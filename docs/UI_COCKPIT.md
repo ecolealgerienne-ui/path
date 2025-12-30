@@ -627,6 +627,144 @@ Phase 4 ████████████████████ 100% ✅ Po
 
 ---
 
+## Positionnement: POC Technique R&D
+
+> **Ce cockpit est un instrument technique pour l'équipe de développement, PAS une interface utilisateur finale.**
+
+### Objectif actuel
+
+Le R&D Cockpit sert à:
+
+| Usage | Description |
+|-------|-------------|
+| **Debug IA** | Visualiser le pipeline NP/HV/Instances, détecter les anomalies |
+| **Validation scientifique** | Vérifier les métriques morphométriques, les biomarqueurs |
+| **Exploration** | Tester différents paramètres watershed, comparer les familles |
+| **Export données** | Générer des rapports pour analyse externe |
+
+### Ce que ce cockpit n'est PAS
+
+- Une interface pour pathologistes
+- Une IHM clinique validée
+- Un outil de diagnostic
+- Une interface ergonomique pour non-techniciens
+
+### Indicateurs techniques affichés
+
+Les indicateurs bruts (HV gradients, NP probability, entropie chromatine, etc.) sont **intentionnellement** visibles car:
+- Ils servent au debug et à la compréhension du modèle
+- Ils permettent de détecter des problèmes de prédiction
+- Ils sont essentiels pour l'amélioration continue de l'IA
+
+---
+
+## Évolution: Écran Pathologiste (Futur)
+
+> **Une interface dédiée aux pathologistes sera développée séparément.**
+
+### Design prévu
+
+L'écran pathologiste sera inspiré des interfaces cliniques professionnelles:
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│  CellViT-Optimus — Interface Pathologiste                               │
+│  ⚠️ Document d'aide à la décision — Validation médicale requise         │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                         │
+│  ┌─────────────────────────────────────────────────────────────────┐   │
+│  │                                                                 │   │
+│  │                    VIEWER WSI ZOOMABLE                          │   │
+│  │                    (OpenSeadragon / OpenLayers)                 │   │
+│  │                                                                 │   │
+│  │                    [Navigation Pan/Zoom]                        │   │
+│  │                    [Annotations interactives]                   │   │
+│  │                                                                 │   │
+│  └─────────────────────────────────────────────────────────────────┘   │
+│                                                                         │
+│  ┌──────────────────────┐  ┌──────────────────────────────────────┐   │
+│  │ RÉSUMÉ CLINIQUE      │  │ ALERTES PRIORISÉES                   │   │
+│  │                      │  │                                      │   │
+│  │ Organe: Poumon       │  │ 🔴 Pléomorphisme sévère              │   │
+│  │ Densité: Élevée      │  │ 🟠 5 mitoses détectées               │   │
+│  │ Index mitotique: 3   │  │ 🟡 Ratio néoplasique > 50%           │   │
+│  │                      │  │                                      │   │
+│  │ [Confiance: Haute]   │  │ [Cliquer pour détails]               │   │
+│  └──────────────────────┘  └──────────────────────────────────────┘   │
+│                                                                         │
+│  [Valider] [Annoter] [Exporter rapport] [Passer au suivant]            │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+### Différences clés vs. R&D Cockpit
+
+| Aspect | R&D Cockpit | Écran Pathologiste |
+|--------|-------------|-------------------|
+| **Public** | Développeurs IA | Pathologistes |
+| **Métriques** | Brutes (debug) | Interprétées (clinique) |
+| **Overlays** | Tous (HV, NP, etc.) | Essentiels (types, alertes) |
+| **Navigation** | Image fixe 224×224 | WSI zoomable pan/zoom |
+| **Workflow** | Exploration | Validation séquentielle |
+| **Export** | JSON/CSV technique | Rapport clinique formaté |
+
+### Fonctionnalités prévues
+
+1. **Viewer WSI zoomable** — OpenSeadragon ou équivalent
+2. **Alertes contextualisées** — Avec percentiles et références normatives
+3. **Annotations** — Marquer des régions d'intérêt
+4. **Workflow séquentiel** — Valider et passer au suivant
+5. **Historique** — Traçabilité des validations
+
+---
+
+## Configuration Overlays
+
+### Palette de couleurs standardisée
+
+Définie dans `src/ui/visualizations.py`:
+
+```python
+OVERLAY_CONFIG = {
+    # Transparence
+    "segmentation_alpha": 0.4,
+    "contour_thickness": 1,
+    "anomaly_alpha": 0.5,
+
+    # Couleurs Phase 1 (RGB)
+    "uncertainty_color": (255, 191, 0),     # Ambre
+    "density_cmap": "YlOrRd",               # Jaune-Orange-Rouge
+
+    # Couleurs Phase 2 (RGB)
+    "fusion_color": (255, 0, 255),          # Magenta
+    "over_seg_color": (0, 255, 255),        # Cyan
+
+    # Couleurs Phase 3 (RGB)
+    "hotspot_color": (255, 165, 0),         # Orange
+    "mitosis_high_color": (255, 0, 0),      # Rouge
+    "mitosis_low_color": (255, 255, 0),     # Jaune
+    "chromatin_color": (148, 0, 211),       # Violet
+    "voronoi_color": (100, 100, 100),       # Gris
+}
+```
+
+### Ordre de superposition (z-index)
+
+```python
+OVERLAY_ORDER = [
+    "density",          # Fond
+    "segmentation",     # Couleurs par type
+    "contours",         # Bordures
+    "voronoi",          # Tessellation
+    "uncertainty",      # Zones incertaines
+    "hotspots",         # Clusters
+    "chromatin",        # Hétérogénéité
+    "mitoses",          # Candidats
+    "anomalies",        # Dernier = plus visible
+]
+```
+
+---
+
 ## Troubleshooting
 
 ### "Erreur : Image {w}×{h} pixels"
