@@ -204,11 +204,16 @@ src/ui/
 │   ├── export_nuclei_csv()
 │   ├── export_summary_csv()
 │   └── process_batch()
-└── app.py               # Interface Gradio
-    ├── Validation 224×224
-    ├── Chargement moteur
-    ├── Callbacks analyse
-    └── Export handlers
+├── app.py               # R&D Cockpit (développeurs)
+│   ├── Tous les overlays (9)
+│   ├── Sliders Watershed
+│   ├── Debug IA complet
+│   └── Export JSON/CSV/PDF
+└── app_pathologist.py   # Interface Pathologiste (cliniciens)
+    ├── Overlays simplifiés (4)
+    ├── Métriques interprétées
+    ├── Badge Confiance IA
+    └── Export PDF uniquement
 ```
 
 ---
@@ -658,41 +663,49 @@ Les indicateurs bruts (HV gradients, NP probability, entropie chromatine, etc.) 
 
 ---
 
-## Évolution: Écran Pathologiste (Futur)
+## Évolution: Écran Pathologiste ✅ (Implémenté)
 
-> **Une interface dédiée aux pathologistes sera développée séparément.**
+> **Interface dédiée aux pathologistes — `app_pathologist.py`**
 
-### Design prévu
+### Lancement
 
-L'écran pathologiste sera inspiré des interfaces cliniques professionnelles:
+```bash
+# Interface Pathologiste (port 7861)
+./scripts/run_pathologist.sh --preload
+
+# ou directement
+python -m src.ui.app_pathologist --preload --family respiratory
+```
+
+### Design implémenté
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
-│  CellViT-Optimus — Interface Pathologiste                               │
-│  ⚠️ Document d'aide à la décision — Validation médicale requise         │
+│  CellViT-Optimus — Analyse Histopathologique                            │
+│  Document d'aide à la décision — Validation médicale requise            │
 ├─────────────────────────────────────────────────────────────────────────┤
 │                                                                         │
-│  ┌─────────────────────────────────────────────────────────────────┐   │
-│  │                                                                 │   │
-│  │                    VIEWER WSI ZOOMABLE                          │   │
-│  │                    (OpenSeadragon / OpenLayers)                 │   │
-│  │                                                                 │   │
-│  │                    [Navigation Pan/Zoom]                        │   │
-│  │                    [Annotations interactives]                   │   │
-│  │                                                                 │   │
-│  └─────────────────────────────────────────────────────────────────┘   │
-│                                                                         │
-│  ┌──────────────────────┐  ┌──────────────────────────────────────┐   │
-│  │ RÉSUMÉ CLINIQUE      │  │ ALERTES PRIORISÉES                   │   │
-│  │                      │  │                                      │   │
-│  │ Organe: Poumon       │  │ 🔴 Pléomorphisme sévère              │   │
-│  │ Densité: Élevée      │  │ 🟠 5 mitoses détectées               │   │
-│  │ Index mitotique: 3   │  │ 🟡 Ratio néoplasique > 50%           │   │
-│  │                      │  │                                      │   │
-│  │ [Confiance: Haute]   │  │ [Cliquer pour détails]               │   │
-│  └──────────────────────┘  └──────────────────────────────────────┘   │
-│                                                                         │
-│  [Valider] [Annoter] [Exporter rapport] [Passer au suivant]            │
+│  ┌────────────────────────┐   ┌────────────────────────────────────┐   │
+│  │                        │   │  ┌──────────────────────────────┐  │   │
+│  │     IMAGE + OVERLAY    │   │  │   Confiance IA : Élevée      │  │   │
+│  │                        │   │  └──────────────────────────────┘  │   │
+│  │     [Clic = détails]   │   │                                    │   │
+│  │                        │   │  ### Poumon                        │   │
+│  └────────────────────────┘   │  Confiance: 98%                    │   │
+│                               │  Famille: Respiratory              │   │
+│  ☑ Types cellulaires         │                                    │   │
+│  ☑ Contours                  │  Noyaux détectés: 127              │   │
+│  ☑ Zones denses              │  Densité: Élevée (2340/mm²)        │   │
+│  ☑ Mitoses                   │  Index mitotique: 3/10 HPF (Faible)│   │
+│                               │  Pléomorphisme: Modéré (grade II)  │   │
+│  [Analyser]                   │                                    │   │
+│                               │  DISTRIBUTION [chart]              │   │
+├───────────────────────────────┴────────────────────────────────────────┤
+│  POINTS D'ATTENTION                                                    │
+│  🟡 Anisocaryose modérée — variation notable                           │
+│  🟠 Zones hypercellulaires — 2 cluster(s) identifié(s)                 │
+├─────────────────────────────────────────────────────────────────────────┤
+│  [Télécharger le rapport PDF]                                          │
 └─────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -701,19 +714,65 @@ L'écran pathologiste sera inspiré des interfaces cliniques professionnelles:
 | Aspect | R&D Cockpit | Écran Pathologiste |
 |--------|-------------|-------------------|
 | **Public** | Développeurs IA | Pathologistes |
+| **Port** | 7860 | 7861 |
 | **Métriques** | Brutes (debug) | Interprétées (clinique) |
-| **Overlays** | Tous (HV, NP, etc.) | Essentiels (types, alertes) |
-| **Navigation** | Image fixe 224×224 | WSI zoomable pan/zoom |
-| **Workflow** | Exploration | Validation séquentielle |
-| **Export** | JSON/CSV technique | Rapport clinique formaté |
+| **Overlays** | 9 (HV, NP, Voronoï, etc.) | 4 (types, contours, hotspots, mitoses) |
+| **Paramètres** | Sliders Watershed | Automatiques (masqués) |
+| **Export** | JSON/CSV/PDF technique | PDF clinique uniquement |
+| **Confiance** | Valeurs brutes | Badge visuel (Élevée/Modérée/Faible) |
 
-### Fonctionnalités prévues
+### Fonctionnalités implémentées
 
-1. **Viewer WSI zoomable** — OpenSeadragon ou équivalent
-2. **Alertes contextualisées** — Avec percentiles et références normatives
-3. **Annotations** — Marquer des régions d'intérêt
-4. **Workflow séquentiel** — Valider et passer au suivant
-5. **Historique** — Traçabilité des validations
+| Fonction | Status | Description |
+|----------|--------|-------------|
+| Badge Confiance IA | ✅ | Indicateur visuel global (vert/orange/rouge) |
+| Métriques interprétées | ✅ | "Densité: Élevée" au lieu de "2340/mm²" |
+| Grades cliniques | ✅ | "Modéré (compatible grade II)" |
+| Overlays simplifiés | ✅ | 4 checkboxes au lieu de 9 |
+| Alertes priorisées | ✅ | Emojis 🔴🟡🟠 + langage clinique |
+| Détails avancés | ✅ | Accordéon optionnel pour experts |
+| Export PDF | ✅ | Rapport formaté pour dossier patient |
+
+### Ce qui est masqué pour le pathologiste
+
+```python
+HIDDEN_FOR_PATHOLOGIST = [
+    # Debug IA
+    "np_pred",              # Probabilité nucléaire brute
+    "hv_pred",              # Gradients HV
+    "debug_panel",          # Panneau debug NP/HV/Instances
+
+    # Paramètres techniques
+    "watershed_sliders",    # np_threshold, beta, min_size, min_distance
+
+    # Métriques brutes
+    "chromatin_entropy",    # Valeur entropie → "hétérogène" oui/non
+    "mitosis_score",        # Score 0-1 → "candidat" oui/non
+    "n_neighbors",          # Nombre voisins Voronoï
+    "area_cv",              # CV aire → score pléomorphisme
+
+    # Overlays debug
+    "voronoi_overlay",      # Tessellation technique
+    "uncertainty_overlay",  # Incertitude modèle
+    "anomaly_overlay",      # Fusions/sur-seg (R&D)
+]
+```
+
+### Langage clinique
+
+| Métrique brute | Interprétation clinique |
+|----------------|------------------------|
+| `density = 2340` | "Densité: Élevée (2340/mm²)" |
+| `pleomorphism_score = 2` | "Modéré (compatible grade II)" |
+| `mitotic_index = 3.0` | "3/10 HPF (Faible)" |
+| `uncertainty_mean < 0.3` | Badge "Confiance IA: Élevée" |
+
+### Évolutions futures (WSI)
+
+1. **Viewer WSI zoomable** — OpenSeadragon (à intégrer)
+2. **Annotations** — Marquer des régions d'intérêt
+3. **Workflow séquentiel** — Valider et passer au suivant
+4. **Historique** — Traçabilité des validations
 
 ---
 
