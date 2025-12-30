@@ -258,7 +258,10 @@ def format_metrics(result: AnalysisResult) -> str:
         family_info = f"*Organe sélectionné: {state.engine.organ if state.engine else 'N/A'}*"
 
     # Amélioration UX: Message contextuel pour organe non déterminé
-    if result.organ_name == "Unknown" or result.organ_confidence < 0.1:
+    # Si modèle dédié sélectionné → afficher l'organe du modèle
+    if state.engine and state.engine.is_dedicated_model:
+        organ_display = f"### Organe: **{state.engine.organ}** (modèle dédié)"
+    elif result.organ_name == "Unknown" or result.organ_confidence < 0.1:
         if result.n_nuclei < 20:
             organ_display = "### Organe détecté (IA): *Non déterminable* (surface insuffisante)"
         else:
@@ -282,15 +285,32 @@ def format_metrics(result: AnalysisResult) -> str:
     if result.morphometry:
         m = result.morphometry
 
-        # Ratio I/E: non interprétable si dénominateur trop faible
+        # Ratio I/E: logique métier complète
         inflammatory_count = m.type_counts.get("Inflammatory", 0)
         epithelial_count = m.type_counts.get("Epithelial", 0)
         ie_denominator = inflammatory_count + epithelial_count
 
-        if ie_denominator < 3:
+        if m.neoplastic_ratio >= 0.95:
+            # Foyer 100% tumoral → ratio non applicable
+            ie_display = "*non applicable* (foyer tumoral pur)"
+        elif ie_denominator < 3:
             ie_display = "*non interprétable* (effectif insuffisant)"
         else:
             ie_display = f"**{m.immuno_epithelial_ratio:.2f}**"
+
+        # Index mitotique: séparer Signal IA vs Index clinique
+        # Si candidats détectés en Phase 3 mais index = 0 → incohérence à expliquer
+        n_mitosis = result.n_mitosis_candidates if result.spatial_analysis else 0
+        if n_mitosis > 0 and m.mitotic_index_per_10hpf < 0.1:
+            # Signal IA détecte des candidats, mais index clinique non calculable
+            if n_mitosis > result.n_nuclei * 0.5:
+                mitotic_display = f"*non calculé* — ⚠️ Signal IA: **activité élevée** ({n_mitosis} candidats)"
+            elif n_mitosis > 3:
+                mitotic_display = f"*non calculé* — Signal IA: **activité modérée** ({n_mitosis} candidats)"
+            else:
+                mitotic_display = f"*non calculé* — Signal IA: {n_mitosis} candidat(s) isolé(s)"
+        else:
+            mitotic_display = f"**{m.mitotic_index_per_10hpf:.1f}**/10 HPF"
 
         lines.extend([
             "---",
@@ -301,7 +321,7 @@ def format_metrics(result: AnalysisResult) -> str:
             f"- Hypercellularité: **{m.nuclear_density_percent:.1f}%**",
             "",
             "### Index & Ratios",
-            f"- Index mitotique: **{m.mitotic_index_per_10hpf:.1f}**/10 HPF",
+            f"- Index mitotique: {mitotic_display}",
             f"- Ratio néoplasique: **{m.neoplastic_ratio:.1%}**",
             f"- Ratio I/E: {ie_display}",
             f"- TILs status: **{m.til_status}**",
@@ -330,11 +350,17 @@ def format_metrics(result: AnalysisResult) -> str:
         else:
             phase3_title = "### Phase 3 — Intelligence Spatiale"
 
-        # Chromatine: message contextuel si entropie élevée mais 0 noyaux hétérogènes
-        if result.n_heterogeneous_nuclei == 0 and result.mean_chromatin_entropy > 4.0:
-            chromatin_display = f"**0** noyaux *(texture globale hétérogène, seuil strict)*"
+        # Chromatine: message contextuel explicite
+        if result.n_heterogeneous_nuclei == 0:
+            if result.mean_chromatin_entropy > 4.0:
+                # Entropie élevée mais homogène entre noyaux
+                chromatin_display = "**homogène** *(entropie élevée mais peu variable entre noyaux)*"
+            else:
+                chromatin_display = "**homogène** *(texture régulière)*"
+        elif result.n_heterogeneous_nuclei < 3:
+            chromatin_display = f"**{result.n_heterogeneous_nuclei}** noyau(x) atypique(s)"
         else:
-            chromatin_display = f"**{result.n_heterogeneous_nuclei}** noyaux"
+            chromatin_display = f"**{result.n_heterogeneous_nuclei}** noyaux hétérogènes"
 
         lines.extend([
             "",
@@ -343,7 +369,7 @@ def format_metrics(result: AnalysisResult) -> str:
             f"- Pléomorphisme: **{result.pleomorphism_score}/3** {score_emoji.get(result.pleomorphism_score, '')} ({score_labels.get(result.pleomorphism_score, '')})",
             f"- Hotspots: **{result.n_hotspots}** zones haute densité",
             f"- Mitoses candidates: **{result.n_mitosis_candidates}**",
-            f"- Chromatine hétérogène: {chromatin_display}",
+            f"- Chromatine: {chromatin_display}",
             f"- Voisins moyens (Voronoï): **{result.mean_neighbors:.1f}**",
             f"- Entropie chromatine: **{result.mean_chromatin_entropy:.2f}**",
         ])
