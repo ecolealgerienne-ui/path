@@ -140,16 +140,54 @@ class AnalysisResult:
     mean_neighbors: float = 0.0               # Moyenne voisins Voronoï
 
     def get_nucleus_at(self, y: int, x: int) -> Optional[NucleusInfo]:
-        """Retourne les infos du noyau à la position (y, x)."""
+        """
+        Retourne les infos du noyau à la position (y, x).
+
+        Note: Les petits noyaux (< 10 pixels) sont filtrés de nucleus_info
+        mais restent cliquables. Pour ceux-ci, une info minimale est créée.
+        """
         if self.instance_map is None:
             return None
+
+        # Vérifier les limites
+        if y < 0 or x < 0 or y >= self.instance_map.shape[0] or x >= self.instance_map.shape[1]:
+            return None
+
         nucleus_id = self.instance_map[y, x]
         if nucleus_id == 0:
             return None
+
+        # Chercher dans nucleus_info (noyaux >= 10 pixels)
         for n in self.nucleus_info:
             if n.id == nucleus_id:
                 return n
-        return None
+
+        # Fallback: petit noyau filtré — créer info minimale
+        mask = self.instance_map == nucleus_id
+        area_pixels = mask.sum()
+        coords = np.where(mask)
+        cy, cx = int(coords[0].mean()), int(coords[1].mean())
+
+        # Type cellulaire
+        type_idx = 0
+        cell_type = "Unknown"
+        if self.type_map is not None:
+            types_in_mask = self.type_map[mask]
+            if len(types_in_mask) > 0:
+                type_idx = int(np.bincount(types_in_mask.astype(int)).argmax())
+                cell_type = CELL_TYPES[type_idx] if type_idx < len(CELL_TYPES) else "Unknown"
+
+        return NucleusInfo(
+            id=nucleus_id,
+            centroid=(cy, cx),
+            area_um2=area_pixels * 0.25,  # 0.5^2 MPP
+            perimeter_um=0.0,  # Non calculé pour petits noyaux
+            circularity=0.0,   # Non calculé pour petits noyaux
+            cell_type=cell_type,
+            type_idx=type_idx,
+            confidence=0.5,    # Confiance réduite (petit noyau)
+            anomaly_reason="Petit noyau (< 10 pixels)",
+        )
 
     def get_anomalies(self) -> Dict[str, List[NucleusInfo]]:
         """
@@ -505,7 +543,12 @@ class CellVitEngine:
             raise RuntimeError("Models not loaded. Call _load_models() first.")
 
         # Paramètres watershed
-        params = {**self.watershed_params, **(watershed_params or {})}
+        # Si watershed_params est None (mode Auto), utiliser les params du modèle
+        # Si watershed_params est passé (mode Manuel), utiliser ces valeurs
+        if watershed_params is not None:
+            params = watershed_params.copy()
+        else:
+            params = self.watershed_params.copy()
 
         # Prétraitement (méthode centralisée)
         tensor, image_224, images_rgb = self._preprocess_image(image)
@@ -542,14 +585,17 @@ class CellVitEngine:
             ]
             if organ_idx < len(ORGAN_NAMES):
                 organ_name = ORGAN_NAMES[organ_idx]
-                # CRITIQUE: Utiliser la famille et les watershed params de l'organe PRÉDIT
+                # CRITIQUE: Utiliser la famille de l'organe PRÉDIT
                 try:
                     predicted_family = get_family_for_organ(organ_name)
-                    # CRITIQUE: Mettre à jour les params watershed pour l'organe prédit
-                    # Cela permet d'appliquer les overrides organ-specific (ex: Breast min_distance=2)
-                    organ_info = get_model_for_organ(organ_name)
-                    params = {**organ_info["watershed_params"], **(watershed_params or {})}
-                    logger.debug(f"Watershed params updated for predicted organ {organ_name}: {params}")
+                    # CRITIQUE: En mode Auto, utiliser les params de l'organe prédit
+                    # En mode Manuel, garder les params fournis par l'utilisateur
+                    if watershed_params is None:
+                        organ_info = get_model_for_organ(organ_name)
+                        params = organ_info["watershed_params"].copy()
+                        logger.debug(f"Auto params for predicted organ {organ_name}: {params}")
+                    else:
+                        logger.debug(f"Manual params (user override): {params}")
                 except ValueError:
                     predicted_family = self.family  # Fallback si organe inconnu
 
@@ -661,8 +707,19 @@ class CellVitEngine:
                 # ===================================================
                 if morphometry is not None:
                     # Phase 3 = source autoritative pour les candidats mitose
-                    morphometry.mitotic_candidates = n_mitosis_candidates
-                    morphometry.mitotic_nuclei_ids = mitosis_candidate_ids
+                    # Utilise refresh_mitosis_alerts() pour synchroniser les alertes
+                    morphometry.refresh_mitosis_alerts(
+                        new_mitotic_count=n_mitosis_candidates,
+                        new_mitotic_ids=mitosis_candidate_ids,
+                    )
+
+                    # Dégrader la confiance si complexité tissulaire élevée
+                    # (risque d'erreurs de segmentation accru)
+                    morphometry.refresh_confidence_after_phase3(
+                        pleomorphism_score=pleomorphism_score,
+                        n_mitosis_candidates=n_mitosis_candidates,
+                        n_heterogeneous_nuclei=n_heterogeneous_nuclei,
+                    )
                     # Note: mitotic_index_per_10hpf = None (sanity check morphometry.py)
 
                 logger.info(

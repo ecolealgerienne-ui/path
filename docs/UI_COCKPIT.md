@@ -1,8 +1,8 @@
 # CellViT-Optimus R&D Cockpit
 
-> **Version:** POC v4.2 (Corrections Pipeline)
+> **Version:** POC v4.5 (Enriched Clinical Alerts)
 > **Date:** 2025-12-30
-> **Status:** Fonctionnel — Pipeline aligné avec évaluation
+> **Status:** Fonctionnel — Architecture partagée R&D/Pathologiste
 
 ---
 
@@ -199,12 +199,18 @@ if h != 224 or w != 224:
                                     │
                                     ▼
 ┌─────────────────────────────────────────────────────────────────────────┐
-│  ÉTAPE 5b: FINALISATION MORPHOMETRY                                     │
-│  inference_engine.py:651-666                                            │
+│  ÉTAPE 5b: FINALISATION MORPHOMETRY + SYNC (v4.3)                       │
+│  inference_engine.py:651-680                                            │
 │  ─────────────────────────────────────────────────────────────────────  │
 │  • Phase 3 = source autoritative pour mitoses                           │
-│  • morphometry.mitotic_candidates = n_mitosis_candidates                │
-│  • morphometry.mitotic_nuclei_ids = mitosis_candidate_ids               │
+│  • morphometry.refresh_mitosis_alerts():                                │
+│    → Supprime ancienne alerte mitose                                    │
+│    → Ajoute nouvelle alerte avec count Phase 3                          │
+│  • morphometry.refresh_confidence_after_phase3():                       │
+│    → Dégrade confiance si complexité élevée:                            │
+│      - Pléomorphisme 3 (sévère) → -1 niveau                             │
+│      - > 10 mitoses → -1 niveau                                         │
+│      - > 20% chromatine hétérogène → -1 niveau                          │
 │  • mitotic_index_per_10hpf reste None (sanity check)                    │
 │  • Affichage: "X candidat(s) (patch unique)"                            │
 └─────────────────────────────────────────────────────────────────────────┘
@@ -231,6 +237,8 @@ if h != 224 or w != 224:
 | **Phase 3** | READ-ONLY, enrichit métadonnées sans modifier segmentation | `spatial_analysis.py:585` |
 | **HPF Sanity Check** | Si surface < 0.1 mm², index = None | `morphometry.py:220-229` |
 | **Mitoses Absolues** | Seuils 25-180 µm² (pas relatifs à mean_area) | `spatial_analysis.py:264-273` |
+| **Alertes Mitoses (v4.3)** | 3 niveaux: >10 TRÈS élevée, >3 élevée, >0 présentes | `format_clinical.py:188` |
+| **Sync Confiance (v4.3)** | Dégrade après Phase 3 si complexité élevée | `morphometry.py:146` |
 
 ### Modules Partagés (Single Source of Truth)
 
@@ -240,6 +248,42 @@ if h != 224 or w != 224:
 | `src.postprocessing.watershed` | `hv_guided_watershed` | Segmentation instances |
 | `src.evaluation.instance_evaluation` | `run_inference` | Inférence NP/HV (softmax!) |
 | `src.metrics.morphometry` | `MorphometryAnalyzer` | Métriques morphologiques |
+
+### Architecture UI Partagée (v4.3)
+
+> **Principe:** Les deux UIs (R&D et Pathologiste) partagent la même logique d'analyse.
+
+```
+src/ui/core/engine_ops.py
+│
+├── run_analysis_core()          ← PARTAGÉ (Single Source of Truth)
+│   ├── Validation image 224×224
+│   ├── Auto/Manual params
+│   ├── state.engine.analyze()
+│   └── state.current_result = result
+│
+├── analyze_image_core()         ← R&D UI wrapper
+│   ├── Appelle run_analysis_core()
+│   └── Ajoute: debug panels, anomaly overlays
+│
+└── (autres fonctions partagées...)
+
+src/ui/app.py (R&D)              src/ui/app_pathologist.py (Clinique)
+│                                 │
+└── analyze_image()               └── analyze_image()
+    └── analyze_image_core()          └── run_analysis_core()
+        └── run_analysis_core()       └── overlays cliniques
+```
+
+**Garanties:**
+
+| Fonctionnalité | Partagée? |
+|----------------|-----------|
+| `engine.analyze()` | ✅ Identique |
+| Auto params (organ_config) | ✅ Identique |
+| `refresh_mitosis_alerts()` | ✅ Identique |
+| `refresh_confidence_after_phase3()` | ✅ Identique |
+| Visualisations | ❌ Différentes (R&D vs Clinique) |
 
 ### Structure Fichiers
 
@@ -375,6 +419,21 @@ ORGAN_WATERSHED_PARAMS = {
 ---
 
 ## Paramètres Watershed
+
+### Mode Auto vs Manuel (v4.3)
+
+> **Nouveau:** Checkbox "Params Auto (organ_config.py)" dans l'UI R&D.
+
+| Mode | Comportement | Usage |
+|------|--------------|-------|
+| **Auto** (défaut) | Utilise `organ_config.py` pour l'organe **prédit** | Production |
+| **Manuel** | Utilise les valeurs des sliders | Debug/Exploration |
+
+**Exemple:** Si OrganHead prédit "Breast", le mode Auto applique automatiquement `min_distance=2` (optimisé pour Breast) même si le slider affiche 5.
+
+**Note:** L'interface Pathologiste utilise **toujours** le mode Auto (pas de sliders exposés).
+
+### Sliders (Mode Manuel)
 
 Les paramètres sont ajustables en temps réel :
 
@@ -916,6 +975,68 @@ HIDDEN_FOR_PATHOLOGIST = [
 2. **Annotations** — Marquer des régions d'intérêt
 3. **Workflow séquentiel** — Valider et passer au suivant
 4. **Historique** — Traçabilité des validations
+
+---
+
+## Lexique Clinique : Métriques IA vs Pathologie
+
+> **Traduction des calculs algorithmiques vers les observations biologiques standards.**
+
+Ce lexique facilite l'adoption du R&D Cockpit par les pathologistes en expliquant la correspondance entre les données brutes de l'IA et l'aide au diagnostic.
+
+### 1. Gradation et Morphologie
+
+| Métrique IA | Description | Interprétation Clinique |
+|-------------|-------------|-------------------------|
+| **Pléomorphisme (1-3)** | Variance statistique taille/forme des noyaux | Score 3/3 (Sévère) = indicateur fort de haut grade nucléaire, corrélé aux critères de malignité cytologique |
+| **Indice de Circularité** | Régularité des contours nucléaires (0-1) | Circularité < 0.7 = noyaux irréguliers/anguleux, souvent observés dans processus néoplasiques infiltrants |
+| **Anisocaryose (CV Aire)** | Coefficient de variation de la surface nucléaire | CV > 0.5 = hétérogénéité de taille suggérant instabilité génétique |
+
+### 2. Texture et Chromatine (Phase 3)
+
+| Métrique IA | Description | Interprétation Clinique |
+|-------------|-------------|-------------------------|
+| **Entropie Chromatinienne** | Degré de désordre des niveaux de gris (Shannon) | Entropie élevée = chromatine "mottée"/hétérogène, caractéristique de cellules à métabolisme actif ou malin |
+| **Noyaux Atypiques** | Texture LBP déviant de la norme statistique de l'organe | Marqueurs pour identifier des cellules sentinelles potentiellement malignes |
+
+### 3. Activité Proliférative
+
+| Métrique IA | Description | Interprétation Clinique |
+|-------------|-------------|-------------------------|
+| **Mitoses Candidates** | Détection par forme ellipsoïdale + hyperchromasie | Compte > 10/patch = Alerte "Activité Proliférative TRÈS Élevée" |
+| **Index Mitotique** | Extrapolation sur 10 HPF (1.96 mm²) | Affiché "N/A" si surface < 0.1 mm² pour garantir fiabilité statistique |
+
+### 4. Architecture et Micro-environnement
+
+| Métrique IA | Description | Interprétation Clinique |
+|-------------|-------------|-------------------------|
+| **Tessellation Voronoï** | Modélise l'organisation spatiale du tissu | Variation des voisins moyens = perte de polarité cellulaire, déstructuration architecture |
+| **Hypercellularité** | Ratio surface noyaux / surface totale | Hypercellularité élevée = encombrement tissulaire lié à prolifération tumorale |
+| **TILs (Ratio I/E)** | Quantification lymphocytes au contact cellules néoplasiques | Indicateur de réponse immunitaire de l'hôte face à la tumeur |
+
+### 5. Seuils d'Alertes Cliniques (v4.5)
+
+> **Principe v4.5:** Langage factuel ("corrélé à", "associé à") — pas d'interprétation ("suspicion de")
+
+| Condition | Seuil | Alerte Enrichie |
+|-----------|-------|-----------------|
+| Mitoses présentes | > 0 | ℹ️ "Mitoses détectées (X) — Figure(s) évocatrice(s) à confirmer visuellement" |
+| Mitoses élevées | > 3 | 🟡 "Activité mitotique élevée (X) — Figures évocatrices identifiées" |
+| Mitoses très élevées | > 10 | 🔴 "Activité mitotique très élevée (X) — Index prolifératif associé aux tumeurs à croissance rapide" |
+| Pléomorphisme sévère | Score = 3 | 🔴 "Pléomorphisme sévère (3/3) — Critère corrélé au grade nucléaire élevé (Nottingham)" |
+| Chromatine hétérogène | > 10% | 🔍 "Chromatine hétérogène (X%) — Texture observée dans cellules à activité métabolique élevée" |
+| Anisocaryose marquée | CV > 0.5 | 🔍 "Anisocaryose marquée (CV=X.XX) — Indicateur d'hétérogénéité morphologique" |
+| TILs froids | Pattern périph. | ❄️ "Infiltrat lymphocytaire périphérique — Pattern associé à l'immuno-exclusion" |
+
+### 6. Niveaux de Confiance IA
+
+| Niveau | Badge | Signification |
+|--------|-------|---------------|
+| **Haute** | 🟢 Vert | Analyse fiable, peu de facteurs de complexité |
+| **Modérée** | 🟡 Orange | Complexité détectée, vérification recommandée |
+| **Faible** | 🔴 Rouge | Forte complexité (pléomorphisme 3, >10 mitoses, chromatine hétérogène) |
+
+> **Note:** Le niveau de confiance peut être dégradé après l'analyse Phase 3 si des critères de complexité sont détectés (voir `refresh_confidence_after_phase3()`).
 
 ---
 

@@ -38,6 +38,7 @@ if str(PROJECT_ROOT) not in sys.path:
 from src.ui.core import (
     state,
     load_engine_core,
+    run_analysis_core,  # Fonction partagée (sans visualisations R&D)
     change_organ_core,
     export_pdf_core,
 )
@@ -83,37 +84,21 @@ def analyze_image(
     """
     Analyse une image et retourne les visualisations cliniques (wrapper UI).
 
+    Utilise run_analysis_core() pour l'analyse (logique partagée avec R&D UI).
+    Crée ensuite les visualisations cliniques simplifiées.
+
     Returns:
         (overlay, identification, metrics, alerts, chart, confidence_html)
     """
     empty = np.zeros((224, 224, 3), dtype=np.uint8)
 
-    if state.engine is None:
-        return empty, "Moteur non chargé", "", "", empty, ""
+    # Analyse via fonction partagée (use_auto_params=True par défaut)
+    result, error = run_analysis_core(image, use_auto_params=True)
 
-    if image is None:
-        return empty, "Aucune image", "", "", empty, ""
-
-    # Vérification taille 224×224
-    h, w = image.shape[:2]
-    if h != 224 or w != 224:
-        error_msg = f"Image {w}×{h} — Requis: 224×224"
-        return empty, error_msg, "", "", empty, ""
+    if error:
+        return empty, error, "", "", empty, ""
 
     try:
-        # Paramètres watershed automatiques (pas de sliders exposés)
-        params = state.engine.watershed_params
-
-        # Analyse via le moteur
-        result = state.engine.analyze(
-            image,
-            watershed_params=params,
-            compute_morphometry=True,
-            compute_uncertainty=True,
-        )
-
-        state.current_result = result
-
         # Overlay simplifié (types + contours)
         overlay = create_segmentation_overlay(
             result.image_rgb,
@@ -184,8 +169,13 @@ def on_image_click(evt: gr.SelectData) -> str:
             "",
             f"**Type:** {nucleus.cell_type}",
             f"**Aire:** {nucleus.area_um2:.1f} µm²",
-            f"**Forme:** {'Régulière' if nucleus.circularity > 0.7 else 'Irrégulière'}",
         ]
+
+        # Forme (seulement si calculée — petits noyaux n'ont pas de circularité)
+        if nucleus.circularity > 0:
+            lines.append(f"**Forme:** {'Régulière' if nucleus.circularity > 0.7 else 'Irrégulière'}")
+        else:
+            lines.append("**Forme:** *Non évaluée (petit noyau)*")
 
         # Alertes simplifiées
         if nucleus.is_mitosis_candidate:
@@ -194,6 +184,11 @@ def on_image_click(evt: gr.SelectData) -> str:
 
         if nucleus.is_in_hotspot:
             lines.append("🟠 **Zone hypercellulaire**")
+
+        # Info petit noyau
+        if nucleus.anomaly_reason and "Petit noyau" in nucleus.anomaly_reason:
+            lines.append("")
+            lines.append("*⚠️ Petit noyau — mesures limitées*")
 
         return "\n".join(lines)
 

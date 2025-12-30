@@ -102,6 +102,97 @@ class MorphometryReport:
         if self.mitotic_nuclei_ids is None:
             self.mitotic_nuclei_ids = []
 
+    def refresh_mitosis_alerts(
+        self,
+        new_mitotic_count: int,
+        new_mitotic_ids: List[int],
+    ) -> None:
+        """
+        Met à jour les alertes mitose après Phase 3.
+
+        Phase 3 utilise des seuils absolus (25-180 µm²) plus fiables que
+        les critères morphométriques internes de Phase 2 (elongation, intensité).
+
+        Cette méthode:
+        1. Supprime l'ancienne alerte mitose (si présente)
+        2. Met à jour mitotic_candidates et mitotic_nuclei_ids
+        3. Ajoute une nouvelle alerte avec le compte Phase 3
+
+        Args:
+            new_mitotic_count: Nombre de candidats mitose détectés par Phase 3
+            new_mitotic_ids: IDs des noyaux candidats mitose
+        """
+        # Supprimer l'ancienne alerte mitose (si présente)
+        self.alerts = [
+            a for a in self.alerts
+            if "mitose" not in a.lower() and "figures évocatrices" not in a.lower()
+        ]
+
+        # Mettre à jour les données mitose
+        self.mitotic_candidates = new_mitotic_count
+        self.mitotic_nuclei_ids = new_mitotic_ids
+
+        # Ajouter la nouvelle alerte (seulement si > 0)
+        if new_mitotic_count > 0:
+            if new_mitotic_count >= 5:
+                new_alert = f"🔍 Présence de figures évocatrices de mitoses ({new_mitotic_count})"
+            else:
+                new_alert = f"ℹ️ Quelques figures évocatrices de mitoses ({new_mitotic_count})"
+
+            # Insérer au début (les alertes mitose sont prioritaires)
+            self.alerts.insert(0, new_alert)
+            self.alert_nuclei_ids["mitose"] = new_mitotic_ids
+
+    def refresh_confidence_after_phase3(
+        self,
+        pleomorphism_score: int,
+        n_mitosis_candidates: int,
+        n_heterogeneous_nuclei: int,
+    ) -> None:
+        """
+        Dégrade le niveau de confiance si Phase 3 détecte une complexité élevée.
+
+        Logique: Une complexité tissulaire élevée (anisocaryose sévère, nombreuses
+        mitoses, chromatine hétérogène) augmente le risque d'erreurs de segmentation.
+        Le pathologiste doit être averti de revoir plus attentivement ces cas.
+
+        Règles de dégradation:
+        - Pléomorphisme 3 (sévère) → dégrade d'un niveau
+        - > 10 candidats mitose → dégrade d'un niveau
+        - > 20% noyaux avec chromatine hétérogène → dégrade d'un niveau
+
+        Args:
+            pleomorphism_score: Score pléomorphisme (1-3)
+            n_mitosis_candidates: Nombre de candidats mitose
+            n_heterogeneous_nuclei: Nombre de noyaux avec chromatine hétérogène
+        """
+        degradation = 0
+
+        # Pléomorphisme sévère = forte anisocaryose = segmentation difficile
+        if pleomorphism_score >= 3:
+            degradation += 1
+
+        # Beaucoup de mitoses = tissu très actif = contours ambigus
+        if n_mitosis_candidates > 10:
+            degradation += 1
+
+        # Chromatine hétérogène massive = texture complexe
+        if self.n_nuclei > 0:
+            heterogeneous_ratio = n_heterogeneous_nuclei / self.n_nuclei
+            if heterogeneous_ratio > 0.20:
+                degradation += 1
+
+        # Appliquer la dégradation
+        if degradation > 0:
+            levels = ["Haute", "Modérée", "Faible"]
+            try:
+                current_idx = levels.index(self.confidence_level)
+            except ValueError:
+                current_idx = 1  # Default to "Modérée"
+
+            new_idx = min(current_idx + degradation, 2)  # Max = "Faible"
+            self.confidence_level = levels[new_idx]
+
 
 # Types cellulaires PanNuke
 CELL_TYPES = ["Neoplastic", "Inflammatory", "Connective", "Dead", "Epithelial"]

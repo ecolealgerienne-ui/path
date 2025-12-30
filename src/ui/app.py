@@ -92,9 +92,14 @@ def analyze_image(
     min_size: int,
     beta: float,
     min_distance: int,
+    use_auto_params: bool = True,
 ) -> Tuple[np.ndarray, np.ndarray, str, str, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """
     Analyse une image et retourne les visualisations (wrapper UI).
+
+    Args:
+        use_auto_params: Si True, utilise les params optimisés de organ_config.py
+                         Si False, utilise les valeurs des sliders
 
     Returns:
         (overlay, contours, metrics_text, alerts_text, chart, debug, anomaly_overlay, phase3_overlay, phase3_debug)
@@ -104,7 +109,7 @@ def analyze_image(
     empty_phase3_debug = np.zeros((80, 400, 3), dtype=np.uint8)
 
     # Appel core
-    output = analyze_image_core(image, np_threshold, min_size, beta, min_distance)
+    output = analyze_image_core(image, np_threshold, min_size, beta, min_distance, use_auto_params)
 
     if not output.success:
         error_msg = output.error or "Erreur inconnue"
@@ -161,16 +166,25 @@ def on_image_click(evt: gr.SelectData) -> str:
         if nucleus is None:
             return "Clic sur le fond (pas de noyau)"
 
+        # Détection petit noyau (pas de métriques complètes)
+        is_small = nucleus.circularity == 0 and nucleus.perimeter_um == 0
+
         lines = [
             f"### Noyau #{nucleus.id}",
             "",
             f"**Type:** {nucleus.cell_type}",
             f"**Position:** ({nucleus.centroid[1]}, {nucleus.centroid[0]})",
             f"**Aire:** {nucleus.area_um2:.1f} µm²",
-            f"**Périmètre:** {nucleus.perimeter_um:.1f} µm",
-            f"**Circularité:** {nucleus.circularity:.2f}",
-            f"**Confiance:** {nucleus.confidence:.1%}",
         ]
+
+        if is_small:
+            lines.append("**Périmètre:** *N/A (petit noyau)*")
+            lines.append("**Circularité:** *N/A*")
+            lines.append(f"**Confiance:** {nucleus.confidence:.1%} *(réduite)*")
+        else:
+            lines.append(f"**Périmètre:** {nucleus.perimeter_um:.1f} µm")
+            lines.append(f"**Circularité:** {nucleus.circularity:.2f}")
+            lines.append(f"**Confiance:** {nucleus.confidence:.1%}")
 
         # Status spéciaux
         if nucleus.is_uncertain:
@@ -188,19 +202,26 @@ def on_image_click(evt: gr.SelectData) -> str:
             lines.append("⚠️ **SUR-SEGMENTATION**")
             lines.append(f"   {nucleus.anomaly_reason}")
 
-        # Phase 3: Intelligence spatiale
-        lines.append("")
-        lines.append("---")
-        lines.append("### Phase 3")
-        lines.append(f"- Entropie chromatine: **{nucleus.chromatin_entropy:.2f}**")
-        lines.append(f"- Voisins Voronoï: **{nucleus.n_neighbors}**")
+        # Info petit noyau
+        if is_small:
+            lines.append("")
+            lines.append("⚠️ **PETIT NOYAU** (< 10 pixels)")
+            lines.append("   Métriques morphologiques non calculées")
 
-        if nucleus.chromatin_heterogeneous:
-            lines.append("- 🟣 **Chromatine hétérogène**")
-        if nucleus.is_mitosis_candidate:
-            lines.append(f"- 🔴 **Candidat mitose** (score: {nucleus.mitosis_score:.2f})")
-        if nucleus.is_in_hotspot:
-            lines.append("- 🟠 **Dans hotspot** (zone haute densité)")
+        # Phase 3: Intelligence spatiale (seulement si pas petit noyau)
+        if not is_small:
+            lines.append("")
+            lines.append("---")
+            lines.append("### Phase 3")
+            lines.append(f"- Entropie chromatine: **{nucleus.chromatin_entropy:.2f}**")
+            lines.append(f"- Voisins Voronoï: **{nucleus.n_neighbors}**")
+
+            if nucleus.chromatin_heterogeneous:
+                lines.append("- 🟣 **Chromatine hétérogène**")
+            if nucleus.is_mitosis_candidate:
+                lines.append(f"- 🔴 **Candidat mitose** (score: {nucleus.mitosis_score:.2f})")
+            if nucleus.is_in_hotspot:
+                lines.append("- 🟠 **Dans hotspot** (zone haute densité)")
 
         return "\n".join(lines)
 
@@ -349,7 +370,13 @@ def create_ui():
                     show_chromatin = gr.Checkbox(label="Chromatine", value=False)
 
                 # Paramètres Watershed
-                with gr.Accordion("Paramètres Watershed", open=False):
+                use_auto_params = gr.Checkbox(
+                    value=True,
+                    label="Params Auto (organ_config.py)",
+                    info="Décocher pour utiliser les sliders manuels"
+                )
+                with gr.Accordion("Paramètres Watershed (Manuel)", open=False):
+                    gr.Markdown("*⚠️ Ces sliders ne sont actifs que si 'Params Auto' est décoché*")
                     np_threshold = gr.Slider(
                         minimum=0.2, maximum=0.8, value=0.40, step=0.05,
                         label="Seuil NP"
@@ -496,14 +523,14 @@ def create_ui():
         # Analyser l'image (9 outputs: overlay, contours, metrics, alerts, chart, debug, anomaly, phase3_overlay, phase3_debug)
         analyze_btn.click(
             fn=analyze_image,
-            inputs=[input_image, np_threshold, min_size, beta, min_distance],
+            inputs=[input_image, np_threshold, min_size, beta, min_distance, use_auto_params],
             outputs=[output_image, output_image, metrics_md, alerts_md, type_chart, debug_panel, anomaly_image, phase3_overlay_image, phase3_debug_panel],
         )
 
         # Auto-analyse quand image uploadée
         input_image.change(
             fn=analyze_image,
-            inputs=[input_image, np_threshold, min_size, beta, min_distance],
+            inputs=[input_image, np_threshold, min_size, beta, min_distance, use_auto_params],
             outputs=[output_image, output_image, metrics_md, alerts_md, type_chart, debug_panel, anomaly_image, phase3_overlay_image, phase3_debug_panel],
         )
 

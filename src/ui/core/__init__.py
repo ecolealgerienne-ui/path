@@ -12,7 +12,8 @@ from .engine_ops import (
     UIState,
     state,
     load_engine_core,
-    analyze_image_core,
+    run_analysis_core,  # Fonction partagée (sans visualisations)
+    analyze_image_core,  # Wrapper R&D (avec visualisations)
     change_organ_core,
     on_image_click_core,
 )
@@ -30,7 +31,8 @@ __all__ = [
     "state",
     # Engine operations
     "load_engine_core",
-    "analyze_image_core",
+    "run_analysis_core",   # Partagé (sans visualisations)
+    "analyze_image_core",  # R&D (avec visualisations)
     "change_organ_core",
     "on_image_click_core",
     # Export operations
