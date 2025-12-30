@@ -525,6 +525,7 @@ def generate_smart_crops_from_pannuke(
     pannuke_dir: Path,
     output_dir: Path,
     family: str,
+    organ: str = None,
     folds: list = None,
     max_samples: int = 5000,
     train_ratio: float = 0.8,
@@ -547,6 +548,7 @@ def generate_smart_crops_from_pannuke(
         pannuke_dir: Répertoire PanNuke
         output_dir: Répertoire de sortie
         family: Famille tissulaire
+        organ: Organe spécifique (optionnel) - si fourni, filtre pour cet organe uniquement
         folds: Liste des folds (défaut: [0, 1, 2])
         max_samples: Nombre maximum de samples PAR SPLIT (défaut: 5000)
         train_ratio: Ratio train/val (défaut: 0.8)
@@ -560,14 +562,23 @@ def generate_smart_crops_from_pannuke(
     if folds is None:
         folds = [0, 1, 2]
 
+    # Déterminer les organes à traiter et le préfixe de sortie
+    if organ:
+        # Mode organe spécifique
+        organs = [organ]
+        output_prefix = organ.lower()
+        title = f"GÉNÉRATION V13 SMART CROPS - Organe: {organ.upper()}"
+    else:
+        # Mode famille complète
+        organs = [org for org, fam in ORGAN_TO_FAMILY.items() if fam == family]
+        output_prefix = family
+        title = f"GÉNÉRATION V13 SMART CROPS - Famille: {family.upper()}"
+
     print(f"\n{'='*70}")
-    print(f"GÉNÉRATION V13 SMART CROPS - Famille: {family.upper()}")
+    print(title)
     print(f"{'='*70}")
     print(f"Max samples: {max_samples}")
-    print(f"Algorithme: Par couche (center → top_left → top_right → ...)\n")
-
-    # Organes de cette famille
-    organs = [org for org, fam in ORGAN_TO_FAMILY.items() if fam == family]
+    print(f"Algorithme: Par couche (center → top_left → top_right → ...)")
     print(f"Organes: {', '.join(organs)}\n")
 
     # ========== Préparation index images normalisées (si fourni) ==========
@@ -776,7 +787,7 @@ def generate_smart_crops_from_pannuke(
             continue
 
         output_dir.mkdir(parents=True, exist_ok=True)
-        output_file = output_dir / f"{family}_{split_name}_v13_smart_crops.npz"
+        output_file = output_dir / f"{output_prefix}_{split_name}_v13_smart_crops.npz"
 
         print(f"\n💾 Conversion en arrays...")
         images_array = np.stack(crops_data['images'], axis=0)
@@ -850,6 +861,12 @@ def main():
         help="Famille tissulaire"
     )
     parser.add_argument(
+        '--organ',
+        type=str,
+        default=None,
+        help="Organe spécifique (optionnel). Ex: Breast, Lung. Si non spécifié, tous les organes de la famille."
+    )
+    parser.add_argument(
         '--folds',
         type=int,
         nargs='+',
@@ -887,6 +904,14 @@ def main():
         print(f"❌ ERREUR: PanNuke directory non trouvé: {args.pannuke_dir}")
         sys.exit(1)
 
+    # Validation organe si spécifié
+    if args.organ:
+        family_organs = [org for org, fam in ORGAN_TO_FAMILY.items() if fam == args.family]
+        if args.organ not in family_organs:
+            print(f"❌ ERREUR: Organe '{args.organ}' n'appartient pas à la famille '{args.family}'")
+            print(f"   Organes valides: {', '.join(family_organs)}")
+            sys.exit(1)
+
     # Validation données normalisées si demandé
     normalized_data = None
     if args.use_normalized:
@@ -904,6 +929,7 @@ def main():
         pannuke_dir=args.pannuke_dir,
         output_dir=args.output_dir,
         family=args.family,
+        organ=args.organ,
         folds=args.folds,
         max_samples=args.max_samples,
         seed=args.seed,
