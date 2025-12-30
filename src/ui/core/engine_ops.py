@@ -158,6 +158,61 @@ class AnalysisOutput:
     error: Optional[str] = None
 
 
+# ==============================================================================
+# FONCTION D'ANALYSE PARTAGÉE (sans visualisations)
+# ==============================================================================
+
+def run_analysis_core(
+    image: np.ndarray,
+    use_auto_params: bool = True,
+    watershed_params: Optional[Dict] = None,
+) -> Tuple[Optional[AnalysisResult], Optional[str]]:
+    """
+    Exécute l'analyse d'image et retourne le résultat brut.
+
+    Fonction partagée entre les deux UIs (R&D et Pathologiste).
+    Ne génère PAS de visualisations - chaque UI crée les siennes.
+
+    Args:
+        image: Image RGB (H, W, 3)
+        use_auto_params: Si True, utilise les params de organ_config.py
+        watershed_params: Params manuels (ignorés si use_auto_params=True)
+
+    Returns:
+        (AnalysisResult, None) si succès
+        (None, error_message) si erreur
+    """
+    if state.engine is None:
+        return None, "Moteur non chargé"
+
+    if image is None:
+        return None, "Aucune image"
+
+    # Vérification taille 224×224
+    h, w = image.shape[:2]
+    if h != 224 or w != 224:
+        return None, f"Image {w}×{h} — Requis: 224×224"
+
+    try:
+        # Paramètres watershed
+        params = None if use_auto_params else watershed_params
+
+        # Analyse
+        result = state.engine.analyze(
+            image,
+            watershed_params=params,
+            compute_morphometry=True,
+            compute_uncertainty=True,
+        )
+
+        state.current_result = result
+        return result, None
+
+    except Exception as e:
+        logger.error(f"Erreur analyse: {e}")
+        return None, f"Erreur: {e}"
+
+
 def analyze_image_core(
     image: np.ndarray,
     np_threshold: float,
@@ -167,7 +222,10 @@ def analyze_image_core(
     use_auto_params: bool = True,
 ) -> AnalysisOutput:
     """
-    Analyse une image et retourne le résultat + visualisations.
+    Analyse une image et retourne le résultat + visualisations R&D.
+
+    Utilise run_analysis_core() pour l'analyse (logique partagée).
+    Ajoute les visualisations R&D spécifiques (debug panels, anomalies, etc.).
 
     Args:
         image: Image RGB (H, W, 3)
@@ -185,38 +243,23 @@ def analyze_image_core(
     empty_debug = np.zeros((100, 400, 3), dtype=np.uint8)
     empty_phase3_debug = np.zeros((80, 400, 3), dtype=np.uint8)
 
-    if state.engine is None:
-        return AnalysisOutput(
-            success=False,
-            error="Moteur non chargé",
-            overlay=empty,
-            contours=empty,
-            chart=empty,
-            debug=empty_debug,
-            anomaly_overlay=empty,
-            phase3_overlay=empty,
-            phase3_debug=empty_phase3_debug,
-        )
+    # Préparer les params manuels si nécessaire
+    watershed_params = None
+    if not use_auto_params:
+        watershed_params = {
+            "np_threshold": np_threshold,
+            "min_size": int(min_size),
+            "beta": beta,
+            "min_distance": int(min_distance),
+        }
 
-    if image is None:
-        return AnalysisOutput(
-            success=False,
-            error="Aucune image",
-            overlay=empty,
-            contours=empty,
-            chart=empty,
-            debug=empty_debug,
-            anomaly_overlay=empty,
-            phase3_overlay=empty,
-            phase3_debug=empty_phase3_debug,
-        )
+    # Analyse via fonction partagée
+    result, error = run_analysis_core(image, use_auto_params, watershed_params)
 
-    # Vérification taille 224×224
-    h, w = image.shape[:2]
-    if h != 224 or w != 224:
+    if error:
         return AnalysisOutput(
             success=False,
-            error=f"Image {w}×{h} pixels — Veuillez charger une image 224×224",
+            error=error,
             overlay=empty,
             contours=empty,
             chart=empty,
@@ -227,31 +270,7 @@ def analyze_image_core(
         )
 
     try:
-        # Paramètres watershed: Auto (organ_config) ou Manuel (sliders)
-        if use_auto_params:
-            # Mode Auto: utilise les params optimisés de organ_config.py
-            # (récupérés par get_model_for_organ(predicted_organ) dans inference_engine)
-            params = None
-        else:
-            # Mode Manuel: utilise les valeurs des sliders
-            params = {
-                "np_threshold": np_threshold,
-                "min_size": int(min_size),
-                "beta": beta,
-                "min_distance": int(min_distance),
-            }
-
-        # Analyse
-        result = state.engine.analyze(
-            image,
-            watershed_params=params,
-            compute_morphometry=True,
-            compute_uncertainty=True,
-        )
-
-        state.current_result = result
-
-        # Visualisations
+        # Visualisations R&D
         overlay = create_segmentation_overlay(
             result.image_rgb,
             result.instance_map,
