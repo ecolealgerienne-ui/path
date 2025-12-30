@@ -394,7 +394,6 @@ class CellVitEngine:
         (source: scripts/training/train_hovernet_family_v13_smart_crops.py).
         """
         from src.models.hovernet_decoder import HoVerNetDecoder
-        from src.models.hovernet_decoder_hybrid import HoVerNetDecoderHybrid
 
         checkpoint = torch.load(checkpoint_path, map_location=self.device, weights_only=False)
         state_dict = checkpoint.get("model_state_dict", checkpoint)
@@ -413,18 +412,14 @@ class CellVitEngine:
 
         logger.info(f"  Checkpoint flags: use_hybrid={use_hybrid}, use_fpn_chimique={use_fpn_chimique}, use_h_alpha={use_h_alpha}")
 
-        if use_hybrid:
-            self.hovernet = HoVerNetDecoderHybrid(
-                embed_dim=1536,
-                n_classes=5,
-                use_fpn_chimique=use_fpn_chimique,
-                use_h_alpha=use_h_alpha
-            )
-        else:
-            self.hovernet = HoVerNetDecoder(
-                embed_dim=1536,
-                n_classes=5,
-            )
+        # Utiliser HoVerNetDecoder avec les flags appropriés
+        self.hovernet = HoVerNetDecoder(
+            embed_dim=1536,
+            n_classes=5,
+            use_hybrid=use_hybrid,
+            use_fpn_chimique=use_fpn_chimique,
+            use_h_alpha=use_h_alpha
+        )
 
         # Nettoyer les clés (module. prefix)
         new_state_dict = {}
