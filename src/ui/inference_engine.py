@@ -505,7 +505,12 @@ class CellVitEngine:
             raise RuntimeError("Models not loaded. Call _load_models() first.")
 
         # Paramètres watershed
-        params = {**self.watershed_params, **(watershed_params or {})}
+        # Si watershed_params est None (mode Auto), utiliser les params du modèle
+        # Si watershed_params est passé (mode Manuel), utiliser ces valeurs
+        if watershed_params is not None:
+            params = watershed_params.copy()
+        else:
+            params = self.watershed_params.copy()
 
         # Prétraitement (méthode centralisée)
         tensor, image_224, images_rgb = self._preprocess_image(image)
@@ -542,14 +547,17 @@ class CellVitEngine:
             ]
             if organ_idx < len(ORGAN_NAMES):
                 organ_name = ORGAN_NAMES[organ_idx]
-                # CRITIQUE: Utiliser la famille et les watershed params de l'organe PRÉDIT
+                # CRITIQUE: Utiliser la famille de l'organe PRÉDIT
                 try:
                     predicted_family = get_family_for_organ(organ_name)
-                    # CRITIQUE: Mettre à jour les params watershed pour l'organe prédit
-                    # Cela permet d'appliquer les overrides organ-specific (ex: Breast min_distance=2)
-                    organ_info = get_model_for_organ(organ_name)
-                    params = {**organ_info["watershed_params"], **(watershed_params or {})}
-                    logger.debug(f"Watershed params updated for predicted organ {organ_name}: {params}")
+                    # CRITIQUE: En mode Auto, utiliser les params de l'organe prédit
+                    # En mode Manuel, garder les params fournis par l'utilisateur
+                    if watershed_params is None:
+                        organ_info = get_model_for_organ(organ_name)
+                        params = organ_info["watershed_params"].copy()
+                        logger.debug(f"Auto params for predicted organ {organ_name}: {params}")
+                    else:
+                        logger.debug(f"Manual params (user override): {params}")
                 except ValueError:
                     predicted_family = self.family  # Fallback si organe inconnu
 
@@ -661,8 +669,11 @@ class CellVitEngine:
                 # ===================================================
                 if morphometry is not None:
                     # Phase 3 = source autoritative pour les candidats mitose
-                    morphometry.mitotic_candidates = n_mitosis_candidates
-                    morphometry.mitotic_nuclei_ids = mitosis_candidate_ids
+                    # Utilise refresh_mitosis_alerts() pour synchroniser les alertes
+                    morphometry.refresh_mitosis_alerts(
+                        new_mitotic_count=n_mitosis_candidates,
+                        new_mitotic_ids=mitosis_candidate_ids,
+                    )
                     # Note: mitotic_index_per_10hpf = None (sanity check morphometry.py)
 
                 logger.info(

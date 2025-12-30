@@ -102,6 +102,47 @@ class MorphometryReport:
         if self.mitotic_nuclei_ids is None:
             self.mitotic_nuclei_ids = []
 
+    def refresh_mitosis_alerts(
+        self,
+        new_mitotic_count: int,
+        new_mitotic_ids: List[int],
+    ) -> None:
+        """
+        Met à jour les alertes mitose après Phase 3.
+
+        Phase 3 utilise des seuils absolus (25-180 µm²) plus fiables que
+        les critères morphométriques internes de Phase 2 (elongation, intensité).
+
+        Cette méthode:
+        1. Supprime l'ancienne alerte mitose (si présente)
+        2. Met à jour mitotic_candidates et mitotic_nuclei_ids
+        3. Ajoute une nouvelle alerte avec le compte Phase 3
+
+        Args:
+            new_mitotic_count: Nombre de candidats mitose détectés par Phase 3
+            new_mitotic_ids: IDs des noyaux candidats mitose
+        """
+        # Supprimer l'ancienne alerte mitose (si présente)
+        self.alerts = [
+            a for a in self.alerts
+            if "mitose" not in a.lower() and "figures évocatrices" not in a.lower()
+        ]
+
+        # Mettre à jour les données mitose
+        self.mitotic_candidates = new_mitotic_count
+        self.mitotic_nuclei_ids = new_mitotic_ids
+
+        # Ajouter la nouvelle alerte (seulement si > 0)
+        if new_mitotic_count > 0:
+            if new_mitotic_count >= 5:
+                new_alert = f"🔍 Présence de figures évocatrices de mitoses ({new_mitotic_count})"
+            else:
+                new_alert = f"ℹ️ Quelques figures évocatrices de mitoses ({new_mitotic_count})"
+
+            # Insérer au début (les alertes mitose sont prioritaires)
+            self.alerts.insert(0, new_alert)
+            self.alert_nuclei_ids["mitose"] = new_mitotic_ids
+
 
 # Types cellulaires PanNuke
 CELL_TYPES = ["Neoplastic", "Inflammatory", "Connective", "Dead", "Epithelial"]

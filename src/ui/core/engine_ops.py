@@ -164,9 +164,19 @@ def analyze_image_core(
     min_size: int,
     beta: float,
     min_distance: int,
+    use_auto_params: bool = True,
 ) -> AnalysisOutput:
     """
     Analyse une image et retourne le résultat + visualisations.
+
+    Args:
+        image: Image RGB (H, W, 3)
+        np_threshold: Seuil NP (utilisé si use_auto_params=False)
+        min_size: Taille min (utilisé si use_auto_params=False)
+        beta: Beta (utilisé si use_auto_params=False)
+        min_distance: Distance min (utilisé si use_auto_params=False)
+        use_auto_params: Si True, utilise les params optimisés de organ_config.py
+                         Si False, utilise les valeurs des sliders
 
     Returns:
         AnalysisOutput avec toutes les données et visualisations.
@@ -217,13 +227,19 @@ def analyze_image_core(
         )
 
     try:
-        # Paramètres watershed personnalisés
-        params = {
-            "np_threshold": np_threshold,
-            "min_size": int(min_size),
-            "beta": beta,
-            "min_distance": int(min_distance),
-        }
+        # Paramètres watershed: Auto (organ_config) ou Manuel (sliders)
+        if use_auto_params:
+            # Mode Auto: utilise les params optimisés de organ_config.py
+            # (récupérés par get_model_for_organ(predicted_organ) dans inference_engine)
+            params = None
+        else:
+            # Mode Manuel: utilise les valeurs des sliders
+            params = {
+                "np_threshold": np_threshold,
+                "min_size": int(min_size),
+                "beta": beta,
+                "min_distance": int(min_distance),
+            }
 
         # Analyse
         result = state.engine.analyze(
