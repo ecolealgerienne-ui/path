@@ -54,10 +54,10 @@ def compute_pq(pred_inst: np.ndarray, gt_inst: np.ndarray, iou_threshold: float 
     gt_ids = gt_ids[gt_ids > 0]
 
     if len(gt_ids) == 0:
-        return {"PQ": 1.0 if len(pred_ids) == 0 else 0.0, "DQ": 1.0, "SQ": 1.0}
+        return {"PQ": 1.0 if len(pred_ids) == 0 else 0.0, "DQ": 1.0, "SQ": 1.0, "TP": 0, "FP": len(pred_ids), "FN": 0}
 
     if len(pred_ids) == 0:
-        return {"PQ": 0.0, "DQ": 0.0, "SQ": 0.0}
+        return {"PQ": 0.0, "DQ": 0.0, "SQ": 0.0, "TP": 0, "FP": 0, "FN": len(gt_ids)}
 
     # Compute IoU matrix
     iou_matrix = np.zeros((len(gt_ids), len(pred_ids)))
@@ -203,6 +203,17 @@ def main():
         action="store_true",
         help="Use learnable alpha for H-channel amplification"
     )
+    parser.add_argument(
+        "--diagnose_outliers",
+        action="store_true",
+        help="Enable detailed outlier analysis for samples with low AJI"
+    )
+    parser.add_argument(
+        "--outlier_threshold",
+        type=float,
+        default=0.50,
+        help="AJI threshold below which samples are considered outliers (default: 0.50)"
+    )
     args = parser.parse_args()
 
     # Préfixe pour les fichiers de données (organe ou famille)
@@ -228,6 +239,8 @@ def main():
     if args.organ:
         print(f"  Organ filter: {args.organ}")
         print(f"  Data prefix: {data_prefix}")
+    if args.diagnose_outliers:
+        print(f"  Outlier diagnosis: ENABLED (threshold={args.outlier_threshold})")
 
     # Load model
     print("\n" + "=" * 80)
@@ -350,6 +363,9 @@ def main():
     n_pred_instances = []
     n_gt_instances = []
 
+    # Per-sample details for outlier analysis
+    sample_details = []
+
     for i in tqdm(range(n_to_eval), desc="Evaluating"):
         gt_inst = gt_instances[i]
 
@@ -400,12 +416,39 @@ def main():
         )
         aji_fair = compute_aji(pred_inst, gt_inst_watershed)
 
+        # Count instances
+        n_pred = len(np.unique(pred_inst)) - 1  # -1 for background
+        n_gt = len(np.unique(gt_inst)) - 1
+
+        # Compute HV magnitude on predicted nuclei regions
+        hv_magnitude = np.sqrt(hv_pred[0]**2 + hv_pred[1]**2)
+        nuclei_mask = np_pred > args.np_threshold
+        hv_mag_mean = float(hv_magnitude[nuclei_mask].mean()) if nuclei_mask.sum() > 0 else 0.0
+
+        # Nuclear coverage (% of image that is nuclei)
+        np_coverage = float(nuclei_mask.sum()) / (224 * 224) * 100
+
         all_dice.append(dice)
         all_aji.append(aji)
         all_aji_fair.append(aji_fair)
         all_pq.append(pq_metrics['PQ'])
-        n_pred_instances.append(len(np.unique(pred_inst)) - 1)
-        n_gt_instances.append(len(np.unique(gt_inst)) - 1)
+        n_pred_instances.append(n_pred)
+        n_gt_instances.append(n_gt)
+
+        # Store sample details for outlier analysis
+        sample_details.append({
+            'index': i,
+            'aji': aji,
+            'dice': dice,
+            'pq': pq_metrics['PQ'],
+            'n_gt': n_gt,
+            'n_pred': n_pred,
+            'hv_mag_mean': hv_mag_mean,
+            'np_coverage': np_coverage,
+            'tp': pq_metrics['TP'],
+            'fp': pq_metrics['FP'],
+            'fn': pq_metrics['FN']
+        })
 
     # Results
     print("\n" + "=" * 80)
@@ -442,6 +485,78 @@ def main():
         print(f"   → scipy.ndimage.label() produit des frontières différentes du watershed")
         print(f"   → Considérez utiliser watershed pour les GT aussi (cohérence)")
 
+    # Outlier Analysis (if enabled)
+    if args.diagnose_outliers:
+        print("\n" + "=" * 80)
+        print("🔍 OUTLIER ANALYSIS")
+        print("=" * 80)
+
+        # Find outliers (samples below threshold)
+        outliers = [s for s in sample_details if s['aji'] < args.outlier_threshold]
+        outliers_sorted = sorted(outliers, key=lambda x: x['aji'])
+
+        print(f"\nThreshold: AJI < {args.outlier_threshold}")
+        print(f"Outliers found: {len(outliers)} / {n_to_eval} samples ({len(outliers)/n_to_eval*100:.1f}%)")
+
+        if outliers:
+            # Compute impact on mean
+            non_outlier_ajis = [s['aji'] for s in sample_details if s['aji'] >= args.outlier_threshold]
+            mean_without_outliers = np.mean(non_outlier_ajis) if non_outlier_ajis else 0
+            print(f"Mean AJI without outliers: {mean_without_outliers:.4f} (vs {mean_aji:.4f} with)")
+
+            print(f"\n{'─'*80}")
+            print(f"{'Idx':<5} {'AJI':<7} {'Dice':<6} {'GT':<5} {'Pred':<5} {'Δ':<6} {'Type':<12} {'HV_mag':<7} {'NP%':<6}")
+            print(f"{'─'*80}")
+
+            for s in outliers_sorted[:15]:  # Show top 15 worst
+                delta = s['n_pred'] - s['n_gt']
+                if delta < -2:
+                    seg_type = "UNDER-SEG"
+                elif delta > 2:
+                    seg_type = "OVER-SEG"
+                else:
+                    seg_type = "boundary"
+
+                print(f"{s['index']:<5} {s['aji']:<7.4f} {s['dice']:<6.3f} {s['n_gt']:<5} {s['n_pred']:<5} {delta:+<5} {seg_type:<12} {s['hv_mag_mean']:<7.3f} {s['np_coverage']:<6.1f}")
+
+            print(f"{'─'*80}")
+
+            # Analyze patterns
+            under_seg = sum(1 for s in outliers if s['n_pred'] < s['n_gt'] - 2)
+            over_seg = sum(1 for s in outliers if s['n_pred'] > s['n_gt'] + 2)
+            boundary = len(outliers) - under_seg - over_seg
+
+            print(f"\n📊 PATTERN ANALYSIS:")
+            print(f"  Under-segmentation (pred << gt): {under_seg} ({under_seg/len(outliers)*100:.0f}%)")
+            print(f"  Over-segmentation (pred >> gt):  {over_seg} ({over_seg/len(outliers)*100:.0f}%)")
+            print(f"  Boundary issues (|Δ| ≤ 2):       {boundary} ({boundary/len(outliers)*100:.0f}%)")
+
+            # HV magnitude analysis
+            outlier_hv_mags = [s['hv_mag_mean'] for s in outliers]
+            good_samples = [s for s in sample_details if s['aji'] >= 0.65]
+            good_hv_mags = [s['hv_mag_mean'] for s in good_samples] if good_samples else [0]
+
+            print(f"\n📊 HV MAGNITUDE COMPARISON:")
+            print(f"  Outliers mean:     {np.mean(outlier_hv_mags):.4f}")
+            print(f"  Good samples mean: {np.mean(good_hv_mags):.4f}")
+
+            if np.mean(outlier_hv_mags) < np.mean(good_hv_mags) * 0.8:
+                print(f"  ⚠️  Outliers have weak HV gradients → Watershed struggles to separate")
+
+            # Nuclear density analysis
+            outlier_coverage = [s['np_coverage'] for s in outliers]
+            good_coverage = [s['np_coverage'] for s in good_samples] if good_samples else [0]
+
+            print(f"\n📊 NUCLEAR DENSITY:")
+            print(f"  Outliers mean coverage:     {np.mean(outlier_coverage):.1f}%")
+            print(f"  Good samples mean coverage: {np.mean(good_coverage):.1f}%")
+
+            if np.mean(outlier_coverage) > np.mean(good_coverage) * 1.3:
+                print(f"  ⚠️  Outliers are dense patches → Consider reducing min_distance")
+
+        else:
+            print(f"\n✅ No outliers found! All samples have AJI ≥ {args.outlier_threshold}")
+
     # Verdict
     print("\n" + "=" * 80)
     print("VERDICT")
@@ -466,6 +581,7 @@ def main():
     results = {
         "checkpoint": str(args.checkpoint),
         "family": args.family,
+        "organ": args.organ,
         "n_samples": n_to_eval,
         "use_hybrid": args.use_hybrid,
         "watershed_params": {
@@ -490,6 +606,17 @@ def main():
         "target_aji": target_aji,
         "timestamp": datetime.now().isoformat()
     }
+
+    # Add outlier analysis to results if enabled
+    if args.diagnose_outliers:
+        outliers = [s for s in sample_details if s['aji'] < args.outlier_threshold]
+        results["outlier_analysis"] = {
+            "threshold": args.outlier_threshold,
+            "n_outliers": len(outliers),
+            "outlier_indices": [s['index'] for s in outliers],
+            "outliers": sorted(outliers, key=lambda x: x['aji']),
+            "all_samples": sample_details
+        }
 
     results_dir = Path("results/v13_smart_crops")
     results_dir.mkdir(parents=True, exist_ok=True)
