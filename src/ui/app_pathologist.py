@@ -101,13 +101,14 @@ def analyze_image(
         return empty, error_msg, "", "", empty, ""
 
     try:
-        # Paramètres watershed automatiques (pas de sliders exposés)
-        params = state.engine.watershed_params
+        # Mode Auto: laisser le moteur utiliser les params optimisés
+        # pour l'organe prédit (organ_config.py)
+        # Note: watershed_params=None déclenche le mode Auto dans inference_engine
 
         # Analyse via le moteur
         result = state.engine.analyze(
             image,
-            watershed_params=params,
+            watershed_params=None,  # Auto: utilise organ_config.py
             compute_morphometry=True,
             compute_uncertainty=True,
         )
