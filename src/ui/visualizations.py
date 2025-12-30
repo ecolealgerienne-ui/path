@@ -957,11 +957,11 @@ def create_spatial_debug_panel(
     ax4.set_ylim(0, 1)
 
     legend_text = """PHASE 3 - Intelligence Spatiale
-────────────────────────────
-🟠 Hotspots = zones haute densité
-🔴 Mitoses = forme + chromatine
-🟣 Chromatine hétérogène
-📊 Pléomorphisme = anisocaryose
+--------------------------------
+[H] Hotspots = zones haute densité
+[M] Mitoses = forme + chromatine
+[C] Chromatine hétérogène
+[P] Pléomorphisme = anisocaryose
 """
     ax4.text(0.05, 0.9, legend_text, transform=ax4.transAxes,
              fontsize=8, verticalalignment='top', fontfamily='monospace',

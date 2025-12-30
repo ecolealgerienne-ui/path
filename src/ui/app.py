@@ -675,22 +675,12 @@ def create_ui():
 
     with gr.Blocks(
         title="CellViT-Optimus R&D Cockpit",
-        theme=gr.themes.Soft(),
-        css="""
-        .disclaimer {
-            background-color: #fff3cd;
-            border: 1px solid #ffc107;
-            padding: 10px;
-            border-radius: 5px;
-            margin-bottom: 10px;
-        }
-        """
     ) as app:
 
         # Header
         gr.Markdown("# CellViT-Optimus — R&D Cockpit")
         gr.HTML("""
-        <div class="disclaimer">
+        <div style="background-color: #fff3cd; border: 1px solid #ffc107; padding: 10px; border-radius: 5px; margin-bottom: 10px;">
             <b>Document d'aide à la décision — Validation médicale requise</b><br>
             Ceci est un outil R&D pour l'exploration et la validation du moteur IA.
         </div>
