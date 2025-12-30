@@ -421,8 +421,8 @@ def main():
         "--folds",
         type=int,
         nargs="+",
-        default=[1, 2, 3],
-        help="Folds to use (default: 1 2 3)"
+        default=[0, 1, 2],
+        help="Folds to use (default: 0 1 2)"
     )
 
     args = parser.parse_args()
