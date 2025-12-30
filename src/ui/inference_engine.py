@@ -179,39 +179,39 @@ class AnalysisResult:
                 "watershed_params": self.watershed_params,
             },
             "summary": {
-                "n_nuclei": self.n_nuclei,
-                "n_fusions": self.n_fusions,
-                "n_over_segmentations": self.n_over_seg,
+                "n_nuclei": int(self.n_nuclei),
+                "n_fusions": int(self.n_fusions),
+                "n_over_segmentations": int(self.n_over_seg),
                 # Phase 3
-                "pleomorphism_score": self.pleomorphism_score,
-                "n_hotspots": self.n_hotspots,
-                "n_mitosis_candidates": self.n_mitosis_candidates,
+                "pleomorphism_score": int(self.pleomorphism_score) if self.pleomorphism_score else 0,
+                "n_hotspots": int(self.n_hotspots) if self.n_hotspots else 0,
+                "n_mitosis_candidates": int(self.n_mitosis_candidates) if self.n_mitosis_candidates else 0,
             },
             "nuclei": [],
         }
 
         for n in self.nucleus_info:
             result["nuclei"].append({
-                "id": n.id,
-                "centroid": list(n.centroid),
+                "id": int(n.id),
+                "centroid": [float(c) for c in n.centroid],
                 "area_um2": float(n.area_um2),
                 "perimeter_um": float(n.perimeter_um),
                 "circularity": float(n.circularity),
                 "cell_type": n.cell_type,
-                "type_idx": n.type_idx,
+                "type_idx": int(n.type_idx),
                 "confidence": float(n.confidence),
-                "is_uncertain": n.is_uncertain,
-                "is_mitotic": n.is_mitotic,
-                "is_potential_fusion": n.is_potential_fusion,
-                "is_potential_over_seg": n.is_potential_over_seg,
+                "is_uncertain": bool(n.is_uncertain),
+                "is_mitotic": bool(n.is_mitotic),
+                "is_potential_fusion": bool(n.is_potential_fusion),
+                "is_potential_over_seg": bool(n.is_potential_over_seg),
                 "anomaly_reason": n.anomaly_reason,
                 # Phase 3
                 "chromatin_entropy": float(n.chromatin_entropy),
-                "chromatin_heterogeneous": n.chromatin_heterogeneous,
-                "is_mitosis_candidate": n.is_mitosis_candidate,
+                "chromatin_heterogeneous": bool(n.chromatin_heterogeneous),
+                "is_mitosis_candidate": bool(n.is_mitosis_candidate),
                 "mitosis_score": float(n.mitosis_score),
-                "n_neighbors": n.n_neighbors,
-                "is_in_hotspot": n.is_in_hotspot,
+                "n_neighbors": int(n.n_neighbors) if n.n_neighbors else 0,
+                "is_in_hotspot": bool(n.is_in_hotspot),
             })
 
         if self.morphometry:
@@ -232,7 +232,7 @@ class AnalysisResult:
             sa = self.spatial_analysis
             result["spatial_analysis"] = {
                 "pleomorphism": {
-                    "score": sa.pleomorphism.score,
+                    "score": int(sa.pleomorphism.score),
                     "area_cv": float(sa.pleomorphism.area_cv),
                     "circularity_cv": float(sa.pleomorphism.circularity_cv),
                     "size_range_ratio": float(sa.pleomorphism.size_range_ratio),
@@ -241,18 +241,18 @@ class AnalysisResult:
                 "chromatin": {
                     "mean_entropy": float(sa.mean_entropy),
                     "n_heterogeneous": len(sa.heterogeneous_nuclei_ids),
-                    "heterogeneous_ids": sa.heterogeneous_nuclei_ids,
+                    "heterogeneous_ids": [int(i) for i in sa.heterogeneous_nuclei_ids],
                 },
                 "topology": {
                     "mean_neighbors": float(sa.mean_neighbors),
                 },
                 "clustering": {
-                    "n_hotspots": sa.n_hotspots,
-                    "hotspot_ids": sa.hotspot_ids,
+                    "n_hotspots": int(sa.n_hotspots),
+                    "hotspot_ids": [int(i) for i in sa.hotspot_ids],
                 },
                 "mitosis": {
                     "n_candidates": len(sa.mitosis_candidates),
-                    "candidate_ids": sa.mitosis_candidates,
+                    "candidate_ids": [int(i) for i in sa.mitosis_candidates],
                     "scores": {str(k): float(v) for k, v in sa.mitosis_scores.items()},
                 },
             }

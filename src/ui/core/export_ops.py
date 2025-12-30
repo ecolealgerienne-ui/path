@@ -21,6 +21,7 @@ from src.ui.export import (
     export_summary_csv,
     create_report_pdf,
 )
+from src.ui.visualizations import create_segmentation_overlay
 
 logger = logging.getLogger(__name__)
 
@@ -42,18 +43,26 @@ def export_pdf_core() -> Optional[str]:
 
     try:
         # Créer métadonnées audit
-        metadata = create_audit_metadata(state.current_result)
+        audit = create_audit_metadata(state.current_result)
+
+        # Régénérer l'overlay pour le PDF
+        result = state.current_result
+        overlay = create_segmentation_overlay(
+            result.image_rgb,
+            result.instance_map,
+            result.type_map,
+            alpha=0.4,
+        )
 
         # Générer PDF
         temp_dir = tempfile.mkdtemp()
-        pdf_path = Path(temp_dir) / f"cellvit_report_{metadata.analysis_id}.pdf"
+        pdf_path = Path(temp_dir) / f"cellvit_report_{audit.analysis_id}.pdf"
 
         create_report_pdf(
-            result=state.current_result,
+            result=result,
+            image_overlay=overlay,
+            audit=audit,
             output_path=pdf_path,
-            metadata=metadata,
-            organ=state.engine.organ,
-            family=state.engine.family,
         )
 
         logger.info(f"PDF exported: {pdf_path}")
@@ -78,15 +87,15 @@ def export_nuclei_csv_core() -> Optional[str]:
         return None
 
     try:
-        metadata = create_audit_metadata(state.current_result)
+        audit = create_audit_metadata(state.current_result)
 
         temp_dir = tempfile.mkdtemp()
-        csv_path = Path(temp_dir) / f"nuclei_{metadata.analysis_id}.csv"
+        csv_path = Path(temp_dir) / f"nuclei_{audit.analysis_id}.csv"
 
-        export_nuclei_csv(
+        # export_nuclei_csv retourne le contenu CSV, on l'écrit dans le fichier
+        csv_content = export_nuclei_csv(
             result=state.current_result,
             output_path=csv_path,
-            metadata=metadata,
         )
 
         logger.info(f"Nuclei CSV exported: {csv_path}")
@@ -108,24 +117,20 @@ def export_summary_csv_core() -> Optional[str]:
         logger.warning("No result to export")
         return None
 
-    if state.engine is None:
-        logger.warning("No engine loaded")
-        return None
-
     try:
-        metadata = create_audit_metadata(state.current_result)
+        audit = create_audit_metadata(state.current_result)
 
         temp_dir = tempfile.mkdtemp()
-        csv_path = Path(temp_dir) / f"summary_{metadata.analysis_id}.csv"
+        csv_path = Path(temp_dir) / f"summary_{audit.analysis_id}.csv"
 
-        export_summary_csv(
+        # export_summary_csv retourne le contenu CSV
+        csv_content = export_summary_csv(
             result=state.current_result,
-            output_path=csv_path,
-            metadata=metadata,
-            organ=state.engine.organ,
-            family=state.engine.family,
-            watershed_params=state.engine.watershed_params,
+            audit=audit,
         )
+
+        # Écrire dans le fichier
+        csv_path.write_text(csv_content)
 
         logger.info(f"Summary CSV exported: {csv_path}")
         return str(csv_path)
