@@ -219,6 +219,18 @@ python scripts/evaluation/test_v13_smart_crops_aji.py \
     --min_size 20 \
     --beta 1.0 \
     --min_distance 3
+
+# Digestive (AJI 0.6160)
+python scripts/evaluation/test_v13_smart_crops_aji.py \
+    --checkpoint models/checkpoints_v13_smart_crops/hovernet_digestive_v13_smart_crops_hybrid_fpn_best.pth \
+    --family digestive \
+    --n_samples 50 \
+    --use_hybrid \
+    --use_fpn_chimique \
+    --np_threshold 0.45 \
+    --min_size 60 \
+    --beta 2.0 \
+    --min_distance 5
 ```
 
 **Paramètres Watershed optimisés par famille :**
@@ -228,6 +240,7 @@ python scripts/evaluation/test_v13_smart_crops_aji.py \
 | Respiratory | 0.40 | 30 | 0.50 | 5 | **0.6872** | ✅ Objectif |
 | Urologic | 0.45 | 30 | 0.50 | 2 | **0.6743** | 99.2% |
 | Epidermal | 0.45 | 20 | 1.00 | 3 | 0.6203 | 91.2% |
+| Digestive | 0.45 | 60 | 2.00 | 5 | 0.6160 | 90.6% |
 
 ### 7. Optimisation Watershed (optionnel)
 

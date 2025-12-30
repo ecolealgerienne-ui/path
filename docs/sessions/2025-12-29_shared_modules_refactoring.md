@@ -7,6 +7,7 @@
 - **Respiratory:** AJI **0.6872** ✅ **OBJECTIF ATTEINT** (101.1%)
 - **Urologic:** AJI **0.6743** (99.2% de l'objectif)
 - **Epidermal:** AJI 0.6203 (91.2% de l'objectif)
+- **Digestive:** AJI 0.6160 (90.6% de l'objectif)
 - **Découverte:** Notre implémentation calcule AJI+ (one-to-one), pas AJI original
 
 ---
@@ -213,17 +214,59 @@ Over-seg ratio: 1.01×
 
 ---
 
-## 7. Paramètres Optimaux par Famille
+## 7. Résultats Digestive
+
+### Configuration
+- **Architecture:** V13 Smart Crops + FPN Chimique + H-Alpha
+- **Epochs:** 60
+- **Dataset:** 2430 samples (Colon, Stomach, Esophagus, Bile-duct)
+
+### Évolution des Résultats
+
+| Configuration | AJI | Progress |
+|---------------|-----|----------|
+| 60 epochs + H-Alpha | 0.6065 | 89.2% |
+| **+ Watershed optimisé** | **0.6160** | **90.6%** |
+
+**Gain optimization:** +3.6%
+
+### Métriques Détaillées
+
+```
+Dice:        0.8198 ± 0.0839
+AJI:         0.6160 ± 0.1471
+PQ:          0.5747 ± 0.1383
+
+Instances pred: 17.9
+Instances GT:   18.1
+Over-seg ratio: 0.94×
+```
+
+### Paramètres Watershed Optimaux
+
+| Paramètre | Valeur |
+|-----------|--------|
+| np_threshold | 0.45 |
+| min_size | 60 |
+| beta | 2.00 |
+| min_distance | 5 |
+
+**Note:** Digestive nécessite `min_size=60` (le plus élevé) et `beta=2.0`, suggérant des noyaux plus grands avec des gradients HV plus marqués.
+
+---
+
+## 8. Paramètres Optimaux par Famille
 
 | Famille | np_threshold | min_size | beta | min_distance | AJI | Status |
 |---------|--------------|----------|------|--------------|-----|--------|
 | **Respiratory** | 0.40 | 30 | 0.50 | 5 | **0.6872** | ✅ Objectif atteint |
 | **Urologic** | 0.45 | 30 | 0.50 | 2 | **0.6743** | 99.2% |
 | **Epidermal** | 0.45 | 20 | 1.00 | 3 | 0.6203 | 91.2% |
+| **Digestive** | 0.45 | 60 | 2.00 | 5 | 0.6160 | 90.6% |
 
 ---
 
-## 8. Règle Ajoutée à CLAUDE.md
+## 9. Règle Ajoutée à CLAUDE.md
 
 ### Règle #2: Modules Partagés OBLIGATOIRES
 
@@ -234,8 +277,7 @@ Over-seg ratio: 1.01×
 
 ---
 
-## 9. Prochaines Étapes
+## 10. Prochaines Étapes
 
 1. **Glandular** (3391 samples) — Plus grand dataset, attendu >0.68 AJI
-2. **Digestive** (2430 samples) — Deuxième plus grand
-3. Considérer ajout de l'AJI original pour comparaison littérature
+2. Considérer ajout de l'AJI original pour comparaison littérature
