@@ -33,7 +33,13 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 # Imports locaux
-from src.ui.inference_engine import CellVitEngine, AnalysisResult, WATERSHED_PARAMS
+from src.ui.inference_engine import (
+    CellVitEngine,
+    AnalysisResult,
+    WATERSHED_PARAMS,
+    MODEL_CHOICES,
+    ORGAN_SPECIFIC_MODELS,
+)
 from src.ui.visualizations import (
     create_segmentation_overlay,
     create_contour_overlay,
@@ -63,7 +69,7 @@ from src.ui.export import (
     export_summary_csv,
     create_report_pdf,
 )
-from src.constants import FAMILIES
+# FAMILIES imported via inference_engine.MODEL_CHOICES
 import tempfile
 import os
 
@@ -238,14 +244,27 @@ def analyze_image(
 
 def format_metrics(result: AnalysisResult) -> str:
     """Formate les métriques en texte."""
+    # Vérifier si c'est un modèle organe spécifique
+    if result.family in ORGAN_SPECIFIC_MODELS:
+        model_info = f"### Modèle: **{result.family}** (dédié)"
+        family_info = f"*Famille parent: {ORGAN_SPECIFIC_MODELS[result.family]['family']}*"
+    else:
+        model_info = f"### Famille: {result.family}"
+        family_info = ""
+
     lines = [
         f"### Organe détecté: {result.organ_name} ({result.organ_confidence:.1%})",
-        f"### Famille: {result.family}",
+        model_info,
+    ]
+    if family_info:
+        lines.append(family_info)
+
+    lines.extend([
         "",
         f"**Noyaux détectés:** {result.n_nuclei}",
         f"**Temps d'inférence:** {result.inference_time_ms:.0f} ms",
         "",
-    ]
+    ])
 
     if result.morphometry:
         m = result.morphometry
@@ -617,9 +636,9 @@ def create_ui():
                 # Status du moteur
                 with gr.Row():
                     family_select = gr.Dropdown(
-                        choices=FAMILIES,
+                        choices=MODEL_CHOICES,
                         value="respiratory",
-                        label="Famille d'organes",
+                        label="Modèle (Famille ou Organe)",
                         interactive=True,
                     )
                     load_btn = gr.Button("Charger le moteur", variant="primary")

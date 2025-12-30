@@ -32,7 +32,13 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 # Imports locaux
-from src.ui.inference_engine import CellVitEngine, AnalysisResult, WATERSHED_PARAMS
+from src.ui.inference_engine import (
+    CellVitEngine,
+    AnalysisResult,
+    WATERSHED_PARAMS,
+    MODEL_CHOICES,
+    ORGAN_SPECIFIC_MODELS,
+)
 from src.ui.visualizations import (
     create_segmentation_overlay,
     create_contour_overlay,
@@ -45,7 +51,7 @@ from src.ui.export import (
     create_audit_metadata,
     create_report_pdf,
 )
-from src.constants import FAMILIES
+# FAMILIES imported via inference_engine.MODEL_CHOICES
 import tempfile
 import os
 
@@ -239,9 +245,15 @@ def analyze_image(
 
 def format_identification(result: AnalysisResult) -> str:
     """Formate l'identification de l'organe."""
+    # Vérifier si c'est un modèle organe spécifique
+    if result.family in ORGAN_SPECIFIC_MODELS:
+        model_line = f"**Modèle:** {result.family} (dédié)"
+    else:
+        model_line = f"**Famille:** {result.family.capitalize()}"
+
     return f"""### {result.organ_name}
 **Confiance:** {result.organ_confidence:.0%}
-**Famille:** {result.family.capitalize()}"""
+{model_line}"""
 
 
 def format_metrics_clinical(result: AnalysisResult) -> str:
@@ -508,8 +520,16 @@ def create_ui():
 
                 # Sélection famille (simplifié)
                 with gr.Row():
+                    # Créer les choix avec labels plus clairs pour les pathologistes
+                    pathologist_choices = []
+                    for choice in MODEL_CHOICES:
+                        if choice in ORGAN_SPECIFIC_MODELS:
+                            pathologist_choices.append((f"{choice} (modèle dédié)", choice))
+                        else:
+                            pathologist_choices.append((f"{choice.capitalize()} (famille)", choice))
+
                     family_select = gr.Dropdown(
-                        choices=FAMILIES,
+                        choices=pathologist_choices,
                         value="respiratory",
                         label="Type de tissu",
                         interactive=True,
