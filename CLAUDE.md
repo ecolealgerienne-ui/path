@@ -244,6 +244,21 @@ Chaque image source 256×256 génère 5 crops 224×224 avec rotations:
 
 **Objectif atteint:** 1/5 (Respiratory) | **Proche (>96%):** 3/5
 
+### Résultats par Organe (Expérimental)
+
+> **Pipeline Organ-Specific:** Permet d'entraîner sur un organe isolé au lieu d'une famille entière.
+> Utile pour identifier les organes "difficiles" ou optimiser par tissu.
+
+| Organe | Famille | Samples | AJI | AJI Median | Progress | Paramètres Watershed |
+|--------|---------|---------|-----|------------|----------|----------------------|
+| **Breast** | Glandular | ~680 | **0.6662** | **0.6933** ✅ | 98.0% | beta=1.50, min_size=30, np_thr=0.40, min_dist=2 |
+
+**Observations Breast (2025-12-30):**
+- AJI Median (0.6933) > Objectif (0.68) → Quelques outliers tirent la moyenne vers le bas
+- Over-seg ratio: 1.00× → Détection d'instances quasi-parfaite
+- NT Accuracy: 89.2% (classification nucléaire excellente)
+- Dice: 0.8243 ± 0.1131
+
 ---
 
 ## Pipeline Complet (Commandes)
@@ -371,14 +386,28 @@ python scripts/evaluation/test_v13_smart_crops_aji.py \
     --min_size 60 \
     --beta 2.0 \
     --min_distance 5
+
+# Breast (Organ-specific, AJI 0.6662)
+python scripts/evaluation/test_v13_smart_crops_aji.py \
+    --checkpoint models/checkpoints_v13_smart_crops/hovernet_breast_v13_smart_crops_hybrid_fpn_best.pth \
+    --family glandular \
+    --organ Breast \
+    --n_samples 50 \
+    --use_hybrid \
+    --use_fpn_chimique \
+    --np_threshold 0.40 \
+    --min_size 30 \
+    --beta 1.5 \
+    --min_distance 2
 ```
 
 **Paramètres Watershed optimisés par famille (SANS normalisation):**
 
-| Famille | np_threshold | min_size | beta | min_distance | AJI | Status |
-|---------|--------------|----------|------|--------------|-----|--------|
+| Famille/Organe | np_threshold | min_size | beta | min_distance | AJI | Status |
+|----------------|--------------|----------|------|--------------|-----|--------|
 | Respiratory | 0.40 | 30 | 0.50 | 5 | **0.6872** | ✅ Objectif |
 | Urologic | 0.45 | 30 | 0.50 | 2 | **0.6743** | 99.2% |
+| **Breast** (organ) | 0.40 | 30 | 1.50 | 2 | **0.6662** | 98.0% |
 | Glandular | 0.40 | 50 | 0.50 | 3 | **0.6566** | 96.6% |
 | Epidermal | 0.45 | 20 | 1.00 | 3 | 0.6203 | 91.2% |
 | Digestive | 0.45 | 60 | 2.00 | 5 | 0.6160 | 90.6% |
