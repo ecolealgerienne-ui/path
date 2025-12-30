@@ -64,13 +64,13 @@ ORGAN_TO_FAMILY = {
 # =============================================================================
 # ORGANES AVEC MODÈLE DÉDIÉ
 # =============================================================================
-# Ajouter ici les organes pour lesquels un modèle spécifique a été entraîné.
-# Les autres utiliseront le modèle de leur famille.
+# STRATÉGIE V13: Toujours utiliser les modèles par FAMILLE.
+# Les modèles organ-specific ont été abandonnés (voir CLAUDE.md).
+#
+# Note: Garder ce set vide. Si un organe est ajouté ici, il DOIT avoir
+# un checkpoint correspondant dans ORGAN_CHECKPOINTS.
 
-ORGANS_WITH_DEDICATED_MODEL = {
-    "Breast",
-    "Colon",
-}
+ORGANS_WITH_DEDICATED_MODEL = set()  # Vide = tous utilisent le modèle famille
 
 
 # =============================================================================

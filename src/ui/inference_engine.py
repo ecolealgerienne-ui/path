@@ -636,6 +636,21 @@ class CellVitEngine:
                 # Enrichir nucleus_info avec données Phase 3
                 self._enrich_nucleus_info_phase3(nucleus_info, spatial_result)
 
+                # ===================================================
+                # SYNCHRONISER MORPHOMETRY AVEC PHASE 3 (CRITIQUE)
+                # ===================================================
+                # Le mitotic_index de morphometry utilise ses propres critères.
+                # On le remplace par les candidats Phase 3 pour cohérence.
+                if morphometry is not None and n_mitosis_candidates > 0:
+                    # Recalculer l'index avec les candidats Phase 3
+                    h, w = instance_map.shape
+                    patch_area_mm2 = (h * 0.5) * (w * 0.5) / 1e6  # 0.5 MPP
+                    hpf_equivalent = patch_area_mm2 / 0.196  # 1 HPF ≈ 0.196 mm²
+                    if hpf_equivalent > 0:
+                        morphometry.mitotic_candidates = n_mitosis_candidates
+                        morphometry.mitotic_index_per_10hpf = (n_mitosis_candidates / hpf_equivalent) * 10
+                        morphometry.mitotic_nuclei_ids = mitosis_candidate_ids
+
                 logger.info(
                     f"  Phase 3: pleomorphism={pleomorphism_score}, "
                     f"hotspots={spatial_result.n_hotspots}, "
