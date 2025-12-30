@@ -674,6 +674,14 @@ class CellVitEngine:
                         new_mitotic_count=n_mitosis_candidates,
                         new_mitotic_ids=mitosis_candidate_ids,
                     )
+
+                    # Dégrader la confiance si complexité tissulaire élevée
+                    # (risque d'erreurs de segmentation accru)
+                    morphometry.refresh_confidence_after_phase3(
+                        pleomorphism_score=pleomorphism_score,
+                        n_mitosis_candidates=n_mitosis_candidates,
+                        n_heterogeneous_nuclei=n_heterogeneous_nuclei,
+                    )
                     # Note: mitotic_index_per_10hpf = None (sanity check morphometry.py)
 
                 logger.info(

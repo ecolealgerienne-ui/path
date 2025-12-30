@@ -185,7 +185,9 @@ def format_alerts_clinical(result: AnalysisResult) -> str:
         elif result.pleomorphism_score == 2:
             alerts.append("**Anisocaryose modérée** — variation notable")
 
-        if result.n_mitosis_candidates > 3:
+        if result.n_mitosis_candidates > 10:
+            alerts.append(f"🔴 **Activité mitotique TRÈS élevée** — {result.n_mitosis_candidates} figures suspectes")
+        elif result.n_mitosis_candidates > 3:
             alerts.append(f"**Activité mitotique élevée** — {result.n_mitosis_candidates} figures suspectes")
         elif result.n_mitosis_candidates > 0:
             alerts.append(f"**Mitoses présentes** — {result.n_mitosis_candidates} figure(s)")

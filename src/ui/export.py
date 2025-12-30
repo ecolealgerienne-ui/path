@@ -448,7 +448,9 @@ def create_report_pdf(
         if result.spatial_analysis:
             if result.pleomorphism_score >= 3:
                 alerts.append(('red', "Pléomorphisme SÉVÈRE"))
-            if result.n_mitosis_candidates > 3:
+            if result.n_mitosis_candidates > 10:
+                alerts.append(('red', f"⚠️ {result.n_mitosis_candidates} mitoses (TRÈS ÉLEVÉ)"))
+            elif result.n_mitosis_candidates > 3:
                 alerts.append(('red', f"{result.n_mitosis_candidates} mitoses suspectes"))
 
         ax_alerts = fig.add_axes([0.05, 0.10, 0.55, 0.15])
