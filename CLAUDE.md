@@ -395,6 +395,7 @@ python scripts/training/train_hovernet_family_v13_smart_crops.py \
 | [claude_history.md](./claude_history.md) | Historique complet du développement |
 | [docs/V13_SMART_CROPS_STRATEGY.md](./docs/V13_SMART_CROPS_STRATEGY.md) | Stratégie V13 (CTO validée) |
 | [docs/sessions/2025-12-29_respiratory_v13_smart_crops_results.md](./docs/sessions/2025-12-29_respiratory_v13_smart_crops_results.md) | Résultats Respiratory |
+| [docs/UI_COCKPIT.md](./docs/UI_COCKPIT.md) | **R&D Cockpit (IHM Gradio)** — Architecture, API, Phases |
 
 ---
 
