@@ -257,6 +257,12 @@ def create_report_pdf(
     """
     Crée un rapport PDF clinique formaté.
 
+    Améliorations v2:
+    - Légende déportée pour le graphique circulaire (évite chevauchement)
+    - Espacement vertical amélioré dans les alertes
+    - Paramètres watershed dans un tableau isolé
+    - Codes couleurs pour les alertes (rouge/orange)
+
     Args:
         result: AnalysisResult
         image_overlay: Image avec segmentation overlay
@@ -266,124 +272,213 @@ def create_report_pdf(
     Returns:
         Contenu PDF en bytes
     """
+    # Couleurs pour les types cellulaires
+    TYPE_COLORS = {
+        'Neoplastic': '#E63946',      # Rouge
+        'Inflammatory': '#457B9D',    # Bleu
+        'Epithelial': '#2A9D8F',      # Vert-bleu
+        'Connective': '#E9C46A',      # Jaune
+        'Dead': '#6C757D',            # Gris
+    }
+
     # Créer le PDF
     pdf_buffer = io.BytesIO()
 
     with PdfPages(pdf_buffer) as pdf:
-        # Page 1: Rapport principal
+        # =====================================================================
+        # PAGE 1: RAPPORT PRINCIPAL
+        # =====================================================================
         fig = plt.figure(figsize=(8.5, 11), facecolor='white')
 
-        # Header
-        fig.text(0.5, 0.96, "RAPPORT D'ANALYSE — CellViT-Optimus",
-                 ha='center', fontsize=14, fontweight='bold')
+        # Header avec fond coloré
+        header_ax = fig.add_axes([0, 0.93, 1, 0.07])
+        header_ax.set_facecolor('#2C3E50')
+        header_ax.set_xticks([])
+        header_ax.set_yticks([])
+        for spine in header_ax.spines.values():
+            spine.set_visible(False)
+
+        fig.text(0.5, 0.965, "RAPPORT D'ANALYSE — CellViT-Optimus",
+                 ha='center', fontsize=14, fontweight='bold', color='white')
         fig.text(0.5, 0.94, "DOCUMENT D'AIDE À LA DÉCISION — VALIDATION MÉDICALE REQUISE",
-                 ha='center', fontsize=8, color='red', style='italic')
+                 ha='center', fontsize=8, color='#FFD700', style='italic')
 
-        # Ligne de séparation
-        fig.add_axes([0.1, 0.92, 0.8, 0.001]).set_facecolor('black')
-        fig.gca().set_xticks([])
-        fig.gca().set_yticks([])
+        # Zone identification (carte)
+        id_box = fig.add_axes([0.05, 0.82, 0.42, 0.09])
+        id_box.set_facecolor('#F8F9FA')
+        id_box.set_xticks([])
+        id_box.set_yticks([])
+        for spine in id_box.spines.values():
+            spine.set_color('#DEE2E6')
 
-        # Zone identification
-        id_text = f"""
-Organe détecté: {result.organ_name} ({result.organ_confidence:.1%})
-Famille: {result.family}
-Date: {datetime.now().strftime('%Y-%m-%d %H:%M')}
-"""
+        id_lines = [
+            f"Organe: {result.organ_name} ({result.organ_confidence:.0%})",
+            f"Famille: {result.family}",
+            f"Date: {datetime.now().strftime('%Y-%m-%d %H:%M')}",
+        ]
         if audit:
-            id_text += f"ID Analyse: {audit.analysis_id}\n"
+            id_lines.append(f"ID: {audit.analysis_id}")
 
-        fig.text(0.12, 0.88, id_text, fontsize=9, verticalalignment='top',
-                 fontfamily='monospace')
+        for i, line in enumerate(id_lines):
+            fig.text(0.07, 0.895 - i * 0.022, line, fontsize=8,
+                     fontfamily='sans-serif')
 
-        # Image avec overlay
-        ax_img = fig.add_axes([0.1, 0.52, 0.35, 0.35])
-        ax_img.imshow(image_overlay)
-        ax_img.set_title("Segmentation", fontsize=10)
-        ax_img.axis('off')
+        # Noyaux détectés (badge)
+        nuclei_box = fig.add_axes([0.52, 0.82, 0.2, 0.09])
+        nuclei_box.set_facecolor('#3498DB')
+        nuclei_box.set_xticks([])
+        nuclei_box.set_yticks([])
+        for spine in nuclei_box.spines.values():
+            spine.set_visible(False)
 
-        # Image originale
-        ax_orig = fig.add_axes([0.55, 0.52, 0.35, 0.35])
+        fig.text(0.62, 0.875, f"{result.n_nuclei}", ha='center',
+                 fontsize=24, fontweight='bold', color='white')
+        fig.text(0.62, 0.835, "noyaux", ha='center',
+                 fontsize=10, color='white')
+
+        # Temps d'inférence (badge)
+        time_box = fig.add_axes([0.75, 0.82, 0.2, 0.09])
+        time_box.set_facecolor('#27AE60')
+        time_box.set_xticks([])
+        time_box.set_yticks([])
+        for spine in time_box.spines.values():
+            spine.set_visible(False)
+
+        fig.text(0.85, 0.875, f"{result.inference_time_ms:.0f}", ha='center',
+                 fontsize=24, fontweight='bold', color='white')
+        fig.text(0.85, 0.835, "ms", ha='center',
+                 fontsize=10, color='white')
+
+        # Images côte à côte
+        ax_orig = fig.add_axes([0.05, 0.50, 0.42, 0.30])
         ax_orig.imshow(result.image_rgb)
-        ax_orig.set_title("Image originale", fontsize=10)
+        ax_orig.set_title("Image H&E", fontsize=10, fontweight='bold', pad=5)
         ax_orig.axis('off')
 
-        # Métriques globales
-        metrics_text = f"""
-MÉTRIQUES GLOBALES
-─────────────────────
-Noyaux détectés: {result.n_nuclei}
-"""
+        ax_seg = fig.add_axes([0.53, 0.50, 0.42, 0.30])
+        ax_seg.imshow(image_overlay)
+        ax_seg.set_title("Segmentation", fontsize=10, fontweight='bold', pad=5)
+        ax_seg.axis('off')
+
+        # Section Morphométrie (tableau)
         if result.morphometry:
             m = result.morphometry
-            metrics_text += f"""Densité: {m.nuclei_per_mm2:.0f} noyaux/mm²
-Aire moyenne: {m.mean_area_um2:.1f} ± {m.std_area_um2:.1f} µm²
-Circularité: {m.mean_circularity:.2f}
-Index mitotique: {m.mitotic_index_per_10hpf:.1f}/10 HPF
-Ratio néoplasique: {m.neoplastic_ratio:.1%}
-TILs status: {m.til_status}
-"""
+            morph_data = [
+                ["Densité", f"{m.nuclei_per_mm2:.0f} /mm²"],
+                ["Aire moy.", f"{m.mean_area_um2:.1f} ± {m.std_area_um2:.1f} µm²"],
+                ["Circularité", f"{m.mean_circularity:.2f}"],
+                ["Index mitotique", f"{m.mitotic_index_per_10hpf:.1f} /10 HPF"],
+                ["Ratio néoplasique", f"{m.neoplastic_ratio:.0%}"],
+                ["TILs", m.til_status],
+            ]
 
-        fig.text(0.12, 0.48, metrics_text, fontsize=9, verticalalignment='top',
-                 fontfamily='monospace')
+            ax_morph = fig.add_axes([0.05, 0.28, 0.42, 0.18])
+            ax_morph.axis('off')
+            ax_morph.set_title("MORPHOMÉTRIE", fontsize=10, fontweight='bold',
+                               loc='left', pad=2)
 
-        # Phase 3: Intelligence Spatiale
+            table_morph = ax_morph.table(
+                cellText=morph_data,
+                colWidths=[0.4, 0.6],
+                loc='upper left',
+                cellLoc='left',
+                edges='horizontal'
+            )
+            table_morph.auto_set_font_size(False)
+            table_morph.set_fontsize(8)
+            for key, cell in table_morph.get_celld().items():
+                cell.set_height(0.15)
+                if key[1] == 0:
+                    cell.set_text_props(fontweight='bold')
+                    cell.set_facecolor('#F8F9FA')
+
+        # Section Phase 3 (tableau)
         if result.spatial_analysis:
+            score_colors = {1: '#27AE60', 2: '#F39C12', 3: '#E74C3C'}
             score_labels = {1: "Faible", 2: "Modéré", 3: "Sévère"}
-            spatial_text = f"""
-INTELLIGENCE SPATIALE (Phase 3)
-───────────────────────────────
-Pléomorphisme: {result.pleomorphism_score}/3 ({score_labels.get(result.pleomorphism_score, '')})
-Hotspots: {result.n_hotspots} zones
-Mitoses candidates: {result.n_mitosis_candidates}
-Chromatine hétérogène: {result.n_heterogeneous_nuclei} noyaux
-Voisins Voronoï (moy.): {result.mean_neighbors:.1f}
-"""
-            fig.text(0.55, 0.48, spatial_text, fontsize=9, verticalalignment='top',
-                     fontfamily='monospace')
 
-        # Alertes
-        alerts_text = "\nALERTES\n───────\n"
-        has_alerts = False
+            phase3_data = [
+                ["Pléomorphisme", f"{result.pleomorphism_score}/3 ({score_labels.get(result.pleomorphism_score, '')})"],
+                ["Hotspots", f"{result.n_hotspots} zones"],
+                ["Mitoses cand.", f"{result.n_mitosis_candidates}"],
+                ["Chrom. hétérog.", f"{result.n_heterogeneous_nuclei} noyaux"],
+                ["Voisins Voronoï", f"{result.mean_neighbors:.1f}"],
+            ]
+
+            ax_phase3 = fig.add_axes([0.53, 0.28, 0.42, 0.18])
+            ax_phase3.axis('off')
+            ax_phase3.set_title("INTELLIGENCE SPATIALE (Phase 3)", fontsize=10,
+                                fontweight='bold', loc='left', pad=2)
+
+            table_phase3 = ax_phase3.table(
+                cellText=phase3_data,
+                colWidths=[0.45, 0.55],
+                loc='upper left',
+                cellLoc='left',
+                edges='horizontal'
+            )
+            table_phase3.auto_set_font_size(False)
+            table_phase3.set_fontsize(8)
+            for key, cell in table_phase3.get_celld().items():
+                cell.set_height(0.15)
+                if key[1] == 0:
+                    cell.set_text_props(fontweight='bold')
+                    cell.set_facecolor('#F8F9FA')
+
+        # Section Alertes avec couleurs
+        alerts = []
 
         if result.morphometry and result.morphometry.alerts:
-            for alert in result.morphometry.alerts[:5]:
-                alerts_text += f"• {alert}\n"
-                has_alerts = True
+            for alert in result.morphometry.alerts[:3]:
+                alerts.append(('orange', alert))
 
         if result.n_fusions > 0:
-            alerts_text += f"• {result.n_fusions} fusion(s) potentielle(s)\n"
-            has_alerts = True
+            alerts.append(('red', f"{result.n_fusions} fusion(s) potentielle(s)"))
         if result.n_over_seg > 0:
-            alerts_text += f"• {result.n_over_seg} sur-segmentation(s)\n"
-            has_alerts = True
+            alerts.append(('orange', f"{result.n_over_seg} sur-segmentation(s)"))
 
         if result.spatial_analysis:
             if result.pleomorphism_score >= 3:
-                alerts_text += "• Pléomorphisme sévère\n"
-                has_alerts = True
+                alerts.append(('red', "Pléomorphisme SÉVÈRE"))
             if result.n_mitosis_candidates > 3:
-                alerts_text += f"• {result.n_mitosis_candidates} mitoses suspectes\n"
-                has_alerts = True
+                alerts.append(('red', f"{result.n_mitosis_candidates} mitoses suspectes"))
 
-        if not has_alerts:
-            alerts_text += "Aucune alerte\n"
+        ax_alerts = fig.add_axes([0.05, 0.10, 0.55, 0.15])
+        ax_alerts.set_facecolor('#FFF9E6' if alerts else '#E8F5E9')
+        ax_alerts.set_xticks([])
+        ax_alerts.set_yticks([])
+        for spine in ax_alerts.spines.values():
+            spine.set_color('#FFE082' if alerts else '#A5D6A7')
 
-        fig.text(0.12, 0.25, alerts_text, fontsize=9, verticalalignment='top',
-                 fontfamily='monospace',
-                 bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
+        fig.text(0.07, 0.235, "POINTS D'ATTENTION", fontsize=9, fontweight='bold')
 
-        # Paramètres
-        params_text = f"""
-PARAMÈTRES WATERSHED
-────────────────────
-np_threshold: {result.watershed_params.get('np_threshold', 'N/A')}
-min_size: {result.watershed_params.get('min_size', 'N/A')}
-beta: {result.watershed_params.get('beta', 'N/A')}
-min_distance: {result.watershed_params.get('min_distance', 'N/A')}
-"""
-        fig.text(0.55, 0.25, params_text, fontsize=8, verticalalignment='top',
-                 fontfamily='monospace')
+        if alerts:
+            for i, (color, text) in enumerate(alerts[:5]):
+                marker_color = '#E74C3C' if color == 'red' else '#F39C12'
+                fig.text(0.07, 0.21 - i * 0.025, "●", fontsize=10, color=marker_color)
+                fig.text(0.09, 0.21 - i * 0.025, text, fontsize=8)
+        else:
+            fig.text(0.07, 0.19, "✓ Aucune alerte particulière", fontsize=9, color='#27AE60')
+
+        # Paramètres Watershed (tableau gris séparé)
+        ax_params = fig.add_axes([0.65, 0.10, 0.30, 0.15])
+        ax_params.set_facecolor('#ECEFF1')
+        ax_params.set_xticks([])
+        ax_params.set_yticks([])
+        for spine in ax_params.spines.values():
+            spine.set_color('#B0BEC5')
+
+        params_data = [
+            ["np_threshold", f"{result.watershed_params.get('np_threshold', 'N/A')}"],
+            ["min_size", f"{result.watershed_params.get('min_size', 'N/A')}"],
+            ["beta", f"{result.watershed_params.get('beta', 'N/A')}"],
+            ["min_distance", f"{result.watershed_params.get('min_distance', 'N/A')}"],
+        ]
+
+        fig.text(0.67, 0.235, "PARAMS WATERSHED", fontsize=8, fontweight='bold', color='#546E7A')
+        for i, (param, val) in enumerate(params_data):
+            fig.text(0.67, 0.205 - i * 0.025, f"{param}:", fontsize=7, color='#78909C')
+            fig.text(0.82, 0.205 - i * 0.025, val, fontsize=7, fontweight='bold', color='#37474F')
 
         # Footer
         fig.text(0.5, 0.03,
@@ -391,41 +486,103 @@ min_distance: {result.watershed_params.get('min_distance', 'N/A')}
                  ha='center', fontsize=7, color='gray')
         fig.text(0.5, 0.01,
                  "Ce document est un outil d'aide à la décision et ne remplace pas le diagnostic médical.",
-                 ha='center', fontsize=6, color='red', style='italic')
+                 ha='center', fontsize=6, color='#E74C3C', style='italic')
 
         pdf.savefig(fig, dpi=150)
         plt.close(fig)
 
-        # Page 2: Distribution des types (si morphometry disponible)
+        # =====================================================================
+        # PAGE 2: DISTRIBUTION DES TYPES CELLULAIRES
+        # =====================================================================
         if result.morphometry and result.morphometry.type_counts:
             fig2 = plt.figure(figsize=(8.5, 11), facecolor='white')
 
-            fig2.text(0.5, 0.96, "DISTRIBUTION DES TYPES CELLULAIRES",
-                      ha='center', fontsize=14, fontweight='bold')
+            # Header
+            header_ax2 = fig2.add_axes([0, 0.93, 1, 0.07])
+            header_ax2.set_facecolor('#2C3E50')
+            header_ax2.set_xticks([])
+            header_ax2.set_yticks([])
+            for spine in header_ax2.spines.values():
+                spine.set_visible(False)
 
-            # Pie chart
-            ax_pie = fig2.add_axes([0.15, 0.5, 0.7, 0.4])
+            fig2.text(0.5, 0.96, "DISTRIBUTION DES TYPES CELLULAIRES",
+                      ha='center', fontsize=14, fontweight='bold', color='white')
+
             types = list(result.morphometry.type_counts.keys())
             counts = list(result.morphometry.type_counts.values())
-            colors = ['#FF3232', '#32FF32', '#3232FF', '#FFFF32', '#32FFFF']
+            total = sum(counts)
 
-            if sum(counts) > 0:
-                ax_pie.pie(counts, labels=types, autopct='%1.1f%%', colors=colors[:len(types)])
-                ax_pie.set_title("Répartition des types cellulaires")
+            if total > 0:
+                # Graphique circulaire SANS labels (légende séparée)
+                ax_pie = fig2.add_axes([0.15, 0.50, 0.45, 0.38])
 
-            # Table des comptages
-            table_data = [[t, c, f"{c/sum(counts)*100:.1f}%"] for t, c in zip(types, counts)]
-            ax_table = fig2.add_axes([0.2, 0.2, 0.6, 0.25])
+                colors = [TYPE_COLORS.get(t, '#95A5A6') for t in types]
+                wedges, texts, autotexts = ax_pie.pie(
+                    counts,
+                    autopct=lambda p: f'{p:.1f}%' if p > 5 else '',
+                    colors=colors,
+                    startangle=90,
+                    pctdistance=0.75,
+                    wedgeprops={'linewidth': 2, 'edgecolor': 'white'}
+                )
+
+                for autotext in autotexts:
+                    autotext.set_fontsize(9)
+                    autotext.set_fontweight('bold')
+                    autotext.set_color('white')
+
+                ax_pie.set_title("Répartition", fontsize=11, fontweight='bold', pad=10)
+
+                # Légende déportée à droite (évite chevauchement)
+                ax_legend = fig2.add_axes([0.62, 0.55, 0.33, 0.30])
+                ax_legend.axis('off')
+
+                fig2.text(0.64, 0.84, "LÉGENDE", fontsize=10, fontweight='bold')
+
+                for i, (t, c) in enumerate(zip(types, counts)):
+                    pct = c / total * 100
+                    color = TYPE_COLORS.get(t, '#95A5A6')
+                    y_pos = 0.80 - i * 0.08
+
+                    # Carré de couleur
+                    color_box = fig2.add_axes([0.64, y_pos - 0.015, 0.03, 0.025])
+                    color_box.set_facecolor(color)
+                    color_box.set_xticks([])
+                    color_box.set_yticks([])
+                    for spine in color_box.spines.values():
+                        spine.set_visible(False)
+
+                    # Label
+                    fig2.text(0.69, y_pos, f"{t}", fontsize=9, fontweight='bold')
+                    fig2.text(0.69, y_pos - 0.025, f"{c} ({pct:.1f}%)", fontsize=8, color='gray')
+
+            # Tableau récapitulatif
+            table_data = [[t, c, f"{c/total*100:.1f}%"] for t, c in zip(types, counts)]
+            ax_table = fig2.add_axes([0.15, 0.20, 0.70, 0.25])
             ax_table.axis('off')
+
             table = ax_table.table(
                 cellText=table_data,
-                colLabels=['Type', 'Nombre', 'Pourcentage'],
-                loc='center',
-                cellLoc='center'
+                colLabels=['Type cellulaire', 'Nombre', 'Pourcentage'],
+                loc='upper center',
+                cellLoc='center',
+                colColours=['#2C3E50'] * 3,
             )
             table.auto_set_font_size(False)
             table.set_fontsize(10)
-            table.scale(1.2, 1.5)
+            table.scale(1.0, 1.8)
+
+            # Style des cellules
+            for key, cell in table.get_celld().items():
+                if key[0] == 0:  # Header
+                    cell.set_text_props(color='white', fontweight='bold')
+                else:
+                    if key[1] == 0:  # Colonne type
+                        cell.set_text_props(fontweight='bold')
+                    cell.set_facecolor('#F8F9FA' if key[0] % 2 == 0 else 'white')
+
+            # Footer page 2
+            fig2.text(0.5, 0.03, "Page 2/2", ha='center', fontsize=8, color='gray')
 
             pdf.savefig(fig2, dpi=150)
             plt.close(fig2)
