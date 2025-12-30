@@ -15,6 +15,75 @@ from src.ui.inference_engine import AnalysisResult
 
 
 # ==============================================================================
+# DICTIONNAIRE DE CORRESPONDANCE CLINIQUE (Lexique IA -> Pathologie)
+# Version "Factuelle" — Évite les verbes d'interprétation (suspicion, suggère)
+# Utilise: "corrélé à", "associé à", "observé dans" (faits bibliographiques)
+# ==============================================================================
+
+CLINICAL_INTERPRETATIONS = {
+    # Pléomorphisme — Langage factuel (corrélation, pas suspicion)
+    "pleomorphism_3": (
+        "🔴 **Pléomorphisme sévère (3/3)** — "
+        "Critère morphologique corrélé au grade nucléaire élevé (Nottingham/Elston)"
+    ),
+    "pleomorphism_2": (
+        "🟡 **Pléomorphisme modéré (2/3)** — "
+        "Variation notable de taille et forme nucléaire"
+    ),
+
+    # Mitoses — Faits observés (pas "processus tumoral agressif")
+    "mitosis_very_high": (
+        "🔴 **Activité mitotique très élevée ({count})** — "
+        "Index prolifératif associé aux tumeurs à croissance rapide dans la littérature"
+    ),
+    "mitosis_high": (
+        "🟡 **Activité mitotique élevée ({count})** — "
+        "Figures évocatrices de mitoses identifiées"
+    ),
+    "mitosis_present": (
+        "ℹ️ **Mitoses détectées ({count})** — "
+        "Figure(s) évocatrice(s) à confirmer visuellement"
+    ),
+
+    # Chromatine — Description technique (pas "instabilité génétique")
+    "chromatin_heterogeneous": (
+        "🔍 **Chromatine hétérogène ({percent:.0f}% des noyaux)** — "
+        "Texture nucléaire irrégulière, critère observé dans les cellules à activité métabolique élevée"
+    ),
+
+    # Architecture — Observations quantifiées (pas "fortement suspect")
+    "neoplastic_predominance": (
+        "🔍 **Prédominance néoplasique ({ratio:.0f}%)** — "
+        "Ratio cellules néoplasiques/total supérieur au seuil d'attention (70%)"
+    ),
+    "hypercellularity": (
+        "🔍 **Hypercellularité ({density:.0f}%)** — "
+        "Densité nucléaire élevée, critère associé aux proliférations cellulaires denses"
+    ),
+    "hotspots": (
+        "🟠 **Zones hypercellulaires ({count})** — "
+        "Cluster(s) de haute densité identifié(s)"
+    ),
+
+    # Anisocaryose — Mesure objective (pas "dysplasie")
+    "anisocaryose_marked": (
+        "🔍 **Anisocaryose marquée (CV={cv:.2f})** — "
+        "Coefficient de variation de l'aire nucléaire > 0.5, indicateur d'hétérogénéité morphologique"
+    ),
+
+    # TILs — Description spatiale (neutre)
+    "til_cold": (
+        "❄️ **Infiltrat lymphocytaire périphérique** — "
+        "TILs localisés en bordure, pattern associé à l'immuno-exclusion tumorale"
+    ),
+    "til_excluded": (
+        "🚫 **TILs distants** — "
+        "Lymphocytes éloignés du compartiment tumoral"
+    ),
+}
+
+
+# ==============================================================================
 # FONCTIONS D'INTERPRÉTATION CLINIQUE
 # ==============================================================================
 
@@ -171,42 +240,92 @@ def format_metrics_clinical(
 
 def format_alerts_clinical(result: AnalysisResult) -> str:
     """
-    Formate les alertes en langage clinique.
+    Formate les alertes avec enrichissement clinique descriptif.
 
-    Masque les détails techniques, présente les points d'attention
-    de manière compréhensible pour un pathologiste.
+    Utilise le dictionnaire CLINICAL_INTERPRETATIONS pour transformer
+    les métriques brutes en observations cliniques factuelles.
+
+    Principe: "corrélé à", "associé à", "observé dans" (pas "suspicion de")
     """
     alerts = []
 
-    # Phase 3: Alertes spatiales
+    # ==========================================================================
+    # Phase 3: Pléomorphisme
+    # ==========================================================================
     if result.spatial_analysis:
         if result.pleomorphism_score >= 3:
-            alerts.append("**Anisocaryose sévère** — forte variation taille/forme nucléaire")
+            alerts.append(CLINICAL_INTERPRETATIONS["pleomorphism_3"])
         elif result.pleomorphism_score == 2:
-            alerts.append("**Anisocaryose modérée** — variation notable")
+            alerts.append(CLINICAL_INTERPRETATIONS["pleomorphism_2"])
 
-        if result.n_mitosis_candidates > 10:
-            alerts.append(f"🔴 **Activité mitotique TRÈS élevée** — {result.n_mitosis_candidates} figures suspectes")
-        elif result.n_mitosis_candidates > 3:
-            alerts.append(f"**Activité mitotique élevée** — {result.n_mitosis_candidates} figures suspectes")
-        elif result.n_mitosis_candidates > 0:
-            alerts.append(f"**Mitoses présentes** — {result.n_mitosis_candidates} figure(s)")
+        # Chromatine hétérogène
+        n_heterogeneous = len(result.spatial_analysis.heterogeneous_nuclei_ids)
+        if n_heterogeneous > 0 and result.n_nuclei > 0:
+            percent = (n_heterogeneous / result.n_nuclei) * 100
+            if percent > 10:  # Seuil significatif
+                alerts.append(
+                    CLINICAL_INTERPRETATIONS["chromatin_heterogeneous"].format(percent=percent)
+                )
 
+        # Mitoses
+        n_mitosis = result.n_mitosis_candidates
+        if n_mitosis > 10:
+            alerts.append(
+                CLINICAL_INTERPRETATIONS["mitosis_very_high"].format(count=n_mitosis)
+            )
+        elif n_mitosis > 3:
+            alerts.append(
+                CLINICAL_INTERPRETATIONS["mitosis_high"].format(count=n_mitosis)
+            )
+        elif n_mitosis > 0:
+            alerts.append(
+                CLINICAL_INTERPRETATIONS["mitosis_present"].format(count=n_mitosis)
+            )
+
+        # Hotspots
         if result.n_hotspots > 0:
-            alerts.append(f"**Zones hypercellulaires** — {result.n_hotspots} cluster(s) identifié(s)")
+            alerts.append(
+                CLINICAL_INTERPRETATIONS["hotspots"].format(count=result.n_hotspots)
+            )
 
-    # Morphométrie
+    # ==========================================================================
+    # Morphométrie et Architecture
+    # ==========================================================================
     if result.morphometry:
         m = result.morphometry
-        if m.neoplastic_ratio > 0.7:
-            alerts.append("**Prédominance néoplasique** — ratio > 70%")
 
-        # Note: mitotic_index peut être None (surface insuffisante)
-        if m.mitotic_index_per_10hpf is not None and m.mitotic_index_per_10hpf > 10:
-            alerts.append("**Index mitotique très élevé**")
+        # Prédominance néoplasique
+        if m.neoplastic_ratio > 0.7:
+            alerts.append(
+                CLINICAL_INTERPRETATIONS["neoplastic_predominance"].format(
+                    ratio=m.neoplastic_ratio * 100
+                )
+            )
+
+        # Hypercellularité (densité nucléaire > 40%)
+        if hasattr(m, 'nuclear_density_percent') and m.nuclear_density_percent > 40:
+            alerts.append(
+                CLINICAL_INTERPRETATIONS["hypercellularity"].format(
+                    density=m.nuclear_density_percent
+                )
+            )
+
+        # Anisocaryose marquée (CV > 0.5)
+        if m.mean_area_um2 > 0:
+            cv_area = m.std_area_um2 / m.mean_area_um2
+            if cv_area > 0.5:
+                alerts.append(
+                    CLINICAL_INTERPRETATIONS["anisocaryose_marked"].format(cv=cv_area)
+                )
+
+        # Statut TILs
+        if m.til_status == "froid":
+            alerts.append(CLINICAL_INTERPRETATIONS["til_cold"])
+        elif m.til_status == "exclu":
+            alerts.append(CLINICAL_INTERPRETATIONS["til_excluded"])
 
     if not alerts:
-        return "Aucune alerte particulière"
+        return "✅ Aucune anomalie majeure détectée par l'IA"
 
     return "\n\n".join(alerts)
 
