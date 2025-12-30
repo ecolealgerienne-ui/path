@@ -590,6 +590,7 @@ def generate_smart_crops_from_pannuke(
     all_source_masks = []
     all_source_ids = []
     all_fold_ids = []
+    all_organ_names = []
 
     for fold in folds:
         fold_dir = pannuke_dir / f"fold{fold}"
@@ -626,6 +627,7 @@ def generate_smart_crops_from_pannuke(
 
             all_source_images.append(image)
             all_source_masks.append(mask)
+            all_organ_names.append(organ_name)
             # IMPORTANT: Source ID globalement unique (fold * 10000 + local_index)
             # Évite collision si même index local dans différents folds
             global_source_id = fold * 10000 + i
@@ -680,6 +682,7 @@ def generate_smart_crops_from_pannuke(
             'crop_positions': [],
             'fold_ids': [],
             'rotations': [],
+            'organ_names': [],
         }
 
         split_stats = {
@@ -716,6 +719,7 @@ def generate_smart_crops_from_pannuke(
                 nt_target = all_nt_targets[idx]
                 source_id = all_source_ids[idx]
                 fold_id = all_fold_ids[idx]
+                organ_name = all_organ_names[idx]
 
                 # ÉTAPE 1: Extraire crop RAW
                 crop_raw = extract_raw_crop(
@@ -752,6 +756,7 @@ def generate_smart_crops_from_pannuke(
                 crops_data['crop_positions'].append(pos_name)
                 crops_data['fold_ids'].append(fold_id)
                 crops_data['rotations'].append(rotation)
+                crops_data['organ_names'].append(organ_name)
 
                 layer_kept += 1
                 split_stats['crops_kept'] += 1
@@ -784,6 +789,7 @@ def generate_smart_crops_from_pannuke(
         crop_positions_array = np.array(crops_data['crop_positions'])
         fold_ids_array = np.array(crops_data['fold_ids'], dtype=np.int32)
         rotations_array = np.array(crops_data['rotations'])
+        organ_names_array = np.array(crops_data['organ_names'])
 
         print(f"💾 Sauvegarde: {output_file}")
         np.savez_compressed(
@@ -798,6 +804,7 @@ def generate_smart_crops_from_pannuke(
             crop_positions=crop_positions_array,
             fold_ids=fold_ids_array,
             rotations=rotations_array,
+            organ_names=organ_names_array,
         )
 
         file_size_mb = output_file.stat().st_size / (1024 * 1024)
