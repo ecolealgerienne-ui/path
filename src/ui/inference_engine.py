@@ -32,6 +32,14 @@ from src.postprocessing.watershed import hv_guided_watershed
 from src.metrics.morphometry import MorphometryAnalyzer, MorphometryReport, CELL_TYPES
 from src.preprocessing import preprocess_image, validate_features
 
+# Phase 3: Analyse spatiale
+from src.ui.spatial_analysis import (
+    run_spatial_analysis,
+    SpatialAnalysisResult,
+    PleomorphismScore,
+    ChromatinFeatures,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -73,6 +81,13 @@ class NucleusInfo:
     is_potential_fusion: bool = False      # Aire > 2× moyenne
     is_potential_over_seg: bool = False    # Aire < 0.5× moyenne
     anomaly_reason: str = ""               # Raison de l'anomalie
+    # Phase 3: Analyse chromatine
+    chromatin_entropy: float = 0.0         # Entropie texture
+    chromatin_heterogeneous: bool = False  # Chromatine hétérogène
+    is_mitosis_candidate: bool = False     # Candidat mitose (avancé)
+    mitosis_score: float = 0.0             # Score mitose [0, 1]
+    n_neighbors: int = 0                   # Nombre de voisins Voronoï
+    is_in_hotspot: bool = False            # Dans cluster haute densité
 
 
 @dataclass
@@ -118,6 +133,18 @@ class AnalysisResult:
     n_fusions: int = 0
     n_over_seg: int = 0
 
+    # Phase 3: Analyse spatiale
+    spatial_analysis: Optional[SpatialAnalysisResult] = None
+    pleomorphism_score: int = 1               # 1=faible, 2=modéré, 3=sévère
+    pleomorphism_description: str = ""
+    mean_chromatin_entropy: float = 0.0
+    n_heterogeneous_nuclei: int = 0
+    n_hotspots: int = 0
+    hotspot_ids: List[int] = field(default_factory=list)
+    n_mitosis_candidates: int = 0
+    mitosis_candidate_ids: List[int] = field(default_factory=list)
+    mean_neighbors: float = 0.0               # Moyenne voisins Voronoï
+
     def get_nucleus_at(self, y: int, x: int) -> Optional[NucleusInfo]:
         """Retourne les infos du noyau à la position (y, x)."""
         if self.instance_map is None:
@@ -161,6 +188,10 @@ class AnalysisResult:
                 "n_nuclei": self.n_nuclei,
                 "n_fusions": self.n_fusions,
                 "n_over_segmentations": self.n_over_seg,
+                # Phase 3
+                "pleomorphism_score": self.pleomorphism_score,
+                "n_hotspots": self.n_hotspots,
+                "n_mitosis_candidates": self.n_mitosis_candidates,
             },
             "nuclei": [],
         }
@@ -180,6 +211,13 @@ class AnalysisResult:
                 "is_potential_fusion": n.is_potential_fusion,
                 "is_potential_over_seg": n.is_potential_over_seg,
                 "anomaly_reason": n.anomaly_reason,
+                # Phase 3
+                "chromatin_entropy": float(n.chromatin_entropy),
+                "chromatin_heterogeneous": n.chromatin_heterogeneous,
+                "is_mitosis_candidate": n.is_mitosis_candidate,
+                "mitosis_score": float(n.mitosis_score),
+                "n_neighbors": n.n_neighbors,
+                "is_in_hotspot": n.is_in_hotspot,
             })
 
         if self.morphometry:
@@ -193,6 +231,36 @@ class AnalysisResult:
                 "til_status": self.morphometry.til_status,
                 "confidence_level": self.morphometry.confidence_level,
                 "alerts": self.morphometry.alerts,
+            }
+
+        # Phase 3: Analyse spatiale
+        if self.spatial_analysis:
+            sa = self.spatial_analysis
+            result["spatial_analysis"] = {
+                "pleomorphism": {
+                    "score": sa.pleomorphism.score,
+                    "area_cv": float(sa.pleomorphism.area_cv),
+                    "circularity_cv": float(sa.pleomorphism.circularity_cv),
+                    "size_range_ratio": float(sa.pleomorphism.size_range_ratio),
+                    "description": sa.pleomorphism.description,
+                },
+                "chromatin": {
+                    "mean_entropy": float(sa.mean_entropy),
+                    "n_heterogeneous": len(sa.heterogeneous_nuclei_ids),
+                    "heterogeneous_ids": sa.heterogeneous_nuclei_ids,
+                },
+                "topology": {
+                    "mean_neighbors": float(sa.mean_neighbors),
+                },
+                "clustering": {
+                    "n_hotspots": sa.n_hotspots,
+                    "hotspot_ids": sa.hotspot_ids,
+                },
+                "mitosis": {
+                    "n_candidates": len(sa.mitosis_candidates),
+                    "candidate_ids": sa.mitosis_candidates,
+                    "scores": {str(k): float(v) for k, v in sa.mitosis_scores.items()},
+                },
             }
 
         return result
@@ -481,6 +549,17 @@ class CellVitEngine:
         fusion_ids = []
         over_seg_ids = []
 
+        # Phase 3: Variables analyse spatiale
+        spatial_result = None
+        pleomorphism_score = 1
+        pleomorphism_description = ""
+        mean_chromatin_entropy = 0.0
+        n_heterogeneous_nuclei = 0
+        phase3_hotspot_ids = []
+        n_mitosis_candidates = 0
+        mitosis_candidate_ids = []
+        mean_neighbors = 0.0
+
         if compute_morphometry and n_nuclei > 0:
             morphometry = self.morphometry_analyzer.analyze(
                 instance_map, type_map, image=image_224
@@ -496,6 +575,45 @@ class CellVitEngine:
                 logger.info(f"  Detected {len(fusion_ids)} potential fusions")
             if over_seg_ids:
                 logger.info(f"  Detected {len(over_seg_ids)} potential over-segmentations")
+
+            # Phase 3: Analyse spatiale
+            if len(nucleus_info) >= 3:
+                logger.debug("Running spatial analysis (Phase 3)...")
+
+                # Préparer les données pour analyse spatiale
+                areas = [n.area_um2 for n in nucleus_info]
+                circularities = [n.circularity for n in nucleus_info]
+                centroids = [n.centroid for n in nucleus_info]
+                nucleus_ids = [n.id for n in nucleus_info]
+
+                # Exécuter analyse spatiale
+                spatial_result = run_spatial_analysis(
+                    instance_map=instance_map,
+                    image_rgb=image_224,
+                    areas=areas,
+                    circularities=circularities,
+                    centroids=centroids,
+                    nucleus_ids=nucleus_ids,
+                )
+
+                # Extraire résultats Phase 3
+                pleomorphism_score = spatial_result.pleomorphism.score
+                pleomorphism_description = spatial_result.pleomorphism.description
+                mean_chromatin_entropy = spatial_result.mean_entropy
+                n_heterogeneous_nuclei = len(spatial_result.heterogeneous_nuclei_ids)
+                phase3_hotspot_ids = spatial_result.hotspot_ids
+                n_mitosis_candidates = len(spatial_result.mitosis_candidates)
+                mitosis_candidate_ids = spatial_result.mitosis_candidates
+                mean_neighbors = spatial_result.mean_neighbors
+
+                # Enrichir nucleus_info avec données Phase 3
+                self._enrich_nucleus_info_phase3(nucleus_info, spatial_result)
+
+                logger.info(
+                    f"  Phase 3: pleomorphism={pleomorphism_score}, "
+                    f"hotspots={spatial_result.n_hotspots}, "
+                    f"mitosis_candidates={n_mitosis_candidates}"
+                )
 
         inference_time = (time.time() - start_time) * 1000
 
@@ -519,6 +637,17 @@ class CellVitEngine:
             over_seg_ids=over_seg_ids,
             n_fusions=len(fusion_ids),
             n_over_seg=len(over_seg_ids),
+            # Phase 3: Analyse spatiale
+            spatial_analysis=spatial_result,
+            pleomorphism_score=pleomorphism_score,
+            pleomorphism_description=pleomorphism_description,
+            mean_chromatin_entropy=mean_chromatin_entropy,
+            n_heterogeneous_nuclei=n_heterogeneous_nuclei,
+            n_hotspots=len(phase3_hotspot_ids),
+            hotspot_ids=phase3_hotspot_ids,
+            n_mitosis_candidates=n_mitosis_candidates,
+            mitosis_candidate_ids=mitosis_candidate_ids,
+            mean_neighbors=mean_neighbors,
         )
 
     def _compute_uncertainty(
@@ -656,6 +785,49 @@ class CellVitEngine:
             ))
 
         return nuclei, fusion_ids, over_seg_ids
+
+    def _enrich_nucleus_info_phase3(
+        self,
+        nucleus_info: List[NucleusInfo],
+        spatial_result: SpatialAnalysisResult
+    ):
+        """
+        Enrichit les NucleusInfo avec les données Phase 3.
+
+        Ajoute:
+        - Caractéristiques chromatine (entropie, hétérogénéité)
+        - Statut mitose candidat
+        - Nombre de voisins Voronoï
+        - Appartenance à un hotspot
+
+        Args:
+            nucleus_info: Liste de NucleusInfo à enrichir (modifié in-place)
+            spatial_result: Résultat de l'analyse spatiale
+        """
+        # Index par ID pour accès rapide
+        nucleus_by_id = {n.id: n for n in nucleus_info}
+
+        # Enrichir avec chromatine
+        for nid, cf in spatial_result.chromatin_features.items():
+            if nid in nucleus_by_id:
+                nucleus_by_id[nid].chromatin_entropy = cf.entropy
+                nucleus_by_id[nid].chromatin_heterogeneous = cf.is_heterogeneous
+
+        # Enrichir avec Voronoï
+        for nid, vc in spatial_result.voronoi_cells.items():
+            if nid in nucleus_by_id:
+                nucleus_by_id[nid].n_neighbors = len(vc.neighbors)
+
+        # Enrichir avec mitose
+        for nid, score in spatial_result.mitosis_scores.items():
+            if nid in nucleus_by_id:
+                nucleus_by_id[nid].is_mitosis_candidate = True
+                nucleus_by_id[nid].mitosis_score = score
+
+        # Enrichir avec hotspots
+        for nid in spatial_result.hotspot_ids:
+            if nid in nucleus_by_id:
+                nucleus_by_id[nid].is_in_hotspot = True
 
     def change_family(self, family: str):
         """Change la famille et recharge HoVer-Net correspondant."""

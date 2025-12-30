@@ -14,6 +14,17 @@ from .visualizations import (
     create_uncertainty_map,
     create_type_distribution_chart,
     CELL_COLORS,
+    # Phase 3
+    create_hotspot_overlay,
+    create_mitosis_overlay,
+    create_chromatin_overlay,
+    create_spatial_debug_panel,
+    create_phase3_combined_overlay,
+)
+from .spatial_analysis import (
+    SpatialAnalysisResult,
+    PleomorphismScore,
+    ChromatinFeatures,
 )
 
 __all__ = [
@@ -24,4 +35,13 @@ __all__ = [
     'create_uncertainty_map',
     'create_type_distribution_chart',
     'CELL_COLORS',
+    # Phase 3
+    'SpatialAnalysisResult',
+    'PleomorphismScore',
+    'ChromatinFeatures',
+    'create_hotspot_overlay',
+    'create_mitosis_overlay',
+    'create_chromatin_overlay',
+    'create_spatial_debug_panel',
+    'create_phase3_combined_overlay',
 ]

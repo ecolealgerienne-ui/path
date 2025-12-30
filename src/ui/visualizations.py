@@ -652,3 +652,332 @@ def create_voronoi_overlay(
         pass  # Voronoï peut échouer sur certaines configurations
 
     return result
+
+
+# =============================================================================
+# PHASE 3: VISUALISATIONS INTELLIGENCE SPATIALE
+# =============================================================================
+
+def create_hotspot_overlay(
+    image: np.ndarray,
+    instance_map: np.ndarray,
+    hotspot_ids: List[int],
+    color: Tuple[int, int, int] = (255, 165, 0),  # Orange
+    thickness: int = 2,
+    fill_alpha: float = 0.2,
+) -> np.ndarray:
+    """
+    Crée un overlay mettant en évidence les hotspots (clusters haute densité).
+
+    Phase 3: Les noyaux dans des zones de haute densité sont surlignés en orange.
+
+    Args:
+        image: Image RGB originale
+        instance_map: Carte d'instances
+        hotspot_ids: IDs des noyaux dans les hotspots
+        color: Couleur de surlignage (défaut: orange)
+        thickness: Épaisseur des contours
+        fill_alpha: Transparence du remplissage
+
+    Returns:
+        Image avec hotspots surlignés
+    """
+    result = image.copy()
+
+    if not hotspot_ids:
+        return result
+
+    # Créer masque combiné des hotspots
+    hotspot_mask = np.zeros(instance_map.shape, dtype=np.uint8)
+    for nid in hotspot_ids:
+        hotspot_mask[instance_map == nid] = 255
+
+    # Remplissage semi-transparent
+    overlay = result.copy()
+    overlay[hotspot_mask > 0] = color
+    result = cv2.addWeighted(result, 1 - fill_alpha, overlay, fill_alpha, 0)
+
+    # Contours individuels
+    for nid in hotspot_ids:
+        mask = (instance_map == nid).astype(np.uint8)
+        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        cv2.drawContours(result, contours, -1, color, thickness)
+
+    return result
+
+
+def create_mitosis_overlay(
+    image: np.ndarray,
+    instance_map: np.ndarray,
+    mitosis_ids: List[int],
+    mitosis_scores: Dict[int, float],
+    thickness: int = 2,
+) -> np.ndarray:
+    """
+    Crée un overlay mettant en évidence les candidats mitoses.
+
+    Phase 3: Les mitoses candidates sont surlignées avec couleur
+    proportionnelle au score (jaune = probable, rouge = très probable).
+
+    Args:
+        image: Image RGB originale
+        instance_map: Carte d'instances
+        mitosis_ids: IDs des candidats mitoses
+        mitosis_scores: Scores de mitose par ID
+        thickness: Épaisseur des contours
+
+    Returns:
+        Image avec mitoses surlignées
+    """
+    result = image.copy()
+
+    if not mitosis_ids:
+        return result
+
+    for nid in mitosis_ids:
+        mask = (instance_map == nid).astype(np.uint8)
+        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+        # Couleur basée sur le score (jaune → rouge)
+        score = mitosis_scores.get(nid, 0.5)
+        r = int(255)
+        g = int(255 * (1 - score))  # Plus le score est haut, moins de vert
+        b = 0
+        color = (r, g, b)
+
+        cv2.drawContours(result, contours, -1, color, thickness)
+
+        # Ajouter indicateur "M"
+        coords = np.where(instance_map == nid)
+        if len(coords[0]) > 0:
+            cy, cx = int(coords[0].mean()), int(coords[1].mean())
+            cv2.putText(result, "M", (cx - 5, cy + 5), cv2.FONT_HERSHEY_SIMPLEX,
+                       0.4, color, 1)
+
+    return result
+
+
+def create_chromatin_overlay(
+    image: np.ndarray,
+    instance_map: np.ndarray,
+    heterogeneous_ids: List[int],
+    color: Tuple[int, int, int] = (148, 0, 211),  # Violet
+    thickness: int = 2,
+) -> np.ndarray:
+    """
+    Crée un overlay mettant en évidence les noyaux à chromatine hétérogène.
+
+    Phase 3: Chromatine hétérogène = signe potentiel de malignité.
+
+    Args:
+        image: Image RGB originale
+        instance_map: Carte d'instances
+        heterogeneous_ids: IDs des noyaux à chromatine hétérogène
+        color: Couleur de surlignage (défaut: violet)
+        thickness: Épaisseur des contours
+
+    Returns:
+        Image avec noyaux hétérogènes surlignés
+    """
+    result = image.copy()
+
+    for nid in heterogeneous_ids:
+        mask = (instance_map == nid).astype(np.uint8)
+        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        cv2.drawContours(result, contours, -1, color, thickness)
+
+        # Ajouter indicateur "C" (Chromatin)
+        coords = np.where(instance_map == nid)
+        if len(coords[0]) > 0:
+            cy, cx = int(coords[0].mean()), int(coords[1].mean())
+            cv2.putText(result, "C", (cx - 4, cy + 4), cv2.FONT_HERSHEY_SIMPLEX,
+                       0.3, color, 1)
+
+    return result
+
+
+def create_pleomorphism_badge(
+    score: int,
+    description: str,
+    size: Tuple[int, int] = (200, 80),
+) -> np.ndarray:
+    """
+    Crée un badge visuel pour le score de pléomorphisme.
+
+    Args:
+        score: Score 1-3
+        description: Description textuelle
+        size: Taille du badge (w, h)
+
+    Returns:
+        Image RGB du badge
+    """
+    w, h = size
+
+    # Couleurs selon score
+    colors = {
+        1: (144, 238, 144),   # Vert clair
+        2: (255, 215, 0),     # Or
+        3: (255, 99, 71),     # Rouge tomate
+    }
+    bg_color = colors.get(score, (200, 200, 200))
+
+    # Créer image
+    badge = np.full((h, w, 3), bg_color, dtype=np.uint8)
+
+    # Score au centre
+    score_text = f"{score}/3"
+    text_size = cv2.getTextSize(score_text, cv2.FONT_HERSHEY_SIMPLEX, 1.5, 3)[0]
+    tx = (w - text_size[0]) // 2
+    ty = h // 2 + 10
+    cv2.putText(badge, score_text, (tx, ty), cv2.FONT_HERSHEY_SIMPLEX, 1.5, (0, 0, 0), 3)
+
+    # Label en haut
+    cv2.putText(badge, "Pleomorphisme", (10, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1)
+
+    return badge
+
+
+def create_spatial_debug_panel(
+    pleomorphism_score: int,
+    pleomorphism_description: str,
+    n_hotspots: int,
+    n_mitosis_candidates: int,
+    n_heterogeneous: int,
+    mean_neighbors: float,
+    mean_entropy: float,
+    figsize: Tuple[int, int] = (12, 3),
+) -> np.ndarray:
+    """
+    Crée un panneau de debug pour l'analyse spatiale Phase 3.
+
+    Args:
+        pleomorphism_score: Score 1-3
+        pleomorphism_description: Description
+        n_hotspots: Nombre de hotspots
+        n_mitosis_candidates: Nombre de candidats mitoses
+        n_heterogeneous: Nombre de noyaux à chromatine hétérogène
+        mean_neighbors: Moyenne voisins Voronoï
+        mean_entropy: Entropie moyenne chromatine
+
+    Returns:
+        Image RGB du panneau
+    """
+    fig, axes = plt.subplots(1, 4, figsize=figsize, facecolor='white',
+                             gridspec_kw={'width_ratios': [1, 1, 1, 1.2]})
+
+    # 1. Score Pléomorphisme (gauge)
+    ax1 = axes[0]
+    ax1.axis('off')
+    colors = {1: 'green', 2: 'orange', 3: 'red'}
+    labels = {1: 'Faible', 2: 'Modéré', 3: 'Sévère'}
+
+    ax1.text(0.5, 0.8, "PLÉOMORPHISME", ha='center', fontsize=10, fontweight='bold',
+             transform=ax1.transAxes)
+    ax1.text(0.5, 0.5, f"{pleomorphism_score}/3", ha='center', fontsize=28,
+             color=colors.get(pleomorphism_score, 'gray'), fontweight='bold',
+             transform=ax1.transAxes)
+    ax1.text(0.5, 0.2, labels.get(pleomorphism_score, ''), ha='center', fontsize=10,
+             color=colors.get(pleomorphism_score, 'gray'),
+             transform=ax1.transAxes)
+
+    # 2. Hotspots & Clustering
+    ax2 = axes[1]
+    ax2.axis('off')
+    ax2.text(0.5, 0.85, "CLUSTERING", ha='center', fontsize=10, fontweight='bold',
+             transform=ax2.transAxes)
+
+    hotspot_text = f"Hotspots: {n_hotspots}"
+    hotspot_color = 'orange' if n_hotspots > 0 else 'green'
+    ax2.text(0.5, 0.55, hotspot_text, ha='center', fontsize=12,
+             color=hotspot_color, transform=ax2.transAxes)
+
+    neighbors_text = f"Voisins moy.: {mean_neighbors:.1f}"
+    ax2.text(0.5, 0.25, neighbors_text, ha='center', fontsize=10,
+             color='gray', transform=ax2.transAxes)
+
+    # 3. Mitoses & Chromatine
+    ax3 = axes[2]
+    ax3.axis('off')
+    ax3.text(0.5, 0.85, "BIOMARQUEURS", ha='center', fontsize=10, fontweight='bold',
+             transform=ax3.transAxes)
+
+    mitosis_color = 'red' if n_mitosis_candidates > 3 else ('orange' if n_mitosis_candidates > 0 else 'green')
+    ax3.text(0.5, 0.55, f"Mitoses susp.: {n_mitosis_candidates}", ha='center', fontsize=11,
+             color=mitosis_color, transform=ax3.transAxes)
+
+    chromatin_color = 'purple' if n_heterogeneous > 5 else 'gray'
+    ax3.text(0.5, 0.25, f"Chrom. hétér.: {n_heterogeneous}", ha='center', fontsize=10,
+             color=chromatin_color, transform=ax3.transAxes)
+
+    # 4. Légende Phase 3
+    ax4 = axes[3]
+    ax4.axis('off')
+    ax4.set_xlim(0, 1)
+    ax4.set_ylim(0, 1)
+
+    legend_text = """PHASE 3 - Intelligence Spatiale
+────────────────────────────
+🟠 Hotspots = zones haute densité
+🔴 Mitoses = forme + chromatine
+🟣 Chromatine hétérogène
+📊 Pléomorphisme = anisocaryose
+"""
+    ax4.text(0.05, 0.9, legend_text, transform=ax4.transAxes,
+             fontsize=8, verticalalignment='top', fontfamily='monospace',
+             bbox=dict(boxstyle='round', facecolor='whitesmoke', alpha=0.8))
+
+    plt.tight_layout()
+
+    # Convertir en image
+    buf = io.BytesIO()
+    plt.savefig(buf, format='png', dpi=100, facecolor='white')
+    plt.close(fig)
+    buf.seek(0)
+
+    img = plt.imread(buf)
+    buf.close()
+
+    return (img[:, :, :3] * 255).astype(np.uint8)
+
+
+def create_phase3_combined_overlay(
+    image: np.ndarray,
+    instance_map: np.ndarray,
+    hotspot_ids: List[int],
+    mitosis_ids: List[int],
+    mitosis_scores: Dict[int, float],
+    heterogeneous_ids: List[int],
+    show_hotspots: bool = True,
+    show_mitoses: bool = True,
+    show_chromatin: bool = True,
+) -> np.ndarray:
+    """
+    Crée un overlay combiné de toutes les annotations Phase 3.
+
+    Args:
+        image: Image RGB originale
+        instance_map: Carte d'instances
+        hotspot_ids: IDs des noyaux dans hotspots
+        mitosis_ids: IDs des candidats mitoses
+        mitosis_scores: Scores mitose
+        heterogeneous_ids: IDs chromatine hétérogène
+        show_hotspots: Afficher hotspots
+        show_mitoses: Afficher mitoses
+        show_chromatin: Afficher chromatine
+
+    Returns:
+        Image avec toutes les annotations Phase 3
+    """
+    result = image.copy()
+
+    if show_hotspots and hotspot_ids:
+        result = create_hotspot_overlay(result, instance_map, hotspot_ids)
+
+    if show_chromatin and heterogeneous_ids:
+        result = create_chromatin_overlay(result, instance_map, heterogeneous_ids)
+
+    if show_mitoses and mitosis_ids:
+        result = create_mitosis_overlay(result, instance_map, mitosis_ids, mitosis_scores)
+
+    return result

@@ -46,6 +46,13 @@ from src.ui.visualizations import (
     create_debug_panel_enhanced,  # Phase 2
     create_anomaly_overlay,        # Phase 2
     highlight_nuclei,
+    create_voronoi_overlay,
+    # Phase 3
+    create_hotspot_overlay,
+    create_mitosis_overlay,
+    create_chromatin_overlay,
+    create_spatial_debug_panel,
+    create_phase3_combined_overlay,
     CELL_COLORS,
     TYPE_NAMES,
 )
@@ -98,27 +105,28 @@ def analyze_image(
     min_size: int,
     beta: float,
     min_distance: int,
-) -> Tuple[np.ndarray, np.ndarray, str, str, np.ndarray, np.ndarray, np.ndarray]:
+) -> Tuple[np.ndarray, np.ndarray, str, str, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """
     Analyse une image et retourne les visualisations.
 
     Returns:
-        (overlay, contours, metrics_text, alerts_text, chart, debug, anomaly_overlay)
+        (overlay, contours, metrics_text, alerts_text, chart, debug, anomaly_overlay, phase3_overlay, phase3_debug)
     """
     empty = np.zeros((224, 224, 3), dtype=np.uint8)
     empty_debug = np.zeros((100, 400, 3), dtype=np.uint8)
+    empty_phase3_debug = np.zeros((80, 400, 3), dtype=np.uint8)
 
     if state.engine is None:
-        return empty, empty, "Moteur non chargé", "", empty, empty_debug, empty
+        return empty, empty, "Moteur non chargé", "", empty, empty_debug, empty, empty, empty_phase3_debug
 
     if image is None:
-        return empty, empty, "Aucune image", "", empty, empty_debug, empty
+        return empty, empty, "Aucune image", "", empty, empty_debug, empty, empty, empty_phase3_debug
 
     # Vérification taille 224×224
     h, w = image.shape[:2]
     if h != 224 or w != 224:
         error_msg = f"**Erreur : Image {w}×{h} pixels**\n\nVeuillez charger une image de **224×224 pixels**."
-        return empty, empty, error_msg, "", empty, empty_debug, empty
+        return empty, empty, error_msg, "", empty, empty_debug, empty, empty, empty_phase3_debug
 
     try:
         # Paramètres watershed personnalisés
@@ -157,7 +165,7 @@ def analyze_image(
         # Métriques texte
         metrics_text = format_metrics(result)
 
-        # Alertes texte (incluant anomalies Phase 2)
+        # Alertes texte (incluant anomalies Phase 2 et Phase 3)
         alerts_text = format_alerts(result)
 
         # Chart distribution
@@ -183,13 +191,40 @@ def analyze_image(
             result.over_seg_ids,
         )
 
-        return overlay, contours, metrics_text, alerts_text, chart, debug, anomaly_overlay
+        # Phase 3: Overlay combiné (hotspots + mitoses + chromatine)
+        phase3_overlay = empty.copy()
+        phase3_debug = empty_phase3_debug.copy()
+
+        if result.spatial_analysis:
+            sa = result.spatial_analysis
+            # Overlay combiné Phase 3
+            phase3_overlay = create_phase3_combined_overlay(
+                result.image_rgb,
+                result.instance_map,
+                hotspot_ids=result.hotspot_ids,
+                mitosis_ids=result.mitosis_candidate_ids,
+                mitosis_scores=sa.mitosis_scores,
+                heterogeneous_ids=sa.heterogeneous_nuclei_ids,
+            )
+
+            # Debug panel Phase 3
+            phase3_debug = create_spatial_debug_panel(
+                pleomorphism_score=result.pleomorphism_score,
+                pleomorphism_description=result.pleomorphism_description,
+                n_hotspots=result.n_hotspots,
+                n_mitosis_candidates=result.n_mitosis_candidates,
+                n_heterogeneous=result.n_heterogeneous_nuclei,
+                mean_neighbors=result.mean_neighbors,
+                mean_entropy=result.mean_chromatin_entropy,
+            )
+
+        return overlay, contours, metrics_text, alerts_text, chart, debug, anomaly_overlay, phase3_overlay, phase3_debug
 
     except Exception as e:
         logger.error(f"Analysis error: {e}")
         import traceback
         traceback.print_exc()
-        return empty, empty, f"Erreur : {e}", "", empty, empty_debug, empty
+        return empty, empty, f"Erreur : {e}", "", empty, empty_debug, empty, empty, empty_phase3_debug
 
 
 def format_metrics(result: AnalysisResult) -> str:
@@ -232,11 +267,28 @@ def format_metrics(result: AnalysisResult) -> str:
             f"**Confiance:** {m.confidence_level}",
         ])
 
+    # Phase 3: Intelligence Spatiale
+    if result.spatial_analysis:
+        score_labels = {1: "Faible", 2: "Modéré", 3: "Sévère"}
+        score_emoji = {1: "🟢", 2: "🟡", 3: "🔴"}
+
+        lines.extend([
+            "",
+            "---",
+            "### Phase 3 — Intelligence Spatiale",
+            f"- Pléomorphisme: **{result.pleomorphism_score}/3** {score_emoji.get(result.pleomorphism_score, '')} ({score_labels.get(result.pleomorphism_score, '')})",
+            f"- Hotspots: **{result.n_hotspots}** zones haute densité",
+            f"- Mitoses candidates: **{result.n_mitosis_candidates}**",
+            f"- Chromatine hétérogène: **{result.n_heterogeneous_nuclei}** noyaux",
+            f"- Voisins moyens (Voronoï): **{result.mean_neighbors:.1f}**",
+            f"- Entropie chromatine: **{result.mean_chromatin_entropy:.2f}**",
+        ])
+
     return "\n".join(lines)
 
 
 def format_alerts(result: AnalysisResult) -> str:
-    """Formate les alertes en texte (incluant anomalies Phase 2)."""
+    """Formate les alertes en texte (incluant anomalies Phase 2 et Phase 3)."""
     lines = ["### Points d'attention", ""]
 
     # Alertes morphométriques
@@ -249,6 +301,24 @@ def format_alerts(result: AnalysisResult) -> str:
         lines.append(f"- **{result.n_fusions} fusion(s) potentielle(s)** (aire > 2× moyenne)")
     if result.n_over_seg > 0:
         lines.append(f"- **{result.n_over_seg} sur-segmentation(s)** (aire < 0.5× moyenne)")
+
+    # Phase 3: Alertes intelligence spatiale
+    if result.spatial_analysis:
+        if result.pleomorphism_score >= 3:
+            lines.append("- 🔴 **Pléomorphisme sévère** — anisocaryose marquée")
+        elif result.pleomorphism_score == 2:
+            lines.append("- 🟡 **Pléomorphisme modéré** — variation notable")
+
+        if result.n_mitosis_candidates > 3:
+            lines.append(f"- 🔴 **{result.n_mitosis_candidates} mitoses suspectes** — activité proliférative")
+        elif result.n_mitosis_candidates > 0:
+            lines.append(f"- 🟡 **{result.n_mitosis_candidates} mitose(s) candidate(s)**")
+
+        if result.n_hotspots > 0:
+            lines.append(f"- 🟠 **{result.n_hotspots} hotspot(s)** — zones haute densité")
+
+        if result.n_heterogeneous_nuclei > 5:
+            lines.append(f"- 🟣 **{result.n_heterogeneous_nuclei} noyaux chromatine hétérogène**")
 
     if len(lines) == 2:  # Seulement le titre
         return "Aucune alerte"
@@ -303,6 +373,20 @@ def on_image_click(evt: gr.SelectData) -> str:
             lines.append("⚠️ **SUR-SEGMENTATION**")
             lines.append(f"   {nucleus.anomaly_reason}")
 
+        # Phase 3: Intelligence spatiale
+        lines.append("")
+        lines.append("---")
+        lines.append("### Phase 3")
+        lines.append(f"- Entropie chromatine: **{nucleus.chromatin_entropy:.2f}**")
+        lines.append(f"- Voisins Voronoï: **{nucleus.n_neighbors}**")
+
+        if nucleus.chromatin_heterogeneous:
+            lines.append("- 🟣 **Chromatine hétérogène**")
+        if nucleus.is_mitosis_candidate:
+            lines.append(f"- 🔴 **Candidat mitose** (score: {nucleus.mitosis_score:.2f})")
+        if nucleus.is_in_hotspot:
+            lines.append("- 🟠 **Dans hotspot** (zone haute densité)")
+
         return "\n".join(lines)
 
     except Exception as e:
@@ -315,6 +399,10 @@ def update_overlay(
     show_uncertainty: bool,
     show_density: bool,
     show_anomalies: bool = False,  # Phase 2
+    show_voronoi: bool = False,     # Phase 3
+    show_hotspots: bool = False,    # Phase 3
+    show_mitoses: bool = False,     # Phase 3
+    show_chromatin: bool = False,   # Phase 3
 ) -> np.ndarray:
     """Met à jour l'overlay selon les options."""
     if state.current_result is None:
@@ -344,6 +432,30 @@ def update_overlay(
     if show_anomalies and (result.fusion_ids or result.over_seg_ids):
         image = create_anomaly_overlay(
             image, result.instance_map, result.fusion_ids, result.over_seg_ids
+        )
+
+    # Phase 3: Voronoï
+    if show_voronoi and result.nucleus_info:
+        centroids = [n.centroid for n in result.nucleus_info]
+        image = create_voronoi_overlay(image, centroids)
+
+    # Phase 3: Hotspots
+    if show_hotspots and result.hotspot_ids:
+        image = create_hotspot_overlay(image, result.instance_map, result.hotspot_ids)
+
+    # Phase 3: Mitoses
+    if show_mitoses and result.mitosis_candidate_ids and result.spatial_analysis:
+        image = create_mitosis_overlay(
+            image, result.instance_map,
+            result.mitosis_candidate_ids,
+            result.spatial_analysis.mitosis_scores
+        )
+
+    # Phase 3: Chromatine hétérogène
+    if show_chromatin and result.spatial_analysis:
+        image = create_chromatin_overlay(
+            image, result.instance_map,
+            result.spatial_analysis.heterogeneous_nuclei_ids
         )
 
     return image
@@ -423,13 +535,20 @@ def create_ui():
                         interactive=True,
                     )
 
-                # Overlays controls
+                # Overlays controls - Base
                 with gr.Row():
                     show_seg = gr.Checkbox(label="Segmentation", value=True)
                     show_contours = gr.Checkbox(label="Contours", value=True)
                     show_uncertainty = gr.Checkbox(label="Incertitude", value=False)
                     show_density = gr.Checkbox(label="Densité", value=False)
                     show_anomalies = gr.Checkbox(label="Anomalies", value=False)  # Phase 2
+
+                # Overlays controls - Phase 3
+                with gr.Row():
+                    show_voronoi = gr.Checkbox(label="Voronoï", value=False)
+                    show_hotspots = gr.Checkbox(label="Hotspots", value=False)
+                    show_mitoses = gr.Checkbox(label="Mitoses", value=False)
+                    show_chromatin = gr.Checkbox(label="Chromatine", value=False)
 
                 # Paramètres Watershed
                 with gr.Accordion("Paramètres Watershed", open=False):
@@ -473,7 +592,7 @@ def create_ui():
                 type_chart = gr.Image(label="Distribution", height=200)
 
         # Debug panel (accordéon fermé) - Phase 2 amélioré
-        with gr.Accordion("Debug IA", open=False):
+        with gr.Accordion("Debug IA (Phase 2)", open=False):
             debug_panel = gr.Image(label="Pipeline NP/HV/Instances + Alertes", height=200)
 
             with gr.Row():
@@ -489,6 +608,22 @@ def create_ui():
             **Vue Anomalies:**
             - **Magenta (F)**: Fusion potentielle - noyaux anormalement grands
             - **Cyan (S)**: Sur-segmentation - fragments trop petits
+            """)
+
+        # Debug panel Phase 3 - Intelligence Spatiale
+        with gr.Accordion("Intelligence Spatiale (Phase 3)", open=False):
+            phase3_debug_panel = gr.Image(label="Pléomorphisme / Clustering / Biomarqueurs", height=150)
+
+            with gr.Row():
+                phase3_overlay_image = gr.Image(label="Vue Phase 3 (Hotspots + Mitoses + Chromatine)", height=200)
+
+            gr.Markdown("""
+            **Légende Phase 3:**
+            - **Pléomorphisme**: Score 1-3 basé sur variation taille/forme (anisocaryose)
+            - **Hotspots** 🟠: Zones de haute densité cellulaire
+            - **Mitoses** 🔴: Candidats mitose détectés par forme + chromatine
+            - **Chromatine** 🟣: Noyaux à chromatine hétérogène (texture LBP + entropie)
+            - **Voronoï**: Tessellation pour analyse topologique des voisinages
             """)
 
         # Export JSON (Phase 2)
@@ -519,18 +654,18 @@ def create_ui():
             outputs=[status_text],
         )
 
-        # Analyser l'image
+        # Analyser l'image (9 outputs: overlay, contours, metrics, alerts, chart, debug, anomaly, phase3_overlay, phase3_debug)
         analyze_btn.click(
             fn=analyze_image,
             inputs=[input_image, np_threshold, min_size, beta, min_distance],
-            outputs=[output_image, output_image, metrics_md, alerts_md, type_chart, debug_panel, anomaly_image],
+            outputs=[output_image, output_image, metrics_md, alerts_md, type_chart, debug_panel, anomaly_image, phase3_overlay_image, phase3_debug_panel],
         )
 
         # Auto-analyse quand image uploadée
         input_image.change(
             fn=analyze_image,
             inputs=[input_image, np_threshold, min_size, beta, min_distance],
-            outputs=[output_image, output_image, metrics_md, alerts_md, type_chart, debug_panel, anomaly_image],
+            outputs=[output_image, output_image, metrics_md, alerts_md, type_chart, debug_panel, anomaly_image, phase3_overlay_image, phase3_debug_panel],
         )
 
         # Export JSON (Phase 2)
@@ -545,11 +680,15 @@ def create_ui():
             outputs=[nucleus_info],
         )
 
-        # Update overlays (incluant show_anomalies Phase 2)
-        for checkbox in [show_seg, show_contours, show_uncertainty, show_density, show_anomalies]:
+        # Update overlays (Phase 2 + Phase 3)
+        all_checkboxes = [
+            show_seg, show_contours, show_uncertainty, show_density, show_anomalies,
+            show_voronoi, show_hotspots, show_mitoses, show_chromatin
+        ]
+        for checkbox in all_checkboxes:
             checkbox.change(
                 fn=update_overlay,
-                inputs=[show_seg, show_contours, show_uncertainty, show_density, show_anomalies],
+                inputs=all_checkboxes,
                 outputs=[output_image],
             )
 

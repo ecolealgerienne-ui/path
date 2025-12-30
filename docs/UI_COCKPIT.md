@@ -1,8 +1,8 @@
 # CellViT-Optimus R&D Cockpit
 
-> **Version:** POC v2.0 (Phase 2)
+> **Version:** POC v3.0 (Phase 3)
 > **Date:** 2025-12-30
-> **Status:** Fonctionnel — Phase 2 complète (détection anomalies, export JSON)
+> **Status:** Fonctionnel — Phase 3 complète (Intelligence Spatiale)
 
 ---
 
@@ -448,29 +448,64 @@ pip install gradio>=4.0.0
 
 ---
 
-### Phase 3 — Intelligence Spatiale (À venir)
+### Phase 3 — Intelligence Spatiale ✅ (Complétée)
 
 **Objectif:** Biomarqueurs avancés
 
 | Composant | Status | Description |
 |-----------|--------|-------------|
-| Pléomorphisme | ⏳ | Score anisocaryose [1-3] |
-| Chromatine | ⏳ | Texture LBP, entropie |
-| Topologie Voronoï | ⏳ | Graphe adjacence cellules |
-| Clustering spatial | ⏳ | Hotspots, patterns |
-| Mitoses améliorées | ⏳ | Détection par forme + chromatine |
-| Ratio I/E spatial | ⏳ | Distribution TILs |
+| Pléomorphisme | ✅ | Score anisocaryose [1-3] basé sur CV aire/circularité |
+| Chromatine | ✅ | Texture LBP, entropie Shannon, détection hétérogénéité |
+| Topologie Voronoï | ✅ | Graphe adjacence cellules, moyenne voisins |
+| Clustering spatial | ✅ | Hotspots = zones haute densité (>1.5× moyenne) |
+| Mitoses améliorées | ✅ | Détection par forme + chromatine + intensité |
+| Overlays Phase 3 | ✅ | Hotspots 🟠, Mitoses 🔴, Chromatine 🟣, Voronoï |
 
-**Métriques Pléomorphisme:**
+**Livrables Phase 3:**
+- `src/ui/spatial_analysis.py` — Module d'analyse spatiale complet
+  - `compute_pleomorphism_score()` — Score anisocaryose 1-3
+  - `compute_chromatin_features()` — LBP + entropie
+  - `build_voronoi_topology()` — Tessellation + graphe adjacence
+  - `find_spatial_clusters()` — Détection hotspots
+  - `detect_mitosis_advanced()` — Forme + chromatine + intensité
+  - `run_spatial_analysis()` — Pipeline complet Phase 3
+- `NucleusInfo` enrichi avec champs Phase 3
+- `AnalysisResult` avec `spatial_analysis`, `pleomorphism_score`, etc.
+- Visualisations: `create_hotspot_overlay()`, `create_mitosis_overlay()`, etc.
+- Panneau debug Phase 3 avec score pléomorphisme
+
+**Score Pléomorphisme:**
 ```python
 # Score basé sur variance des caractéristiques morphologiques
-pleomorphism_score = compute_pleomorphism(
-    area_cv,           # Coefficient de variation aire
-    circularity_cv,    # CV circularité
-    chromatin_entropy, # Entropie texture
-    nuclear_ratio_var  # Variance N/C ratio
-)
-# Résultat: 1 (faible), 2 (modéré), 3 (sévère)
+pleomorphism = compute_pleomorphism_score(areas, circularities)
+
+# Critères:
+# - CV aire < 0.25: faible, 0.25-0.50: modéré, > 0.50: sévère
+# - Ratio taille max/min < 3: faible, 3-6: modéré, > 6: sévère
+# - Score final = max des composantes (approche conservative)
+
+# Résultat: PleomorphismScore
+#   score: 1 (faible), 2 (modéré), 3 (sévère)
+#   description: "Pléomorphisme sévère — forte anisocaryose"
+```
+
+**Détection Mitoses Avancée:**
+```python
+# Critères multi-facteurs (score cumulatif):
+# - Forme irrégulière (circularité < 0.5): +0.4
+# - Taille moyenne-grande (0.7-2.0× moyenne): +0.2
+# - Intensité foncée (< 100): +0.2
+# - Entropie chromatine élevée (> 3.5): +0.2
+# - Contraste élevé (> 40): +0.1
+# Seuil candidat mitose: score ≥ 0.5
+```
+
+**Clustering Hotspots:**
+```python
+# Grille de densité 16×16 pixels
+# Seuil hotspot = 1.5× densité moyenne
+# Connected components pour clusters
+# Minimum 5 noyaux par cluster
 ```
 
 ---
@@ -523,7 +558,7 @@ pleomorphism_score = compute_pleomorphism(
 ```
 Phase 1 ████████████████████ 100% ✅ Fondation
 Phase 2 ████████████████████ 100% ✅ Couches IA
-Phase 3 ░░░░░░░░░░░░░░░░░░░░   0%    Intelligence Spatiale
+Phase 3 ████████████████████ 100% ✅ Intelligence Spatiale
 Phase 4 ░░░░░░░░░░░░░░░░░░░░   0%    Polish & Export
 ```
 
