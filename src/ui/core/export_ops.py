@@ -46,7 +46,7 @@ def export_pdf_core() -> Optional[str]:
 
         # Générer PDF
         temp_dir = tempfile.mkdtemp()
-        pdf_path = Path(temp_dir) / f"cellvit_report_{metadata['analysis_id']}.pdf"
+        pdf_path = Path(temp_dir) / f"cellvit_report_{metadata.analysis_id}.pdf"
 
         create_report_pdf(
             result=state.current_result,
@@ -81,7 +81,7 @@ def export_nuclei_csv_core() -> Optional[str]:
         metadata = create_audit_metadata(state.current_result)
 
         temp_dir = tempfile.mkdtemp()
-        csv_path = Path(temp_dir) / f"nuclei_{metadata['analysis_id']}.csv"
+        csv_path = Path(temp_dir) / f"nuclei_{metadata.analysis_id}.csv"
 
         export_nuclei_csv(
             result=state.current_result,
@@ -116,7 +116,7 @@ def export_summary_csv_core() -> Optional[str]:
         metadata = create_audit_metadata(state.current_result)
 
         temp_dir = tempfile.mkdtemp()
-        csv_path = Path(temp_dir) / f"summary_{metadata['analysis_id']}.csv"
+        csv_path = Path(temp_dir) / f"summary_{metadata.analysis_id}.csv"
 
         export_summary_csv(
             result=state.current_result,
