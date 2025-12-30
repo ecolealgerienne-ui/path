@@ -30,6 +30,7 @@ from src.models.loader import ModelLoader
 from src.evaluation.instance_evaluation import run_inference
 from src.postprocessing.watershed import hv_guided_watershed
 from src.metrics.morphometry import MorphometryAnalyzer, MorphometryReport, CELL_TYPES
+from src.preprocessing import preprocess_image, validate_features
 
 logger = logging.getLogger(__name__)
 
@@ -157,6 +158,11 @@ class CellVitEngine:
         self.organ_head = None
         self.hovernet = None
 
+        # Flags modèle (initialisés dans _load_hovernet)
+        self._is_hybrid = False
+        self._use_fpn_chimique = False
+        self._use_h_alpha = False
+
         # Analyseur morphométrique
         self.morphometry_analyzer = MorphometryAnalyzer(pixel_size_um=0.5)
 
@@ -199,21 +205,38 @@ class CellVitEngine:
         logger.info("All models loaded successfully")
 
     def _load_hovernet(self, checkpoint_path: str):
-        """Charge HoVer-Net avec détection automatique du type."""
+        """
+        Charge HoVer-Net avec détection automatique du type.
+
+        Lit les flags use_hybrid/use_fpn_chimique/use_h_alpha directement du checkpoint
+        (source: scripts/training/train_hovernet_family_v13_smart_crops.py).
+        """
         from src.models.hovernet_decoder import HoVerNetDecoder
         from src.models.hovernet_decoder_hybrid import HoVerNetDecoderHybrid
 
-        checkpoint = torch.load(checkpoint_path, map_location=self.device)
+        checkpoint = torch.load(checkpoint_path, map_location=self.device, weights_only=False)
         state_dict = checkpoint.get("model_state_dict", checkpoint)
 
-        # Détecter si c'est un modèle hybrid (FPN Chimique)
-        is_hybrid = any("h_channel" in k or "fpn" in k.lower() for k in state_dict.keys())
+        # Lire les flags directement du checkpoint (méthode fiable)
+        # Fallback: détection par clés si ancien checkpoint
+        use_hybrid = checkpoint.get("use_hybrid", False)
+        use_fpn_chimique = checkpoint.get("use_fpn_chimique", False)
+        use_h_alpha = checkpoint.get("use_h_alpha", False)
 
-        if is_hybrid:
+        # Fallback pour anciens checkpoints sans flags explicites
+        if not use_hybrid and not use_fpn_chimique:
+            # Détection par clés (ancienne méthode)
+            use_hybrid = any("h_channel" in k or "fpn" in k.lower() for k in state_dict.keys())
+            use_fpn_chimique = use_hybrid  # Si hybrid, probablement FPN chimique
+
+        logger.info(f"  Checkpoint flags: use_hybrid={use_hybrid}, use_fpn_chimique={use_fpn_chimique}, use_h_alpha={use_h_alpha}")
+
+        if use_hybrid:
             self.hovernet = HoVerNetDecoderHybrid(
                 embed_dim=1536,
                 n_classes=5,
-                use_fpn_chimique=True
+                use_fpn_chimique=use_fpn_chimique,
+                use_h_alpha=use_h_alpha
             )
         else:
             self.hovernet = HoVerNetDecoder(
@@ -231,35 +254,53 @@ class CellVitEngine:
         self.hovernet = self.hovernet.to(self.device)
         self.hovernet.eval()
 
-        self._is_hybrid = is_hybrid
+        # Stocker les flags pour l'inférence
+        self._is_hybrid = use_hybrid
+        self._use_fpn_chimique = use_fpn_chimique
+        self._use_h_alpha = use_h_alpha
 
-    def preprocess_image(self, image: np.ndarray) -> Tuple[torch.Tensor, np.ndarray]:
+    def _preprocess_image(self, image: np.ndarray) -> Tuple[torch.Tensor, np.ndarray, torch.Tensor]:
         """
         Prétraite une image pour l'inférence.
 
+        Utilise preprocess_image() de src.preprocessing (source unique de vérité).
+
         Args:
-            image: Image RGB (H, W, 3) uint8
+            image: Image RGB (H, W, 3) uint8, DOIT être 224×224
 
         Returns:
-            (tensor_normalized, image_224): Tensor pour backbone, image resizée
+            Tuple (tensor_normalized, image_224, images_rgb):
+                - tensor_normalized: Tensor (1,3,224,224) normalisé pour H-optimus-0
+                - image_224: Image numpy (224,224,3) uint8
+                - images_rgb: Tensor (1,3,224,224) [0,1] pour FPN Chimique
         """
         import torchvision.transforms as T
 
-        # Resize à 224x224 (taille H-optimus-0)
+        # Validation: L'image DOIT être 224×224 (validation en amont dans app.py)
         if image.shape[0] != HOPTIMUS_INPUT_SIZE or image.shape[1] != HOPTIMUS_INPUT_SIZE:
-            image_224 = cv2.resize(image, (HOPTIMUS_INPUT_SIZE, HOPTIMUS_INPUT_SIZE))
-        else:
-            image_224 = image.copy()
+            raise ValueError(
+                f"Image must be {HOPTIMUS_INPUT_SIZE}×{HOPTIMUS_INPUT_SIZE}, "
+                f"got {image.shape[0]}×{image.shape[1]}"
+            )
 
-        # Normalisation H-optimus-0
-        transform = T.Compose([
-            T.ToTensor(),
-            T.Normalize(mean=HOPTIMUS_MEAN, std=HOPTIMUS_STD),
-        ])
+        # Copie de l'image (déjà 224×224)
+        image_224 = image.copy()
 
-        tensor = transform(image_224).unsqueeze(0).to(self.device)
+        # Conversion uint8 si nécessaire
+        if image_224.dtype != np.uint8:
+            if image_224.max() <= 1.0:
+                image_224 = (image_224 * 255).clip(0, 255).astype(np.uint8)
+            else:
+                image_224 = image_224.clip(0, 255).astype(np.uint8)
 
-        return tensor, image_224
+        # Tensor normalisé pour H-optimus-0 (méthode centralisée)
+        tensor_normalized = preprocess_image(image_224, device=self.device)
+
+        # Tensor [0,1] pour FPN Chimique (images_rgb)
+        # CRITIQUE: Le DataLoader entraînement utilise ToTensor() → [0,1]
+        images_rgb = T.ToTensor()(image_224).unsqueeze(0).to(self.device)
+
+        return tensor_normalized, image_224, images_rgb
 
     def analyze(
         self,
@@ -272,7 +313,7 @@ class CellVitEngine:
         Analyse complète d'une image H&E.
 
         Args:
-            image: Image RGB (H, W, 3) uint8, typiquement 256x256
+            image: Image RGB (H, W, 3) uint8, DOIT être 224×224 (taille H-optimus-0)
             watershed_params: Override des paramètres watershed
             compute_morphometry: Calculer les métriques morphométriques
             compute_uncertainty: Calculer la carte d'incertitude
@@ -289,12 +330,19 @@ class CellVitEngine:
         # Paramètres watershed
         params = {**self.watershed_params, **(watershed_params or {})}
 
-        # Prétraitement
-        tensor, image_224 = self.preprocess_image(image)
+        # Prétraitement (méthode centralisée)
+        tensor, image_224, images_rgb = self._preprocess_image(image)
 
         # Extraction features
         with torch.no_grad():
             features = self.backbone.forward_features(tensor)  # (1, 261, 1536)
+
+        # Validation des features (détection bugs preprocessing)
+        validation = validate_features(features)
+        if not validation["valid"]:
+            logger.warning(f"Feature validation warning: {validation['message']}")
+        else:
+            logger.debug(f"Features OK: CLS std={validation['cls_std']:.3f}")
 
         # Prédiction organe (optionnel)
         organ_name = "Unknown"
@@ -306,7 +354,7 @@ class CellVitEngine:
             organ_idx = organ_probs.argmax(dim=1).item()
             organ_confidence = organ_probs[0, organ_idx].item()
 
-            # Mapper l'index vers le nom (à adapter selon votre mapping)
+            # Mapper l'index vers le nom (source: scripts/training/train_organ_head.py)
             ORGAN_NAMES = [
                 "Adrenal_gland", "Bile-duct", "Bladder", "Breast", "Cervix",
                 "Colon", "Esophagus", "HeadNeck", "Kidney", "Liver",
@@ -316,21 +364,12 @@ class CellVitEngine:
             if organ_idx < len(ORGAN_NAMES):
                 organ_name = ORGAN_NAMES[organ_idx]
 
-        # Inférence HoVer-Net
-        # Préparer image RGB pour modèle hybrid
-        if hasattr(self, '_is_hybrid') and self._is_hybrid:
-            # Denormalize pour extraction H-channel
-            images_rgb = tensor.clone()
-            for c in range(3):
-                images_rgb[:, c] = images_rgb[:, c] * HOPTIMUS_STD[c] + HOPTIMUS_MEAN[c]
-            images_rgb = (images_rgb * 255).clamp(0, 255)
-        else:
-            images_rgb = None
-
+        # Inférence HoVer-Net (utilise run_inference de src.evaluation)
+        # images_rgb passé uniquement si modèle hybrid (FPN Chimique)
         np_pred, hv_pred = run_inference(
             model=self.hovernet,
             features=features,
-            images_rgb=images_rgb,
+            images_rgb=images_rgb if self._is_hybrid else None,
             device=self.device
         )
 
@@ -509,4 +548,7 @@ class CellVitEngine:
             "family": self.family,
             "device": self.device,
             "watershed_params": self.watershed_params,
+            "is_hybrid": self._is_hybrid,
+            "use_fpn_chimique": self._use_fpn_chimique,
+            "use_h_alpha": self._use_h_alpha,
         }
