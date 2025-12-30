@@ -192,9 +192,12 @@ Phase actuelle                              Prochaines étapes
 │                                                                         │
 │   ┌───────────────────────────────────────────────────────────────┐    │
 │   │                                                               │    │
-│   │   python -m src.ui.app_pathologist --preload                  │    │
+│   │   python -m src.ui.app_pathologist --organ Breast --preload   │    │
 │   │                                                               │    │
 │   │   → http://localhost:7861                                     │    │
+│   │                                                               │    │
+│   │   Organes avec modèle dédié: Breast ★, Colon ★                │    │
+│   │   Autres organes: utilise le modèle de la famille             │    │
 │   │                                                               │    │
 │   └───────────────────────────────────────────────────────────────┘    │
 │                                                                         │

@@ -1,8 +1,8 @@
 # CellViT-Optimus R&D Cockpit
 
-> **Version:** POC v4.0 (Phase 4)
+> **Version:** POC v4.1 (Sélection par Organe)
 > **Date:** 2025-12-30
-> **Status:** Fonctionnel — Phase 4 complète (Polish & Export)
+> **Status:** Fonctionnel — Phase 4 complète + Sélection par organe
 
 ---
 
@@ -56,7 +56,9 @@ python -m src.ui.app
 ### Méthode 3: Avec préchargement
 
 ```bash
-python -m src.ui.app --preload --family respiratory
+python -m src.ui.app --preload --organ Lung
+# Ou avec modèle dédié:
+python -m src.ui.app --preload --organ Breast  # ★ modèle dédié
 ```
 
 ---
@@ -186,9 +188,16 @@ if h != 224 or w != 224:
 ```
 src/ui/
 ├── __init__.py           # Exports: CellVitEngine, AnalysisResult, visualizations, export
+├── organ_config.py       # Configuration organes (SOURCE UNIQUE DE VÉRITÉ)
+│   ├── ORGANS                # 19 organes PanNuke
+│   ├── ORGAN_TO_FAMILY       # Mapping organe → famille
+│   ├── ORGANS_WITH_DEDICATED_MODEL  # {Breast, Colon}
+│   └── get_model_for_organ() # Retourne checkpoint + params
 ├── inference_engine.py   # CellVitEngine (wrapper unifié)
+│   ├── _set_organ()          # Configure moteur pour un organe
 │   ├── _load_hovernet()      # Charge modèle + détecte flags checkpoint
 │   ├── _preprocess_image()   # Preprocessing centralisé
+│   ├── change_organ()        # Change d'organe à chaud
 │   └── analyze()             # Pipeline complet
 ├── visualizations.py     # Overlays et rendus
 │   ├── create_segmentation_overlay()
@@ -205,16 +214,68 @@ src/ui/
 │   ├── export_summary_csv()
 │   └── process_batch()
 ├── app.py               # R&D Cockpit (développeurs)
+│   ├── Sélection par organe (19)
 │   ├── Tous les overlays (9)
 │   ├── Sliders Watershed
 │   ├── Debug IA complet
 │   └── Export JSON/CSV/PDF
 └── app_pathologist.py   # Interface Pathologiste (cliniciens)
+    ├── Sélection par organe (19)
     ├── Overlays simplifiés (4)
     ├── Métriques interprétées
     ├── Badge Confiance IA
     └── Export PDF uniquement
 ```
+
+### Configuration Organes (organ_config.py)
+
+Fichier source unique de vérité pour le mapping organe → modèle:
+
+```python
+# Les 19 organes PanNuke groupés par famille
+ORGAN_TO_FAMILY = {
+    # Glandular (5 organes)
+    "Breast": "glandular",      # ★ modèle dédié
+    "Prostate": "glandular",
+    "Thyroid": "glandular",
+    ...
+    # Digestive (4 organes)
+    "Colon": "digestive",       # ★ modèle dédié
+    "Stomach": "digestive",
+    ...
+}
+
+# Organes avec modèle dédié (entraîné spécifiquement)
+ORGANS_WITH_DEDICATED_MODEL = {"Breast", "Colon"}
+
+# Usage
+from src.ui.organ_config import get_model_for_organ
+
+info = get_model_for_organ("Breast")
+# {
+#   'checkpoint_path': 'models/.../hovernet_Breast_...best.pth',
+#   'family': 'glandular',
+#   'is_dedicated': True,
+#   'watershed_params': {...},
+#   'display_name': 'Breast ★'
+# }
+
+info = get_model_for_organ("Lung")
+# {
+#   'checkpoint_path': 'models/.../hovernet_respiratory_...best.pth',
+#   'family': 'respiratory',
+#   'is_dedicated': False,
+#   'watershed_params': {...},
+#   'display_name': 'Lung (respiratory)'
+# }
+```
+
+**Pour ajouter un nouveau modèle dédié:**
+
+1. Entraîner le modèle pour l'organe
+2. Ajouter le checkpoint dans `ORGAN_CHECKPOINTS`
+3. Ajouter l'organe dans `ORGANS_WITH_DEDICATED_MODEL`
+4. Optionnellement, ajouter des params watershed spécifiques dans `ORGAN_WATERSHED_PARAMS`
 
 ---
 
@@ -287,17 +348,25 @@ Les paramètres sont ajustables en temps réel :
 ```python
 from src.ui import CellVitEngine
 
-# Charger moteur avec famille spécifique
+# Charger moteur avec organe spécifique
 engine = CellVitEngine(
     device="cuda",           # ou "cpu"
-    family="respiratory",    # famille HoVer-Net
+    organ="Lung",            # Nom de l'organe (ex: Lung, Breast, Colon)
     load_backbone=True,      # H-optimus-0 (~5s)
     load_organ_head=True     # OrganHead
 )
 
 # Vérifier status
 print(engine.get_status())
-# {'models_loaded': True, 'is_hybrid': True, 'use_fpn_chimique': True, ...}
+# {
+#   'models_loaded': True,
+#   'organ': 'Lung',
+#   'family': 'respiratory',
+#   'is_dedicated_model': False,   # True si modèle dédié (Breast, Colon)
+#   'is_hybrid': True,
+#   'use_fpn_chimique': True,
+#   ...
+# }
 ```
 
 ### Analyse
@@ -341,15 +410,24 @@ result.watershed_params  # dict Paramètres utilisés
 result.inference_time_ms # float Temps total
 ```
 
-### Changement de famille
+### Changement d'organe
 
 ```python
-# Recharge HoVer-Net pour autre famille
-engine.change_family("epidermal")
+# Recharge HoVer-Net pour autre organe
+engine.change_organ("Breast")  # Utilise modèle dédié ★
+
+# Vérifier quel modèle est utilisé
+print(engine.is_dedicated_model)  # True pour Breast, Colon
+print(engine.family)              # "glandular" (famille parent)
 
 # Nouveaux paramètres watershed appliqués automatiquement
 print(engine.watershed_params)
-# {'np_threshold': 0.45, 'min_size': 20, 'beta': 1.0, 'min_distance': 3}
+# {'np_threshold': 0.40, 'min_size': 30, 'beta': 0.50, 'min_distance': 5}
+
+# Pour un organe sans modèle dédié → utilise modèle famille
+engine.change_organ("Skin")  # Utilise modèle epidermal
+print(engine.is_dedicated_model)  # False
+print(engine.family)              # "epidermal"
 ```
 
 ---
@@ -674,7 +752,10 @@ Les indicateurs bruts (HV gradients, NP probability, entropie chromatine, etc.) 
 ./scripts/run_pathologist.sh --preload
 
 # ou directement
-python -m src.ui.app_pathologist --preload --family respiratory
+python -m src.ui.app_pathologist --preload --organ Lung
+
+# Avec modèle dédié:
+python -m src.ui.app_pathologist --preload --organ Breast  # ★
 ```
 
 ### Design implémenté

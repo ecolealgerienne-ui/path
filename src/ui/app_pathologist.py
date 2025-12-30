@@ -35,9 +35,12 @@ if str(PROJECT_ROOT) not in sys.path:
 from src.ui.inference_engine import (
     CellVitEngine,
     AnalysisResult,
-    WATERSHED_PARAMS,
-    MODEL_CHOICES,
-    ORGAN_SPECIFIC_MODELS,
+    ORGAN_CHOICES,
+)
+from src.ui.organ_config import (
+    ORGANS,
+    get_model_for_organ,
+    organ_has_dedicated_model,
 )
 from src.ui.visualizations import (
     create_segmentation_overlay,
@@ -131,21 +134,23 @@ def interpret_mitotic_index(index: float) -> str:
         return f"{index:.0f}/10 HPF (Élevé)"
 
 
-def load_engine(family: str, device: str = "cuda") -> str:
+def load_engine(organ: str, device: str = "cuda") -> str:
     """Charge le moteur d'inférence."""
     try:
         state.is_loading = True
-        logger.info(f"Loading engine for family '{family}' on {device}...")
+        organ_info = get_model_for_organ(organ)
+        logger.info(f"Loading engine for organ '{organ}' on {device}...")
 
         state.engine = CellVitEngine(
             device=device,
-            family=family,
+            organ=organ,
             load_backbone=True,
             load_organ_head=True,
         )
 
         state.is_loading = False
-        return f"Moteur chargé : {family}"
+        model_type = "modèle dédié" if organ_info["is_dedicated"] else f"famille {organ_info['family']}"
+        return f"Prêt : {organ} ({model_type})"
 
     except Exception as e:
         state.is_loading = False
@@ -245,14 +250,16 @@ def analyze_image(
 
 def format_identification(result: AnalysisResult) -> str:
     """Formate l'identification de l'organe."""
-    # Vérifier si c'est un modèle organe spécifique
-    if result.family in ORGAN_SPECIFIC_MODELS:
-        model_line = f"**Modèle:** {result.family} (dédié)"
+    # Afficher le modèle utilisé
+    if state.engine and state.engine.is_dedicated_model:
+        model_line = f"**Modèle:** {state.engine.organ} ★ (dédié)"
     else:
-        model_line = f"**Famille:** {result.family.capitalize()}"
+        organ_name = state.engine.organ if state.engine else "N/A"
+        family_name = state.engine.family if state.engine else "N/A"
+        model_line = f"**Modèle:** {family_name} (famille)\n*Organe: {organ_name}*"
 
     return f"""### {result.organ_name}
-**Confiance:** {result.organ_confidence:.0%}
+**Confiance IA:** {result.organ_confidence:.0%}
 {model_line}"""
 
 
@@ -463,14 +470,16 @@ def export_pdf_handler() -> Optional[str]:
         return None
 
 
-def change_family(family: str) -> str:
-    """Change la famille du modèle."""
+def change_organ(organ: str) -> str:
+    """Change l'organe du modèle."""
     if state.engine is None:
         return "Moteur non chargé"
 
     try:
-        state.engine.change_family(family)
-        return f"Famille: {family}"
+        state.engine.change_organ(organ)
+        organ_info = get_model_for_organ(organ)
+        model_type = "dédié ★" if organ_info["is_dedicated"] else f"famille ({organ_info['family']})"
+        return f"Organe: {organ} — {model_type}"
     except Exception as e:
         return f"Erreur: {e}"
 
@@ -518,20 +527,21 @@ def create_ui():
             # ================================================================
             with gr.Column(scale=2):
 
-                # Sélection famille (simplifié)
+                # Sélection organe
                 with gr.Row():
-                    # Créer les choix avec labels plus clairs pour les pathologistes
+                    # Créer les choix avec labels clairs pour les pathologistes
                     pathologist_choices = []
-                    for choice in MODEL_CHOICES:
-                        if choice in ORGAN_SPECIFIC_MODELS:
-                            pathologist_choices.append((f"{choice} (modèle dédié)", choice))
+                    for organ_name in ORGAN_CHOICES:
+                        organ_info = ORGANS[organ_name]
+                        if organ_info.has_dedicated_model:
+                            pathologist_choices.append(f"{organ_name} ★")
                         else:
-                            pathologist_choices.append((f"{choice.capitalize()} (famille)", choice))
+                            pathologist_choices.append(f"{organ_name} ({organ_info.family})")
 
-                    family_select = gr.Dropdown(
-                        choices=pathologist_choices,
-                        value="respiratory",
-                        label="Type de tissu",
+                    organ_select = gr.Dropdown(
+                        choices=ORGAN_CHOICES,
+                        value="Lung",
+                        label="Organe (★ = modèle dédié)",
                         interactive=True,
                     )
                     load_btn = gr.Button("Charger", variant="primary")
@@ -617,15 +627,15 @@ def create_ui():
 
         # Charger le moteur
         load_btn.click(
-            fn=lambda f: load_engine(f, "cuda"),
-            inputs=[family_select],
+            fn=lambda o: load_engine(o, "cuda"),
+            inputs=[organ_select],
             outputs=[status_text],
         )
 
-        # Changer la famille
-        family_select.change(
-            fn=change_family,
-            inputs=[family_select],
+        # Changer l'organe
+        organ_select.change(
+            fn=change_organ,
+            inputs=[organ_select],
             outputs=[status_text],
         )
 
@@ -679,14 +689,14 @@ def main():
     parser.add_argument("--port", type=int, default=7861, help="Port Gradio")
     parser.add_argument("--share", action="store_true", help="Créer lien public")
     parser.add_argument("--device", default="cuda", help="Device (cuda/cpu)")
-    parser.add_argument("--family", default="respiratory", help="Famille initiale")
+    parser.add_argument("--organ", default="Lung", help="Organe initial (ex: Lung, Breast, Colon)")
     parser.add_argument("--preload", action="store_true", help="Précharger le moteur")
     args = parser.parse_args()
 
     # Précharger le moteur si demandé
     if args.preload:
         logger.info("Preloading engine...")
-        load_engine(args.family, args.device)
+        load_engine(args.organ, args.device)
         logger.info("Engine preloaded")
 
     # Créer et lancer l'interface

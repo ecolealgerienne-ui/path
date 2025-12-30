@@ -36,9 +36,12 @@ if str(PROJECT_ROOT) not in sys.path:
 from src.ui.inference_engine import (
     CellVitEngine,
     AnalysisResult,
-    WATERSHED_PARAMS,
-    MODEL_CHOICES,
-    ORGAN_SPECIFIC_MODELS,
+    ORGAN_CHOICES,
+)
+from src.ui.organ_config import (
+    ORGANS,
+    get_organ_display_choices,
+    get_model_for_organ,
 )
 from src.ui.visualizations import (
     create_segmentation_overlay,
@@ -92,21 +95,23 @@ state = AppState()
 # FONCTIONS UTILITAIRES
 # ==============================================================================
 
-def load_engine(family: str, device: str = "cuda") -> str:
+def load_engine(organ: str, device: str = "cuda") -> str:
     """Charge le moteur d'inférence."""
     try:
         state.is_loading = True
-        logger.info(f"Loading engine for family '{family}' on {device}...")
+        organ_info = get_model_for_organ(organ)
+        logger.info(f"Loading engine for organ '{organ}' on {device}...")
 
         state.engine = CellVitEngine(
             device=device,
-            family=family,
+            organ=organ,
             load_backbone=True,
             load_organ_head=True,
         )
 
         state.is_loading = False
-        return f"Moteur chargé : {family} sur {device}"
+        model_type = "dédié" if organ_info["is_dedicated"] else f"famille {organ_info['family']}"
+        return f"Moteur chargé : {organ} ({model_type}) sur {device}"
 
     except Exception as e:
         state.is_loading = False
@@ -244,20 +249,19 @@ def analyze_image(
 
 def format_metrics(result: AnalysisResult) -> str:
     """Formate les métriques en texte."""
-    # Vérifier si c'est un modèle organe spécifique
-    if result.family in ORGAN_SPECIFIC_MODELS:
-        model_info = f"### Modèle: **{result.family}** (dédié)"
-        family_info = f"*Famille parent: {ORGAN_SPECIFIC_MODELS[result.family]['family']}*"
+    # Afficher le modèle utilisé
+    if state.engine and state.engine.is_dedicated_model:
+        model_info = f"### Modèle: **{state.engine.organ}** ★ (dédié)"
+        family_info = f"*Famille: {state.engine.family}*"
     else:
-        model_info = f"### Famille: {result.family}"
-        family_info = ""
+        model_info = f"### Modèle: {state.engine.family if state.engine else 'N/A'}"
+        family_info = f"*Organe sélectionné: {state.engine.organ if state.engine else 'N/A'}*"
 
     lines = [
-        f"### Organe détecté: {result.organ_name} ({result.organ_confidence:.1%})",
+        f"### Organe détecté (IA): {result.organ_name} ({result.organ_confidence:.1%})",
         model_info,
+        family_info,
     ]
-    if family_info:
-        lines.append(family_info)
 
     lines.extend([
         "",
@@ -584,15 +588,17 @@ def update_overlay(
     return image
 
 
-def change_family(family: str) -> str:
-    """Change la famille du modèle."""
+def change_organ(organ: str) -> str:
+    """Change l'organe du modèle."""
     if state.engine is None:
         return "Moteur non chargé"
 
     try:
-        state.engine.change_family(family)
+        state.engine.change_organ(organ)
+        organ_info = get_model_for_organ(organ)
+        model_type = "dédié ★" if organ_info["is_dedicated"] else f"famille ({organ_info['family']})"
         params = state.engine.watershed_params
-        return f"Famille changée: {family}\nParams: {params}"
+        return f"Organe: {organ} — Modèle {model_type}\nParams: {params}"
     except Exception as e:
         return f"Erreur: {e}"
 
@@ -635,10 +641,10 @@ def create_ui():
 
                 # Status du moteur
                 with gr.Row():
-                    family_select = gr.Dropdown(
-                        choices=MODEL_CHOICES,
-                        value="respiratory",
-                        label="Modèle (Famille ou Organe)",
+                    organ_select = gr.Dropdown(
+                        choices=ORGAN_CHOICES,
+                        value="Lung",
+                        label="Organe (★ = modèle dédié)",
                         interactive=True,
                     )
                     load_btn = gr.Button("Charger le moteur", variant="primary")
@@ -787,15 +793,15 @@ def create_ui():
 
         # Charger le moteur
         load_btn.click(
-            fn=lambda f: load_engine(f, "cuda"),
-            inputs=[family_select],
+            fn=lambda o: load_engine(o, "cuda"),
+            inputs=[organ_select],
             outputs=[status_text],
         )
 
-        # Changer la famille
-        family_select.change(
-            fn=change_family,
-            inputs=[family_select],
+        # Changer l'organe
+        organ_select.change(
+            fn=change_organ,
+            inputs=[organ_select],
             outputs=[status_text],
         )
 
@@ -864,14 +870,14 @@ def main():
     parser.add_argument("--port", type=int, default=7860, help="Port Gradio")
     parser.add_argument("--share", action="store_true", help="Créer lien public")
     parser.add_argument("--device", default="cuda", help="Device (cuda/cpu)")
-    parser.add_argument("--family", default="respiratory", help="Famille initiale")
+    parser.add_argument("--organ", default="Lung", help="Organe initial (ex: Lung, Breast, Colon)")
     parser.add_argument("--preload", action="store_true", help="Précharger le moteur")
     args = parser.parse_args()
 
     # Précharger le moteur si demandé
     if args.preload:
         logger.info("Preloading engine...")
-        load_engine(args.family, args.device)
+        load_engine(args.organ, args.device)
         logger.info("Engine preloaded")
 
     # Créer et lancer l'interface

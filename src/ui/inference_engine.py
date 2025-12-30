@@ -24,7 +24,6 @@ from src.constants import (
     HOPTIMUS_STD,
     HOPTIMUS_INPUT_SIZE,
     PANNUKE_IMAGE_SIZE,
-    FAMILIES,
 )
 from src.models.loader import ModelLoader
 from src.evaluation.instance_evaluation import run_inference
@@ -40,49 +39,21 @@ from src.ui.spatial_analysis import (
     ChromatinFeatures,
 )
 
+# Configuration organes - SOURCE UNIQUE DE VÉRITÉ
+from src.ui.organ_config import (
+    ORGANS,
+    get_organ_choices,
+    get_organ_display_choices,
+    get_model_for_organ,
+    get_family_for_organ,
+    organ_has_dedicated_model,
+)
+
 logger = logging.getLogger(__name__)
 
 
-# Paramètres Watershed optimisés par famille (source: CLAUDE.md)
-WATERSHED_PARAMS = {
-    "respiratory": {"np_threshold": 0.40, "min_size": 30, "beta": 0.50, "min_distance": 5},
-    "urologic": {"np_threshold": 0.45, "min_size": 30, "beta": 0.50, "min_distance": 2},
-    "epidermal": {"np_threshold": 0.45, "min_size": 20, "beta": 1.00, "min_distance": 3},
-    "digestive": {"np_threshold": 0.45, "min_size": 60, "beta": 2.00, "min_distance": 5},
-    "glandular": {"np_threshold": 0.40, "min_size": 30, "beta": 0.50, "min_distance": 5},
-    # Organes spécifiques (héritent des paramètres de leur famille)
-    "Breast": {"np_threshold": 0.40, "min_size": 30, "beta": 0.50, "min_distance": 5},  # glandular
-    "Colon": {"np_threshold": 0.45, "min_size": 60, "beta": 2.00, "min_distance": 5},   # digestive
-}
-
-# Checkpoints par famille
-CHECKPOINT_PATHS = {
-    "respiratory": "models/checkpoints_v13_smart_crops/hovernet_respiratory_v13_smart_crops_hybrid_fpn_best.pth",
-    "urologic": "models/checkpoints_v13_smart_crops/hovernet_urologic_v13_smart_crops_hybrid_fpn_best.pth",
-    "epidermal": "models/checkpoints_v13_smart_crops/hovernet_epidermal_v13_smart_crops_hybrid_fpn_best.pth",
-    "digestive": "models/checkpoints_v13_smart_crops/hovernet_digestive_v13_smart_crops_hybrid_fpn_best.pth",
-    "glandular": "models/checkpoints_v13_smart_crops/hovernet_glandular_v13_smart_crops_hybrid_fpn_best.pth",
-    # Modèles spécifiques par organe (entraînés séparément)
-    "Breast": "models/checkpoints_v13_smart_crops/hovernet_Breast_v13_smart_crops_hybrid_fpn_best.pth",
-    "Colon": "models/checkpoints_v13_smart_crops/hovernet_Colon_v13_smart_crops_hybrid_fpn_best.pth",
-}
-
-# Organes avec modèle dédié (pas juste le modèle famille)
-ORGAN_SPECIFIC_MODELS = {
-    "Breast": {
-        "family": "glandular",
-        "display_name": "Breast (modèle dédié)",
-        "checkpoint": CHECKPOINT_PATHS["Breast"],
-    },
-    "Colon": {
-        "family": "digestive",
-        "display_name": "Colon (modèle dédié)",
-        "checkpoint": CHECKPOINT_PATHS["Colon"],
-    },
-}
-
-# Liste des choix pour l'UI (familles + organes spécifiques)
-MODEL_CHOICES = FAMILIES + list(ORGAN_SPECIFIC_MODELS.keys())
+# Liste des organes pour l'UI (export pour compatibilité)
+ORGAN_CHOICES = get_organ_choices()
 
 ORGAN_HEAD_PATH = "models/checkpoints/organ_head_best.pth"
 
@@ -302,14 +273,14 @@ class CellVitEngine:
     Les modèles sont chargés UNE SEULE FOIS à l'instanciation.
 
     Usage:
-        engine = CellVitEngine(device="cuda", family="respiratory")
+        engine = CellVitEngine(device="cuda", organ="Lung")
         result = engine.analyze(image_rgb)
     """
 
     def __init__(
         self,
         device: str = "cuda",
-        family: str = "respiratory",
+        organ: str = "Lung",
         load_backbone: bool = True,
         load_organ_head: bool = True,
     ):
@@ -318,7 +289,7 @@ class CellVitEngine:
 
         Args:
             device: "cuda" ou "cpu"
-            family: Famille d'organes ("respiratory", etc.) ou organe spécifique ("Breast", "Colon")
+            organ: Nom de l'organe (ex: "Lung", "Breast", "Colon")
             load_backbone: Charger H-optimus-0 (4.5GB, ~5s)
             load_organ_head: Charger OrganHead
         """
@@ -335,35 +306,58 @@ class CellVitEngine:
         self._use_fpn_chimique = False
         self._use_h_alpha = False
 
-        # Flag modèle organe spécifique
-        self._is_organ_specific = False
-        self._organ_family = None
+        # Organe courant et ses infos
+        self._current_organ = None
+        self._organ_info = None
 
-        # Déterminer si c'est un organe spécifique ou une famille
-        if family in ORGAN_SPECIFIC_MODELS:
-            self.family = family
-            self._is_organ_specific = True
-            self._organ_family = ORGAN_SPECIFIC_MODELS[family]["family"]
-        elif family in FAMILIES:
-            self.family = family
-        else:
-            logger.warning(f"Unknown family/organ: {family}, defaulting to respiratory")
-            self.family = "respiratory"
+        # Initialiser avec l'organe demandé
+        self._set_organ(organ)
 
         # Analyseur morphométrique
         self.morphometry_analyzer = MorphometryAnalyzer(pixel_size_um=0.5)
-
-        # Paramètres watershed pour cette famille/organe
-        self.watershed_params = WATERSHED_PARAMS.get(self.family, WATERSHED_PARAMS["respiratory"])
 
         # Charger les modèles
         if load_backbone or load_organ_head:
             self._load_models(load_backbone, load_organ_head)
 
+    def _set_organ(self, organ_name: str):
+        """
+        Configure le moteur pour un organe donné.
+
+        Args:
+            organ_name: Nom de l'organe (ex: "Lung", "Breast")
+        """
+        if organ_name not in ORGANS:
+            logger.warning(f"Unknown organ: {organ_name}, defaulting to Lung")
+            organ_name = "Lung"
+
+        self._current_organ = organ_name
+        self._organ_info = get_model_for_organ(organ_name)
+        self.watershed_params = self._organ_info["watershed_params"]
+
+        logger.info(
+            f"Organ set to '{organ_name}' → "
+            f"{'dedicated model' if self._organ_info['is_dedicated'] else f'family model ({self._organ_info[\"family\"]})'}"
+        )
+
+    @property
+    def organ(self) -> str:
+        """Retourne le nom de l'organe courant."""
+        return self._current_organ
+
+    @property
+    def family(self) -> str:
+        """Retourne la famille de l'organe courant."""
+        return self._organ_info["family"] if self._organ_info else "unknown"
+
+    @property
+    def is_dedicated_model(self) -> bool:
+        """Retourne True si le modèle actuel est dédié à l'organe."""
+        return self._organ_info["is_dedicated"] if self._organ_info else False
+
     def _load_models(self, load_backbone: bool, load_organ_head: bool):
         """Charge les modèles depuis les checkpoints."""
-        model_name = self.model_display_name if self._is_organ_specific else self.family
-        logger.info(f"Loading models for '{model_name}' on {self.device}...")
+        logger.info(f"Loading models for organ '{self._current_organ}' on {self.device}...")
 
         # 1. Backbone H-optimus-0
         if load_backbone:
@@ -380,13 +374,13 @@ class CellVitEngine:
             )
             logger.info("  OrganHead loaded")
 
-        # 3. HoVer-Net pour cette famille/organe
-        checkpoint_path = CHECKPOINT_PATHS.get(self.family)
+        # 3. HoVer-Net pour cet organe
+        checkpoint_path = self._organ_info["checkpoint_path"]
         if checkpoint_path and Path(checkpoint_path).exists():
-            model_type = "organ-specific" if self._is_organ_specific else "family"
-            logger.info(f"Loading HoVer-Net ({self.family}, {model_type})...")
+            model_type = "dedicated" if self._organ_info["is_dedicated"] else "family"
+            logger.info(f"Loading HoVer-Net ({self._current_organ}, {model_type})...")
             self._load_hovernet(checkpoint_path)
-            logger.info(f"  HoVer-Net ({self.family}) loaded")
+            logger.info(f"  HoVer-Net loaded")
         else:
             logger.warning(f"HoVer-Net checkpoint not found: {checkpoint_path}")
 
@@ -868,48 +862,38 @@ class CellVitEngine:
             if nid in nucleus_by_id:
                 nucleus_by_id[nid].is_in_hotspot = True
 
-    def change_family(self, family_or_organ: str):
+    def change_organ(self, organ_name: str):
         """
-        Change la famille/organe et recharge HoVer-Net correspondant.
+        Change l'organe et recharge HoVer-Net correspondant.
 
         Args:
-            family_or_organ: Famille ("respiratory", etc.) ou organe spécifique ("Breast", "Colon")
+            organ_name: Nom de l'organe (ex: "Lung", "Breast", "Colon")
         """
-        # Vérifier si c'est un modèle organe spécifique
-        if family_or_organ in ORGAN_SPECIFIC_MODELS:
-            organ_info = ORGAN_SPECIFIC_MODELS[family_or_organ]
-            self.family = family_or_organ  # Stocker le nom de l'organe
-            self._is_organ_specific = True
-            self._organ_family = organ_info["family"]
-            checkpoint_path = organ_info["checkpoint"]
-            logger.info(f"Using organ-specific model: {family_or_organ}")
-        elif family_or_organ in FAMILIES:
-            self.family = family_or_organ
-            self._is_organ_specific = False
-            self._organ_family = None
-            checkpoint_path = CHECKPOINT_PATHS.get(family_or_organ)
-        else:
-            raise ValueError(f"Unknown family/organ: {family_or_organ}. Valid: {MODEL_CHOICES}")
+        if organ_name not in ORGANS:
+            raise ValueError(f"Unknown organ: {organ_name}. Valid: {list(ORGANS.keys())}")
 
-        self.watershed_params = WATERSHED_PARAMS.get(family_or_organ, WATERSHED_PARAMS["respiratory"])
+        # Mettre à jour la configuration
+        self._set_organ(organ_name)
 
+        # Recharger HoVer-Net
+        checkpoint_path = self._organ_info["checkpoint_path"]
         if checkpoint_path and Path(checkpoint_path).exists():
-            logger.info(f"Switching to HoVer-Net ({family_or_organ})...")
+            logger.info(f"Switching to HoVer-Net for '{organ_name}'...")
             self._load_hovernet(checkpoint_path)
         else:
             logger.warning(f"HoVer-Net checkpoint not found: {checkpoint_path}")
 
-    @property
-    def is_organ_specific(self) -> bool:
-        """Retourne True si le modèle actuel est spécifique à un organe."""
-        return getattr(self, '_is_organ_specific', False)
+    # Alias pour compatibilité
+    def change_family(self, organ_name: str):
+        """Alias pour change_organ (compatibilité)."""
+        self.change_organ(organ_name)
 
     @property
     def model_display_name(self) -> str:
         """Retourne le nom d'affichage du modèle actuel."""
-        if self.is_organ_specific:
-            return ORGAN_SPECIFIC_MODELS[self.family]["display_name"]
-        return f"Famille: {self.family}"
+        if self._organ_info:
+            return self._organ_info["display_name"]
+        return f"Organ: {self._current_organ}"
 
     @property
     def is_ready(self) -> bool:
@@ -927,7 +911,10 @@ class CellVitEngine:
             "backbone_loaded": self.backbone is not None,
             "organ_head_loaded": self.organ_head is not None,
             "hovernet_loaded": self.hovernet is not None,
+            "organ": self._current_organ,
             "family": self.family,
+            "is_dedicated_model": self.is_dedicated_model,
+            "model_display_name": self.model_display_name,
             "device": self.device,
             "watershed_params": self.watershed_params,
             "is_hybrid": self._is_hybrid,
