@@ -1,8 +1,8 @@
 # CellViT-Optimus R&D Cockpit
 
-> **Version:** POC v4.2 (Corrections Pipeline)
+> **Version:** POC v4.3 (Auto Params + Phase 3 Sync)
 > **Date:** 2025-12-30
-> **Status:** Fonctionnel — Pipeline aligné avec évaluation
+> **Status:** Fonctionnel — Architecture partagée R&D/Pathologiste
 
 ---
 
@@ -199,12 +199,18 @@ if h != 224 or w != 224:
                                     │
                                     ▼
 ┌─────────────────────────────────────────────────────────────────────────┐
-│  ÉTAPE 5b: FINALISATION MORPHOMETRY                                     │
-│  inference_engine.py:651-666                                            │
+│  ÉTAPE 5b: FINALISATION MORPHOMETRY + SYNC (v4.3)                       │
+│  inference_engine.py:651-680                                            │
 │  ─────────────────────────────────────────────────────────────────────  │
 │  • Phase 3 = source autoritative pour mitoses                           │
-│  • morphometry.mitotic_candidates = n_mitosis_candidates                │
-│  • morphometry.mitotic_nuclei_ids = mitosis_candidate_ids               │
+│  • morphometry.refresh_mitosis_alerts():                                │
+│    → Supprime ancienne alerte mitose                                    │
+│    → Ajoute nouvelle alerte avec count Phase 3                          │
+│  • morphometry.refresh_confidence_after_phase3():                       │
+│    → Dégrade confiance si complexité élevée:                            │
+│      - Pléomorphisme 3 (sévère) → -1 niveau                             │
+│      - > 10 mitoses → -1 niveau                                         │
+│      - > 20% chromatine hétérogène → -1 niveau                          │
 │  • mitotic_index_per_10hpf reste None (sanity check)                    │
 │  • Affichage: "X candidat(s) (patch unique)"                            │
 └─────────────────────────────────────────────────────────────────────────┘
@@ -231,6 +237,8 @@ if h != 224 or w != 224:
 | **Phase 3** | READ-ONLY, enrichit métadonnées sans modifier segmentation | `spatial_analysis.py:585` |
 | **HPF Sanity Check** | Si surface < 0.1 mm², index = None | `morphometry.py:220-229` |
 | **Mitoses Absolues** | Seuils 25-180 µm² (pas relatifs à mean_area) | `spatial_analysis.py:264-273` |
+| **Alertes Mitoses (v4.3)** | 3 niveaux: >10 TRÈS élevée, >3 élevée, >0 présentes | `format_clinical.py:188` |
+| **Sync Confiance (v4.3)** | Dégrade après Phase 3 si complexité élevée | `morphometry.py:146` |
 
 ### Modules Partagés (Single Source of Truth)
 
@@ -240,6 +248,42 @@ if h != 224 or w != 224:
 | `src.postprocessing.watershed` | `hv_guided_watershed` | Segmentation instances |
 | `src.evaluation.instance_evaluation` | `run_inference` | Inférence NP/HV (softmax!) |
 | `src.metrics.morphometry` | `MorphometryAnalyzer` | Métriques morphologiques |
+
+### Architecture UI Partagée (v4.3)
+
+> **Principe:** Les deux UIs (R&D et Pathologiste) partagent la même logique d'analyse.
+
+```
+src/ui/core/engine_ops.py
+│
+├── run_analysis_core()          ← PARTAGÉ (Single Source of Truth)
+│   ├── Validation image 224×224
+│   ├── Auto/Manual params
+│   ├── state.engine.analyze()
+│   └── state.current_result = result
+│
+├── analyze_image_core()         ← R&D UI wrapper
+│   ├── Appelle run_analysis_core()
+│   └── Ajoute: debug panels, anomaly overlays
+│
+└── (autres fonctions partagées...)
+
+src/ui/app.py (R&D)              src/ui/app_pathologist.py (Clinique)
+│                                 │
+└── analyze_image()               └── analyze_image()
+    └── analyze_image_core()          └── run_analysis_core()
+        └── run_analysis_core()       └── overlays cliniques
+```
+
+**Garanties:**
+
+| Fonctionnalité | Partagée? |
+|----------------|-----------|
+| `engine.analyze()` | ✅ Identique |
+| Auto params (organ_config) | ✅ Identique |
+| `refresh_mitosis_alerts()` | ✅ Identique |
+| `refresh_confidence_after_phase3()` | ✅ Identique |
+| Visualisations | ❌ Différentes (R&D vs Clinique) |
 
 ### Structure Fichiers
 
@@ -375,6 +419,21 @@ ORGAN_WATERSHED_PARAMS = {
 ---
 
 ## Paramètres Watershed
+
+### Mode Auto vs Manuel (v4.3)
+
+> **Nouveau:** Checkbox "Params Auto (organ_config.py)" dans l'UI R&D.
+
+| Mode | Comportement | Usage |
+|------|--------------|-------|
+| **Auto** (défaut) | Utilise `organ_config.py` pour l'organe **prédit** | Production |
+| **Manuel** | Utilise les valeurs des sliders | Debug/Exploration |
+
+**Exemple:** Si OrganHead prédit "Breast", le mode Auto applique automatiquement `min_distance=2` (optimisé pour Breast) même si le slider affiche 5.
+
+**Note:** L'interface Pathologiste utilise **toujours** le mode Auto (pas de sliders exposés).
+
+### Sliders (Mode Manuel)
 
 Les paramètres sont ajustables en temps réel :
 
