@@ -524,6 +524,8 @@ class CellVitEngine:
         # Prédiction organe (optionnel)
         organ_name = "Unknown"
         organ_confidence = 0.0
+        predicted_family = self.family  # Par défaut: famille du modèle chargé
+
         if self.organ_head is not None:
             cls_token = features[:, 0, :]  # (1, 1536)
             organ_logits = self.organ_head(cls_token)
@@ -540,6 +542,16 @@ class CellVitEngine:
             ]
             if organ_idx < len(ORGAN_NAMES):
                 organ_name = ORGAN_NAMES[organ_idx]
+                # CRITIQUE: Utiliser la famille et les watershed params de l'organe PRÉDIT
+                try:
+                    predicted_family = get_family_for_organ(organ_name)
+                    # CRITIQUE: Mettre à jour les params watershed pour l'organe prédit
+                    # Cela permet d'appliquer les overrides organ-specific (ex: Breast min_distance=2)
+                    organ_info = get_model_for_organ(organ_name)
+                    params = {**organ_info["watershed_params"], **(watershed_params or {})}
+                    logger.debug(f"Watershed params updated for predicted organ {organ_name}: {params}")
+                except ValueError:
+                    predicted_family = self.family  # Fallback si organe inconnu
 
         # Inférence HoVer-Net (utilise run_inference de src.evaluation)
         # images_rgb passé uniquement si modèle hybrid (FPN Chimique)
@@ -672,7 +684,7 @@ class CellVitEngine:
             uncertainty_map=uncertainty_map,
             organ_name=organ_name,
             organ_confidence=organ_confidence,
-            family=self.family,
+            family=predicted_family,  # Famille de l'organe PRÉDIT (pas du modèle chargé)
             watershed_params=params,
             inference_time_ms=inference_time,
             # Phase 2: Anomalies
