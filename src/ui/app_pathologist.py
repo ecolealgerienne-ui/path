@@ -493,29 +493,12 @@ def create_ui():
 
     with gr.Blocks(
         title="CellViT-Optimus — Analyse Histopathologique",
-        theme=gr.themes.Soft(),
-        css="""
-        .disclaimer {
-            background-color: #fff3cd;
-            border: 1px solid #ffc107;
-            padding: 12px;
-            border-radius: 8px;
-            margin-bottom: 15px;
-            text-align: center;
-        }
-        .clinical-alert {
-            background-color: #f8d7da;
-            border: 1px solid #f5c6cb;
-            padding: 10px;
-            border-radius: 5px;
-        }
-        """
     ) as app:
 
         # Header
         gr.Markdown("# CellViT-Optimus — Analyse Histopathologique")
         gr.HTML("""
-        <div class="disclaimer">
+        <div style="background-color: #fff3cd; border: 1px solid #ffc107; padding: 12px; border-radius: 8px; margin-bottom: 15px; text-align: center;">
             <b>Document d'aide à la décision — Validation médicale requise</b><br>
             Les résultats présentés sont des suggestions algorithmiques et doivent être validés par un pathologiste.
         </div>
