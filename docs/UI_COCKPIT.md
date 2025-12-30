@@ -1,8 +1,8 @@
 # CellViT-Optimus R&D Cockpit
 
-> **Version:** POC v4.0 (Phase 4)
+> **Version:** POC v4.1 (Sélection par Organe)
 > **Date:** 2025-12-30
-> **Status:** Fonctionnel — Phase 4 complète (Polish & Export)
+> **Status:** Fonctionnel — Phase 4 complète + Sélection par organe
 
 ---
 
@@ -56,7 +56,9 @@ python -m src.ui.app
 ### Méthode 3: Avec préchargement
 
 ```bash
-python -m src.ui.app --preload --family respiratory
+python -m src.ui.app --preload --organ Lung
+# Ou avec modèle dédié:
+python -m src.ui.app --preload --organ Breast  # ★ modèle dédié
 ```
 
 ---
@@ -186,9 +188,16 @@ if h != 224 or w != 224:
 ```
 src/ui/
 ├── __init__.py           # Exports: CellVitEngine, AnalysisResult, visualizations, export
+├── organ_config.py       # Configuration organes (SOURCE UNIQUE DE VÉRITÉ)
+│   ├── ORGANS                # 19 organes PanNuke
+│   ├── ORGAN_TO_FAMILY       # Mapping organe → famille
+│   ├── ORGANS_WITH_DEDICATED_MODEL  # {Breast, Colon}
+│   └── get_model_for_organ() # Retourne checkpoint + params
 ├── inference_engine.py   # CellVitEngine (wrapper unifié)
+│   ├── _set_organ()          # Configure moteur pour un organe
 │   ├── _load_hovernet()      # Charge modèle + détecte flags checkpoint
 │   ├── _preprocess_image()   # Preprocessing centralisé
+│   ├── change_organ()        # Change d'organe à chaud
 │   └── analyze()             # Pipeline complet
 ├── visualizations.py     # Overlays et rendus
 │   ├── create_segmentation_overlay()
@@ -204,12 +213,69 @@ src/ui/
 │   ├── export_nuclei_csv()
 │   ├── export_summary_csv()
 │   └── process_batch()
-└── app.py               # Interface Gradio
-    ├── Validation 224×224
-    ├── Chargement moteur
-    ├── Callbacks analyse
-    └── Export handlers
+├── app.py               # R&D Cockpit (développeurs)
+│   ├── Sélection par organe (19)
+│   ├── Tous les overlays (9)
+│   ├── Sliders Watershed
+│   ├── Debug IA complet
+│   └── Export JSON/CSV/PDF
+└── app_pathologist.py   # Interface Pathologiste (cliniciens)
+    ├── Sélection par organe (19)
+    ├── Overlays simplifiés (4)
+    ├── Métriques interprétées
+    ├── Badge Confiance IA
+    └── Export PDF uniquement
 ```
+
+### Configuration Organes (organ_config.py)
+
+Fichier source unique de vérité pour le mapping organe → modèle:
+
+```python
+# Les 19 organes PanNuke groupés par famille
+ORGAN_TO_FAMILY = {
+    # Glandular (5 organes)
+    "Breast": "glandular",      # ★ modèle dédié
+    "Prostate": "glandular",
+    "Thyroid": "glandular",
+    ...
+    # Digestive (4 organes)
+    "Colon": "digestive",       # ★ modèle dédié
+    "Stomach": "digestive",
+    ...
+}
+
+# Organes avec modèle dédié (entraîné spécifiquement)
+ORGANS_WITH_DEDICATED_MODEL = {"Breast", "Colon"}
+
+# Usage
+from src.ui.organ_config import get_model_for_organ
+
+info = get_model_for_organ("Breast")
+# {
+#   'checkpoint_path': 'models/.../hovernet_Breast_...best.pth',
+#   'family': 'glandular',
+#   'is_dedicated': True,
+#   'watershed_params': {...},
+#   'display_name': 'Breast ★'
+# }
+
+info = get_model_for_organ("Lung")
+# {
+#   'checkpoint_path': 'models/.../hovernet_respiratory_...best.pth',
+#   'family': 'respiratory',
+#   'is_dedicated': False,
+#   'watershed_params': {...},
+#   'display_name': 'Lung (respiratory)'
+# }
+```
+
+**Pour ajouter un nouveau modèle dédié:**
+
+1. Entraîner le modèle pour l'organe
+2. Ajouter le checkpoint dans `ORGAN_CHECKPOINTS`
+3. Ajouter l'organe dans `ORGANS_WITH_DEDICATED_MODEL`
+4. Optionnellement, ajouter des params watershed spécifiques dans `ORGAN_WATERSHED_PARAMS`
 
 ---
 
@@ -282,17 +348,25 @@ Les paramètres sont ajustables en temps réel :
 ```python
 from src.ui import CellVitEngine
 
-# Charger moteur avec famille spécifique
+# Charger moteur avec organe spécifique
 engine = CellVitEngine(
     device="cuda",           # ou "cpu"
-    family="respiratory",    # famille HoVer-Net
+    organ="Lung",            # Nom de l'organe (ex: Lung, Breast, Colon)
     load_backbone=True,      # H-optimus-0 (~5s)
     load_organ_head=True     # OrganHead
 )
 
 # Vérifier status
 print(engine.get_status())
-# {'models_loaded': True, 'is_hybrid': True, 'use_fpn_chimique': True, ...}
+# {
+#   'models_loaded': True,
+#   'organ': 'Lung',
+#   'family': 'respiratory',
+#   'is_dedicated_model': False,   # True si modèle dédié (Breast, Colon)
+#   'is_hybrid': True,
+#   'use_fpn_chimique': True,
+#   ...
+# }
 ```
 
 ### Analyse
@@ -336,15 +410,24 @@ result.watershed_params  # dict Paramètres utilisés
 result.inference_time_ms # float Temps total
 ```
 
-### Changement de famille
+### Changement d'organe
 
 ```python
-# Recharge HoVer-Net pour autre famille
-engine.change_family("epidermal")
+# Recharge HoVer-Net pour autre organe
+engine.change_organ("Breast")  # Utilise modèle dédié ★
+
+# Vérifier quel modèle est utilisé
+print(engine.is_dedicated_model)  # True pour Breast, Colon
+print(engine.family)              # "glandular" (famille parent)
 
 # Nouveaux paramètres watershed appliqués automatiquement
 print(engine.watershed_params)
-# {'np_threshold': 0.45, 'min_size': 20, 'beta': 1.0, 'min_distance': 3}
+# {'np_threshold': 0.40, 'min_size': 30, 'beta': 0.50, 'min_distance': 5}
+
+# Pour un organe sans modèle dédié → utilise modèle famille
+engine.change_organ("Skin")  # Utilise modèle epidermal
+print(engine.is_dedicated_model)  # False
+print(engine.family)              # "epidermal"
 ```
 
 ---
@@ -624,6 +707,201 @@ Phase 4 ████████████████████ 100% ✅ Po
 - Export CSV données tabulaires
 - Traçabilité complète
 - API batch processing
+
+---
+
+## Positionnement: POC Technique R&D
+
+> **Ce cockpit est un instrument technique pour l'équipe de développement, PAS une interface utilisateur finale.**
+
+### Objectif actuel
+
+Le R&D Cockpit sert à:
+
+| Usage | Description |
+|-------|-------------|
+| **Debug IA** | Visualiser le pipeline NP/HV/Instances, détecter les anomalies |
+| **Validation scientifique** | Vérifier les métriques morphométriques, les biomarqueurs |
+| **Exploration** | Tester différents paramètres watershed, comparer les familles |
+| **Export données** | Générer des rapports pour analyse externe |
+
+### Ce que ce cockpit n'est PAS
+
+- Une interface pour pathologistes
+- Une IHM clinique validée
+- Un outil de diagnostic
+- Une interface ergonomique pour non-techniciens
+
+### Indicateurs techniques affichés
+
+Les indicateurs bruts (HV gradients, NP probability, entropie chromatine, etc.) sont **intentionnellement** visibles car:
+- Ils servent au debug et à la compréhension du modèle
+- Ils permettent de détecter des problèmes de prédiction
+- Ils sont essentiels pour l'amélioration continue de l'IA
+
+---
+
+## Évolution: Écran Pathologiste ✅ (Implémenté)
+
+> **Interface dédiée aux pathologistes — `app_pathologist.py`**
+
+### Lancement
+
+```bash
+# Interface Pathologiste (port 7861)
+./scripts/run_pathologist.sh --preload
+
+# ou directement
+python -m src.ui.app_pathologist --preload --organ Lung
+
+# Avec modèle dédié:
+python -m src.ui.app_pathologist --preload --organ Breast  # ★
+```
+
+### Design implémenté
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│  CellViT-Optimus — Analyse Histopathologique                            │
+│  Document d'aide à la décision — Validation médicale requise            │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                         │
+│  ┌────────────────────────┐   ┌────────────────────────────────────┐   │
+│  │                        │   │  ┌──────────────────────────────┐  │   │
+│  │     IMAGE + OVERLAY    │   │  │   Confiance IA : Élevée      │  │   │
+│  │                        │   │  └──────────────────────────────┘  │   │
+│  │     [Clic = détails]   │   │                                    │   │
+│  │                        │   │  ### Poumon                        │   │
+│  └────────────────────────┘   │  Confiance: 98%                    │   │
+│                               │  Famille: Respiratory              │   │
+│  ☑ Types cellulaires         │                                    │   │
+│  ☑ Contours                  │  Noyaux détectés: 127              │   │
+│  ☑ Zones denses              │  Densité: Élevée (2340/mm²)        │   │
+│  ☑ Mitoses                   │  Index mitotique: 3/10 HPF (Faible)│   │
+│                               │  Pléomorphisme: Modéré (grade II)  │   │
+│  [Analyser]                   │                                    │   │
+│                               │  DISTRIBUTION [chart]              │   │
+├───────────────────────────────┴────────────────────────────────────────┤
+│  POINTS D'ATTENTION                                                    │
+│  🟡 Anisocaryose modérée — variation notable                           │
+│  🟠 Zones hypercellulaires — 2 cluster(s) identifié(s)                 │
+├─────────────────────────────────────────────────────────────────────────┤
+│  [Télécharger le rapport PDF]                                          │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+### Différences clés vs. R&D Cockpit
+
+| Aspect | R&D Cockpit | Écran Pathologiste |
+|--------|-------------|-------------------|
+| **Public** | Développeurs IA | Pathologistes |
+| **Port** | 7860 | 7861 |
+| **Métriques** | Brutes (debug) | Interprétées (clinique) |
+| **Overlays** | 9 (HV, NP, Voronoï, etc.) | 4 (types, contours, hotspots, mitoses) |
+| **Paramètres** | Sliders Watershed | Automatiques (masqués) |
+| **Export** | JSON/CSV/PDF technique | PDF clinique uniquement |
+| **Confiance** | Valeurs brutes | Badge visuel (Élevée/Modérée/Faible) |
+
+### Fonctionnalités implémentées
+
+| Fonction | Status | Description |
+|----------|--------|-------------|
+| Badge Confiance IA | ✅ | Indicateur visuel global (vert/orange/rouge) |
+| Métriques interprétées | ✅ | "Densité: Élevée" au lieu de "2340/mm²" |
+| Grades cliniques | ✅ | "Modéré (compatible grade II)" |
+| Overlays simplifiés | ✅ | 4 checkboxes au lieu de 9 |
+| Alertes priorisées | ✅ | Emojis 🔴🟡🟠 + langage clinique |
+| Détails avancés | ✅ | Accordéon optionnel pour experts |
+| Export PDF | ✅ | Rapport formaté pour dossier patient |
+
+### Ce qui est masqué pour le pathologiste
+
+```python
+HIDDEN_FOR_PATHOLOGIST = [
+    # Debug IA
+    "np_pred",              # Probabilité nucléaire brute
+    "hv_pred",              # Gradients HV
+    "debug_panel",          # Panneau debug NP/HV/Instances
+
+    # Paramètres techniques
+    "watershed_sliders",    # np_threshold, beta, min_size, min_distance
+
+    # Métriques brutes
+    "chromatin_entropy",    # Valeur entropie → "hétérogène" oui/non
+    "mitosis_score",        # Score 0-1 → "candidat" oui/non
+    "n_neighbors",          # Nombre voisins Voronoï
+    "area_cv",              # CV aire → score pléomorphisme
+
+    # Overlays debug
+    "voronoi_overlay",      # Tessellation technique
+    "uncertainty_overlay",  # Incertitude modèle
+    "anomaly_overlay",      # Fusions/sur-seg (R&D)
+]
+```
+
+### Langage clinique
+
+| Métrique brute | Interprétation clinique |
+|----------------|------------------------|
+| `density = 2340` | "Densité: Élevée (2340/mm²)" |
+| `pleomorphism_score = 2` | "Modéré (compatible grade II)" |
+| `mitotic_index = 3.0` | "3/10 HPF (Faible)" |
+| `uncertainty_mean < 0.3` | Badge "Confiance IA: Élevée" |
+
+### Évolutions futures (WSI)
+
+1. **Viewer WSI zoomable** — OpenSeadragon (à intégrer)
+2. **Annotations** — Marquer des régions d'intérêt
+3. **Workflow séquentiel** — Valider et passer au suivant
+4. **Historique** — Traçabilité des validations
+
+---
+
+## Configuration Overlays
+
+### Palette de couleurs standardisée
+
+Définie dans `src/ui/visualizations.py`:
+
+```python
+OVERLAY_CONFIG = {
+    # Transparence
+    "segmentation_alpha": 0.4,
+    "contour_thickness": 1,
+    "anomaly_alpha": 0.5,
+
+    # Couleurs Phase 1 (RGB)
+    "uncertainty_color": (255, 191, 0),     # Ambre
+    "density_cmap": "YlOrRd",               # Jaune-Orange-Rouge
+
+    # Couleurs Phase 2 (RGB)
+    "fusion_color": (255, 0, 255),          # Magenta
+    "over_seg_color": (0, 255, 255),        # Cyan
+
+    # Couleurs Phase 3 (RGB)
+    "hotspot_color": (255, 165, 0),         # Orange
+    "mitosis_high_color": (255, 0, 0),      # Rouge
+    "mitosis_low_color": (255, 255, 0),     # Jaune
+    "chromatin_color": (148, 0, 211),       # Violet
+    "voronoi_color": (100, 100, 100),       # Gris
+}
+```
+
+### Ordre de superposition (z-index)
+
+```python
+OVERLAY_ORDER = [
+    "density",          # Fond
+    "segmentation",     # Couleurs par type
+    "contours",         # Bordures
+    "voronoi",          # Tessellation
+    "uncertainty",      # Zones incertaines
+    "hotspots",         # Clusters
+    "chromatin",        # Hétérogénéité
+    "mitoses",          # Candidats
+    "anomalies",        # Dernier = plus visible
+]
+```
 
 ---
 

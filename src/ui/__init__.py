@@ -7,7 +7,15 @@ du moteur IA de segmentation cellulaire.
 Note: Ceci est un outil R&D, pas une IHM clinique.
 """
 
-from .inference_engine import CellVitEngine, AnalysisResult
+from .inference_engine import CellVitEngine, AnalysisResult, ORGAN_CHOICES
+from .organ_config import (
+    ORGANS,
+    ORGAN_TO_FAMILY,
+    get_organ_choices,
+    get_model_for_organ,
+    get_family_for_organ,
+    organ_has_dedicated_model,
+)
 from .visualizations import (
     create_segmentation_overlay,
     create_contour_overlay,
@@ -40,8 +48,18 @@ from .export import (
 )
 
 __all__ = [
+    # Core
     'CellVitEngine',
     'AnalysisResult',
+    # Organ config
+    'ORGAN_CHOICES',
+    'ORGANS',
+    'ORGAN_TO_FAMILY',
+    'get_organ_choices',
+    'get_model_for_organ',
+    'get_family_for_organ',
+    'organ_has_dedicated_model',
+    # Visualizations
     'create_segmentation_overlay',
     'create_contour_overlay',
     'create_uncertainty_map',
