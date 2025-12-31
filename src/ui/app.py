@@ -312,12 +312,6 @@ def create_ui():
 
     # CSS pour l'effet loupe
     custom_css = """
-    /* Container pour les images avec effet loupe */
-    .loupe-container {
-        position: relative;
-        overflow: hidden;
-    }
-
     /* Loupe (lentille de zoom) */
     .loupe-lens {
         position: absolute;
@@ -337,45 +331,45 @@ def create_ui():
     }
     """
 
-    # JavaScript pour l'effet loupe
-    custom_js = """
-    function initLoupe() {
-        // Attendre que le DOM soit prêt
-        const checkImages = setInterval(() => {
-            // Trouver toutes les images de segmentation (output)
-            const imageContainers = document.querySelectorAll('.gradio-image img');
+    # JavaScript pour l'effet loupe (sera injecté via gr.HTML)
+    loupe_script = """
+    <script>
+    (function() {
+        function initLoupe() {
+            // Trouver toutes les images
+            const images = document.querySelectorAll('img');
 
-            imageContainers.forEach((img, index) => {
+            images.forEach((img) => {
                 // Éviter de ré-initialiser
-                if (img.dataset.loupeInit) return;
+                if (img.dataset.loupeInit === 'true') return;
                 img.dataset.loupeInit = 'true';
 
-                const container = img.closest('.gradio-image');
+                // Trouver le container parent
+                const container = img.parentElement;
                 if (!container) return;
 
                 // Créer la lentille
-                let lens = container.querySelector('.loupe-lens');
-                if (!lens) {
-                    lens = document.createElement('div');
-                    lens.className = 'loupe-lens';
-                    container.style.position = 'relative';
-                    container.appendChild(lens);
-                }
+                let lens = document.createElement('div');
+                lens.className = 'loupe-lens';
+                container.style.position = 'relative';
+                container.style.overflow = 'hidden';
+                container.appendChild(lens);
 
                 const zoomFactor = 2.5;
                 const lensSize = 150;
 
                 // Événements souris
-                img.addEventListener('mouseenter', (e) => {
+                img.addEventListener('mouseenter', function(e) {
                     lens.classList.add('active');
-                    updateLensBackground();
+                    lens.style.backgroundImage = 'url(' + img.src + ')';
+                    lens.style.backgroundSize = (img.width * zoomFactor) + 'px ' + (img.height * zoomFactor) + 'px';
                 });
 
-                img.addEventListener('mouseleave', () => {
+                img.addEventListener('mouseleave', function() {
                     lens.classList.remove('active');
                 });
 
-                img.addEventListener('mousemove', (e) => {
+                img.addEventListener('mousemove', function(e) {
                     if (!lens.classList.contains('active')) return;
 
                     const rect = img.getBoundingClientRect();
@@ -383,65 +377,33 @@ def create_ui():
                     const y = e.clientY - rect.top;
 
                     // Position de la lentille (centrée sur le curseur)
-                    const lensX = x - lensSize / 2;
-                    const lensY = y - lensSize / 2;
-                    lens.style.left = lensX + 'px';
-                    lens.style.top = lensY + 'px';
+                    lens.style.left = (x - lensSize / 2) + 'px';
+                    lens.style.top = (y - lensSize / 2) + 'px';
 
                     // Position du background (zoom)
                     const bgX = -x * zoomFactor + lensSize / 2;
                     const bgY = -y * zoomFactor + lensSize / 2;
                     lens.style.backgroundPosition = bgX + 'px ' + bgY + 'px';
                 });
-
-                function updateLensBackground() {
-                    const imgWidth = img.naturalWidth || img.width;
-                    const imgHeight = img.naturalHeight || img.height;
-                    const displayWidth = img.width;
-                    const displayHeight = img.height;
-
-                    // Calculer le ratio d'affichage
-                    const scaleX = displayWidth / imgWidth;
-                    const scaleY = displayHeight / imgHeight;
-
-                    lens.style.backgroundImage = `url('${img.src}')`;
-                    lens.style.backgroundSize = `${displayWidth * zoomFactor}px ${displayHeight * zoomFactor}px`;
-                }
-
-                // Observer les changements d'image
-                const observer = new MutationObserver(() => {
-                    if (lens.classList.contains('active')) {
-                        updateLensBackground();
-                    }
-                });
-                observer.observe(img, { attributes: true, attributeFilter: ['src'] });
             });
-        }, 500);
+        }
 
-        // Arrêter après 30 secondes
-        setTimeout(() => clearInterval(checkImages), 30000);
-    }
+        // Initialiser périodiquement pour capturer les nouvelles images
+        setInterval(initLoupe, 1000);
 
-    // Initialiser au chargement
-    if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', initLoupe);
-    } else {
+        // Initialiser immédiatement
         initLoupe();
-    }
-
-    // Réinitialiser après les mises à jour Gradio
-    const gradioApp = document.querySelector('gradio-app');
-    if (gradioApp) {
-        const observer = new MutationObserver(initLoupe);
-        observer.observe(gradioApp, { childList: true, subtree: true });
-    }
+    })();
+    </script>
     """
 
     with gr.Blocks(
         title="CellViT-Optimus R&D Cockpit",
         css=custom_css,
-        js=custom_js,
     ) as app:
+
+        # Injection du script loupe
+        gr.HTML(loupe_script)
 
         # Header
         gr.Markdown("# CellViT-Optimus — R&D Cockpit")
