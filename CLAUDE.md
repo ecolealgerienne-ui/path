@@ -725,6 +725,91 @@ local_params = param_predictor(patch_features)  # → beta, min_size par patch
 > Certains samples avec AJI < 0.50 pourraient avoir un staining H&E défaillant qui
 > "trompe" l'extracteur Ruifrok. Vérifier avant d'investir en R&D avancée.
 
+### Pistes Exploratoires (Risque Variable)
+
+#### Piste 6: Extraction H-Channel Adaptative (Macenko Dynamique)
+
+> **⚠️ ATTENTION: CONTRADICTION AVEC RÉSULTATS V13**
+>
+> Cette piste **contredit** les résultats documentés: Macenko cause **-4.3% AJI** vs Raw.
+> Le conflit Ruifrok/Macenko est établi. Explorer avec précaution.
+
+**Concept:** Estimer les vecteurs de densité optique (OD) par patch au lieu de vecteurs Ruifrok fixes.
+
+| Aspect | Évaluation |
+|--------|------------|
+| Faisabilité | Moyenne |
+| Impact | Incertain |
+| **Risque** | **ÉLEVÉ** — Macenko déplace Éosine vers vecteur H → "fantômes" cytoplasme |
+| Statut | ❌ Non recommandé sans investigation approfondie |
+
+#### Piste 7: Exploitation des Register Tokens (H-Optimus-0)
+
+**Concept:** Utiliser les 4 register tokens (features[:, 1:5, :]) actuellement ignorés pour pondérer β dynamiquement.
+
+```python
+# Register tokens capturent structure globale / type de stroma
+register_tokens = features[:, 1:5, :]  # (B, 4, 1536)
+
+# Si stroma fibreux dense détecté → augmente β
+beta_modifier = stroma_classifier(register_tokens)
+beta_final = beta_base * beta_modifier
+```
+
+| Aspect | Évaluation |
+|--------|------------|
+| Faisabilité | Moyenne |
+| Impact | Moyen |
+| Avantage | Tokens déjà disponibles, pas de coût d'extraction supplémentaire |
+| Limitation | Nécessite recherche sur ce que H-Optimus-0 encode dans ces tokens |
+
+#### Piste 8: FPN Chimique Multispectrale (CLAHE/LBP)
+
+**Concept:** Injecter des canaux de texture (CLAHE, LBP) en plus du canal H dans les couches hautes de la FPN.
+
+```python
+# Injection multi-canal dans FPN
+h_channel = ruifrok_extract(image)      # Canal Hématoxyline
+clahe_channel = apply_clahe(image)       # Contraste local adaptatif
+lbp_channel = compute_lbp(image)         # Texture Local Binary Pattern
+
+fpn_input = concat([h_channel, clahe_channel, lbp_channel])
+```
+
+| Aspect | Évaluation |
+|--------|------------|
+| Faisabilité | Basse |
+| Impact | Moyen-Haut |
+| Limitation | Requiert modification architecture + réentraînement complet |
+| Cas d'usage | Tissus haute hétérogénéité (Epidermal, Grade III) |
+
+#### Piste 9: Watershed Itératif par Densité Nucléaire ⭐
+
+**Concept:** Deux passes — estimer densité locale, puis ajuster min_distance.
+
+```python
+# Passe 1: Segmentation rapide → estimation densité
+quick_seg = watershed(np_pred, hv_pred, min_distance=3)
+density = count_nuclei(quick_seg) / area_mm2
+
+# Passe 2: Ajustement local
+if density > 2500:  # Amas dense (noyaux/mm²)
+    min_distance = 2
+elif density < 1000:  # Zone éparse
+    min_distance = 5
+else:
+    min_distance = 3
+
+final_seg = watershed(np_pred, hv_pred, min_distance=min_distance)
+```
+
+| Aspect | Évaluation |
+|--------|------------|
+| Faisabilité | **Haute** |
+| Impact | **Haut** |
+| Avantage | Implémentable sans réentraînement. Critère densité = métrique pathologique standard. |
+| Complémentaire | Combine bien avec Piste 4 (Z-Aware) |
+
 ### Production: Avantage Compétitif
 
 > **⚠️ RAPPEL CRITIQUE (2025-12-25):**
