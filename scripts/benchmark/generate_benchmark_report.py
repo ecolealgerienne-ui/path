@@ -788,8 +788,11 @@ def main():
     # ==========================================================================
     output_dir = args.output_dir / family
     images_output_dir = output_dir / "images"
+    raw_images_dir = output_dir / "images" / "raw"
     images_output_dir.mkdir(parents=True, exist_ok=True)
+    raw_images_dir.mkdir(parents=True, exist_ok=True)
     print(f"\n  Output dir: {output_dir}")
+    print(f"  Raw images: {raw_images_dir}")
 
     # ==========================================================================
     # 5. GÉNÉRER LES COMPARAISONS
@@ -866,13 +869,18 @@ def main():
             image, gt_overlay, pred_overlay, diff_overlay, sample_info
         )
 
-        # === SAUVEGARDER L'IMAGE ===
+        # === SAUVEGARDER L'IMAGE COMPARISON ===
         image_filename = f"{organ}_{idx:04d}_comparison.png"
         image_path = images_output_dir / image_filename
         cv2.imwrite(str(image_path), cv2.cvtColor(comparison_img, cv2.COLOR_RGB2BGR))
 
+        # === SAUVEGARDER L'IMAGE ORIGINALE (pour IHM) ===
+        raw_filename = f"{organ}_{idx:04d}.png"
+        cv2.imwrite(str(raw_images_dir / raw_filename), cv2.cvtColor(image, cv2.COLOR_RGB2BGR))
+
         # Ajouter les données pour le rapport
         sample_info['image_filename'] = image_filename
+        sample_info['raw_image'] = f"raw/{raw_filename}"
         samples_data.append(sample_info)
 
         if args.test:
