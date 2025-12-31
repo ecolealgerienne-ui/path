@@ -32,8 +32,16 @@ from src.evaluation import run_inference, evaluate_batch_with_params
 from src.postprocessing import hv_guided_watershed  # Pour sanity check seulement
 
 
-def load_model_and_data(checkpoint_path: str, family: str, device: str = "cuda", data_prefix: str = None):
-    """Load model and validation data - use checkpoint metadata for hybrid mode."""
+def load_model_and_data(checkpoint_path: str, family: str, device: str = "cuda", organ: str = None):
+    """Load model and validation data - use checkpoint metadata for hybrid mode.
+
+    Args:
+        checkpoint_path: Path to model checkpoint
+        family: Family name (respiratory, digestive, etc.)
+        device: Device to use
+        organ: Optional organ filter. If specified, only samples from this organ are returned.
+               Uses dynamic filtering from family data (no regeneration needed).
+    """
 
     # Load checkpoint
     checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
@@ -67,24 +75,64 @@ def load_model_and_data(checkpoint_path: str, family: str, device: str = "cuda",
     elif use_hybrid:
         print(f"  ✅ Mode HYBRID activé: injection H-channel via RuifrokExtractor")
 
-    # Load validation data (utilise data_prefix si spécifié)
-    prefix = data_prefix if data_prefix else family
+    # Load validation data (always from family file)
     data_dir = Path("data/family_data_v13_smart_crops")
-    val_file = data_dir / f"{prefix}_val_v13_smart_crops.npz"
+    val_file = data_dir / f"{family}_val_v13_smart_crops.npz"
 
     if not val_file.exists():
         raise FileNotFoundError(f"Validation data not found: {val_file}")
 
-    val_data = np.load(val_file, allow_pickle=True)
+    val_data_raw = np.load(val_file, allow_pickle=True)
 
-    # Load features (utilise prefix)
+    # Load features (always from family file)
     features_dir = Path("data/cache/family_data")
-    rgb_features_file = features_dir / f"{prefix}_rgb_features_v13_smart_crops_val.npz"
+    rgb_features_file = features_dir / f"{family}_rgb_features_v13_smart_crops_val.npz"
 
     if not rgb_features_file.exists():
         raise FileNotFoundError(f"RGB features not found: {rgb_features_file}")
 
-    rgb_features = np.load(rgb_features_file, allow_pickle=True)['features']
+    rgb_features_raw = np.load(rgb_features_file, allow_pickle=True)['features']
+
+    # =========================================================================
+    # FILTRAGE DYNAMIQUE PAR ORGANE (sans régénération des données)
+    # =========================================================================
+    if organ:
+        organ_names = val_data_raw.get('organ_names', None)
+        if organ_names is None:
+            raise ValueError(f"organ_names not found in {val_file}. Regenerate data with latest prepare_v13_smart_crops.py")
+
+        # Normaliser les noms (gérer bytes vs str)
+        organ_names = np.array([
+            name.decode('utf-8') if isinstance(name, bytes) else name
+            for name in organ_names
+        ])
+
+        # Créer le masque de filtre
+        organ_mask = organ_names == organ
+        n_organ = organ_mask.sum()
+
+        if n_organ == 0:
+            available_organs = np.unique(organ_names)
+            raise ValueError(f"No samples found for organ '{organ}'. Available: {available_organs}")
+
+        print(f"  🔬 Filtrage organe: {organ} → {n_organ}/{len(organ_names)} samples")
+
+        # Appliquer le masque sur toutes les données
+        val_data = {
+            'images': val_data_raw['images'][organ_mask],
+            'inst_maps': val_data_raw['inst_maps'][organ_mask],
+            'organ_names': organ_names[organ_mask],
+        }
+        # Copier les autres clés si présentes
+        for key in ['hv_targets', 'nt_targets', 'source_image_ids']:
+            if key in val_data_raw.files:
+                val_data[key] = val_data_raw[key][organ_mask]
+
+        rgb_features = rgb_features_raw[organ_mask]
+    else:
+        # Mode famille: utiliser toutes les données
+        val_data = val_data_raw
+        rgb_features = rgb_features_raw
 
     return model, val_data, rgb_features, use_hybrid
 
@@ -217,7 +265,7 @@ def main():
     parser.add_argument("--checkpoint", type=str, required=True, help="Path to model checkpoint")
     parser.add_argument("--family", type=str, default="epidermal", help="Family to evaluate")
     parser.add_argument("--organ", type=str, default=None,
-                        help="Specific organ (optional). If specified, loads {organ}_val.npz instead of {family}_val.npz")
+                        help="Specific organ (optional). Dynamic filtering from family data (no regeneration needed). Ex: Lung, Colon, Breast")
     parser.add_argument("--n_samples", type=int, default=50, help="Number of samples to evaluate")
     parser.add_argument("--device", type=str, default="cuda", help="Device to use")
     parser.add_argument("--output_dir", type=str, default="results/watershed_optimization",
@@ -230,16 +278,13 @@ def main():
         print("CUDA not available, using CPU")
         args.device = "cpu"
 
-    # Préfixe pour les fichiers de données (organe ou famille)
-    data_prefix = args.organ.lower() if args.organ else args.family
-
-    # Load model and data
+    # Load model and data (with optional organ filter - dynamic, no regeneration needed)
     print(f"\nLoading model from: {args.checkpoint}")
+    print(f"  Family: {args.family}")
     if args.organ:
-        print(f"  Organ filter: {args.organ}")
-        print(f"  Data prefix: {data_prefix}")
+        print(f"  Organ filter: {args.organ} (dynamic filtering)")
     model, val_data, rgb_features, use_hybrid = load_model_and_data(
-        args.checkpoint, args.family, args.device, data_prefix=data_prefix
+        args.checkpoint, args.family, args.device, organ=args.organ
     )
     print(f"Model loaded. Hybrid mode: {use_hybrid}")
     print(f"Validation samples: {len(val_data['images'])}")
@@ -296,11 +341,14 @@ def main():
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    # Nom du fichier: organe si spécifié, sinon famille
+    output_prefix = args.organ.lower() if args.organ else args.family
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    results_file = output_dir / f"watershed_optimization_{data_prefix}_{timestamp}.json"
+    results_file = output_dir / f"watershed_optimization_{output_prefix}_{timestamp}.json"
 
     output_data = {
         'family': args.family,
+        'organ': args.organ,  # None si mode famille
         'n_samples': args.n_samples,
         'best_params': best_params,
         'best_aji': results_sorted[0]['aji_mean'],
