@@ -148,7 +148,7 @@ def main():
         "--organ",
         type=str,
         default=None,
-        help="Specific organ (optional). If specified, loads {organ}_val.npz instead of {family}_val.npz"
+        help="Specific organ (optional). Dynamic filtering from family data (no regeneration needed). Ex: Lung, Colon, Breast"
     )
     parser.add_argument(
         "--n_samples",
@@ -216,9 +216,6 @@ def main():
     )
     args = parser.parse_args()
 
-    # Préfixe pour les fichiers de données (organe ou famille)
-    data_prefix = args.organ.lower() if args.organ else args.family
-
     device = torch.device(args.device)
     n_classes = 5
 
@@ -237,8 +234,7 @@ def main():
     print(f"  FPN Chimique: {args.use_fpn_chimique} (multi-scale H @ 16,32,64,112,224)")
     print(f"  Device: {args.device}")
     if args.organ:
-        print(f"  Organ filter: {args.organ}")
-        print(f"  Data prefix: {data_prefix}")
+        print(f"  Organ filter: {args.organ} (dynamic filtering)")
     if args.diagnose_outliers:
         print(f"  Outlier diagnosis: ENABLED (threshold={args.outlier_threshold})")
 
@@ -294,49 +290,88 @@ def main():
     print("LOADING VALIDATION DATA")
     print("=" * 80)
 
-    val_data_path = Path(f"data/family_data_v13_smart_crops/{data_prefix}_val_v13_smart_crops.npz")
+    # Toujours charger depuis le fichier famille
+    val_data_path = Path(f"data/family_data_v13_smart_crops/{args.family}_val_v13_smart_crops.npz")
     if not val_data_path.exists():
         print(f"❌ ERROR: {val_data_path} not found")
         print(f"\nRun first:")
-        if args.organ:
-            print(f"  python scripts/preprocessing/prepare_v13_smart_crops.py --family {args.family} --organ {args.organ}")
-        else:
-            print(f"  python scripts/preprocessing/prepare_v13_smart_crops.py --family {args.family}")
+        print(f"  python scripts/preprocessing/prepare_v13_smart_crops.py --family {args.family}")
         return 1
 
     print(f"Loading {val_data_path.name}...")
-    val_data = np.load(val_data_path)
+    val_data_raw = np.load(val_data_path, allow_pickle=True)
 
-    np_targets = val_data['np_targets']  # (N_val, 224, 224)
-    hv_targets = val_data['hv_targets']  # (N_val, 2, 224, 224)
-    inst_maps = val_data['inst_maps']  # ✅ (N_val, 224, 224) int32 - VRAIES instances!
-
-    # Images RGB pour mode hybride (injection H-channel)
-    if args.use_hybrid:
-        if 'images' in val_data:
-            all_images = val_data['images']  # (N_val, 224, 224, 3) uint8
-            print(f"  ✅ Images RGB chargées: shape {all_images.shape}, dtype {all_images.dtype}")
-        else:
-            print(f"❌ ERROR: Mode hybride activé mais 'images' non trouvées dans {val_data_path}")
-            print(f"  Régénérez les données avec prepare_v13_smart_crops.py")
-            return 1
-    else:
-        all_images = None
-
-    # Load PRE-EXTRACTED features (same as training!)
-    features_path = Path(f"data/cache/family_data/{data_prefix}_rgb_features_v13_smart_crops_val.npz")
+    # Load PRE-EXTRACTED features (always from family file)
+    features_path = Path(f"data/cache/family_data/{args.family}_rgb_features_v13_smart_crops_val.npz")
     if not features_path.exists():
         print(f"❌ ERROR: {features_path} not found")
         print(f"\nRun first:")
-        if args.organ:
-            print(f"  python scripts/preprocessing/extract_features_v13_smart_crops.py --family {args.family} --organ {args.organ} --split val")
-        else:
-            print(f"  python scripts/preprocessing/extract_features_v13_smart_crops.py --family {args.family} --split val")
+        print(f"  python scripts/preprocessing/extract_features_v13_smart_crops.py --family {args.family} --split val")
         return 1
 
     print(f"Loading {features_path.name}...")
     features_data = np.load(features_path)
-    all_features = features_data['features']  # (N_val, 261, 1536)
+    all_features_raw = features_data['features']  # (N_val, 261, 1536)
+
+    # =========================================================================
+    # FILTRAGE DYNAMIQUE PAR ORGANE (sans régénération des données)
+    # =========================================================================
+    if args.organ:
+        organ_names = val_data_raw.get('organ_names', None)
+        if organ_names is None:
+            print(f"❌ ERROR: organ_names not found in {val_data_path}")
+            print(f"  Regenerate data with latest prepare_v13_smart_crops.py")
+            return 1
+
+        # Normaliser les noms (gérer bytes vs str)
+        organ_names = np.array([
+            name.decode('utf-8') if isinstance(name, bytes) else name
+            for name in organ_names
+        ])
+
+        # Créer le masque de filtre
+        organ_mask = organ_names == args.organ
+        n_organ = organ_mask.sum()
+
+        if n_organ == 0:
+            available_organs = np.unique(organ_names)
+            print(f"❌ ERROR: No samples found for organ '{args.organ}'")
+            print(f"  Available organs in {args.family}: {list(available_organs)}")
+            return 1
+
+        print(f"  🔬 Filtrage organe: {args.organ} → {n_organ}/{len(organ_names)} samples")
+
+        # Appliquer le masque
+        np_targets = val_data_raw['np_targets'][organ_mask]
+        hv_targets = val_data_raw['hv_targets'][organ_mask]
+        inst_maps = val_data_raw['inst_maps'][organ_mask]
+        all_features = all_features_raw[organ_mask]
+
+        if args.use_hybrid:
+            if 'images' in val_data_raw.files:
+                all_images = val_data_raw['images'][organ_mask]
+                print(f"  ✅ Images RGB filtrées: shape {all_images.shape}")
+            else:
+                print(f"❌ ERROR: Mode hybride activé mais 'images' non trouvées")
+                return 1
+        else:
+            all_images = None
+    else:
+        # Mode famille: utiliser toutes les données
+        np_targets = val_data_raw['np_targets']
+        hv_targets = val_data_raw['hv_targets']
+        inst_maps = val_data_raw['inst_maps']
+        all_features = all_features_raw
+
+        if args.use_hybrid:
+            if 'images' in val_data_raw.files:
+                all_images = val_data_raw['images']
+                print(f"  ✅ Images RGB chargées: shape {all_images.shape}, dtype {all_images.dtype}")
+            else:
+                print(f"❌ ERROR: Mode hybride activé mais 'images' non trouvées dans {val_data_path}")
+                return 1
+        else:
+            all_images = None
 
     n_total = len(all_features)
     n_to_eval = min(args.n_samples, n_total)
@@ -621,8 +656,10 @@ def main():
     results_dir = Path("results/v13_smart_crops")
     results_dir.mkdir(parents=True, exist_ok=True)
 
+    # Nom du fichier: organe si spécifié, sinon famille
+    output_prefix = args.organ.lower() if args.organ else args.family
     suffix = "_hybrid" if args.use_hybrid else ""
-    results_file = results_dir / f"{data_prefix}{suffix}_aji_evaluation_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+    results_file = results_dir / f"{output_prefix}{suffix}_aji_evaluation_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
     with open(results_file, 'w') as f:
         json.dump(results, f, indent=2)
 
