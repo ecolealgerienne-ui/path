@@ -302,6 +302,16 @@ def main():
     parser.add_argument("--output_dir", type=str, default="results/watershed_optimization",
                         help="Output directory for results")
 
+    # Custom parameter ranges for Phase 2 refinement
+    parser.add_argument("--beta_range", type=str, default=None,
+                        help="Custom beta values (comma-separated). Ex: '1.0,1.5,2.0'")
+    parser.add_argument("--min_size_range", type=str, default=None,
+                        help="Custom min_size values (comma-separated). Ex: '35,40,45'")
+    parser.add_argument("--np_threshold_range", type=str, default=None,
+                        help="Custom np_threshold values (comma-separated). Ex: '0.40,0.45,0.50'")
+    parser.add_argument("--min_distance_range", type=str, default=None,
+                        help="Custom min_distance values (comma-separated). Ex: '3,4,5'")
+
     args = parser.parse_args()
 
     # Check CUDA
@@ -330,8 +340,25 @@ def main():
     # Get GT instances
     gt_instances = list(val_data['inst_maps'][:len(predictions)])
 
+    # Parse custom parameter ranges (for Phase 2 refinement)
+    beta_range = [float(x) for x in args.beta_range.split(',')] if args.beta_range else None
+    min_size_range = [int(x) for x in args.min_size_range.split(',')] if args.min_size_range else None
+    np_threshold_range = [float(x) for x in args.np_threshold_range.split(',')] if args.np_threshold_range else None
+    min_distance_range = [int(x) for x in args.min_distance_range.split(',')] if args.min_distance_range else None
+
+    # Build kwargs for grid_search (only override if custom range provided)
+    grid_kwargs = {}
+    if beta_range:
+        grid_kwargs['beta_range'] = beta_range
+    if min_size_range:
+        grid_kwargs['min_size_range'] = min_size_range
+    if np_threshold_range:
+        grid_kwargs['np_threshold_range'] = np_threshold_range
+    if min_distance_range:
+        grid_kwargs['min_distance_range'] = min_distance_range
+
     # Run grid search using shared evaluation module
-    best_params, results = grid_search(predictions, gt_instances)
+    best_params, results = grid_search(predictions, gt_instances, **grid_kwargs)
 
     # Sort results by AJI
     results_sorted = sorted(results, key=lambda x: x['aji_mean'], reverse=True)
