@@ -429,7 +429,80 @@ def main():
     print(f"  --min_size {best_params['min_size']}")
     print(f"  --np_threshold {best_params['np_threshold']}")
     print(f"  --min_distance {best_params['min_distance']}")
-    print(f"{'='*80}\n")
+    print(f"{'='*80}")
+
+    # =========================================================================
+    # PHASE 2 COMMAND GENERATION (narrowed ranges around best params)
+    # =========================================================================
+    # Only suggest Phase 2 if we're using wide ranges (no custom ranges specified)
+    if not any([args.beta_range, args.min_size_range, args.np_threshold_range, args.min_distance_range]):
+        print(f"\n{'='*80}")
+        print("🔬 PHASE 2: REFINEMENT COMMAND")
+        print(f"{'='*80}")
+        print("Run with more samples and narrowed ranges around best parameters:")
+        print()
+
+        # Generate narrowed ranges (±1 step around best)
+        best_beta = best_params['beta']
+        best_min_size = best_params['min_size']
+        best_np_thr = best_params['np_threshold']
+        best_min_dist = best_params['min_distance']
+
+        # Narrowed ranges with bounds
+        beta_narrow = [max(0.5, best_beta - 0.5), best_beta, min(3.0, best_beta + 0.5)]
+        min_size_narrow = [max(10, best_min_size - 10), best_min_size, min(80, best_min_size + 10)]
+        np_thr_narrow = [max(0.25, best_np_thr - 0.05), best_np_thr, min(0.55, best_np_thr + 0.05)]
+        min_dist_narrow = [max(1, best_min_dist - 1), best_min_dist, min(7, best_min_dist + 1)]
+
+        # Remove duplicates and sort
+        beta_narrow = sorted(list(set(beta_narrow)))
+        min_size_narrow = sorted(list(set(min_size_narrow)))
+        np_thr_narrow = sorted(list(set(np_thr_narrow)))
+        min_dist_narrow = sorted(list(set(min_dist_narrow)))
+
+        # Build command
+        cmd_parts = [
+            "python scripts/evaluation/optimize_watershed_aji.py",
+            f"    --checkpoint {args.checkpoint}",
+            f"    --family {args.family}",
+        ]
+        if args.organ:
+            cmd_parts.append(f"    --organ {args.organ}")
+        cmd_parts.extend([
+            "    --n_samples 100",
+            f"    --batch_size {args.batch_size}",
+            f"    --beta_range \"{','.join(f'{v:.1f}' for v in beta_narrow)}\"",
+            f"    --min_size_range \"{','.join(str(v) for v in min_size_narrow)}\"",
+            f"    --np_threshold_range \"{','.join(f'{v:.2f}' for v in np_thr_narrow)}\"",
+            f"    --min_distance_range \"{','.join(str(v) for v in min_dist_narrow)}\""
+        ])
+
+        print(" \\\n".join(cmd_parts))
+        n_configs = len(beta_narrow) * len(min_size_narrow) * len(np_thr_narrow) * len(min_dist_narrow)
+        print(f"\n📊 Phase 2: {n_configs} configurations (vs 400 in Phase 1)")
+        print(f"{'='*80}\n")
+    else:
+        # Phase 2 already running - just show test command
+        print(f"\n{'='*80}")
+        print("✅ FINAL TEST COMMAND")
+        print(f"{'='*80}")
+        cmd_parts = [
+            "python scripts/evaluation/test_v13_smart_crops_aji.py",
+            f"    --checkpoint {args.checkpoint}",
+            f"    --family {args.family}",
+        ]
+        if args.organ:
+            cmd_parts.append(f"    --organ {args.organ}")
+        cmd_parts.extend([
+            "    --n_samples 100",
+            "    --use_hybrid --use_fpn_chimique",
+            f"    --beta {best_params['beta']}",
+            f"    --min_size {best_params['min_size']}",
+            f"    --np_threshold {best_params['np_threshold']}",
+            f"    --min_distance {best_params['min_distance']}"
+        ])
+        print(" \\\n".join(cmd_parts))
+        print(f"{'='*80}\n")
 
 
 if __name__ == "__main__":
