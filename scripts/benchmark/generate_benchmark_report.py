@@ -108,6 +108,50 @@ def filter_samples_with_min_types(
     return valid_indices
 
 
+def select_balanced_samples(
+    valid_indices: List[int],
+    organ_names: np.ndarray,
+    n_samples: int
+) -> List[int]:
+    """
+    Sélectionne les samples de manière équilibrée entre les organes.
+
+    Args:
+        valid_indices: Indices des samples valides (≥2 types)
+        organ_names: Noms des organes pour chaque sample
+        n_samples: Nombre total de samples souhaité
+
+    Returns:
+        Liste des indices sélectionnés (équilibrés par organe)
+    """
+    # Grouper les indices par organe
+    indices_by_organ = {}
+    for idx in valid_indices:
+        organ = str(organ_names[idx])
+        if organ not in indices_by_organ:
+            indices_by_organ[organ] = []
+        indices_by_organ[organ].append(idx)
+
+    organs = list(indices_by_organ.keys())
+    n_organs = len(organs)
+
+    if n_organs == 0:
+        return []
+
+    # Calculer le nombre de samples par organe
+    samples_per_organ = n_samples // n_organs
+    remainder = n_samples % n_organs
+
+    selected = []
+    for i, organ in enumerate(sorted(organs)):
+        # Ajouter 1 sample supplémentaire aux premiers organes pour le reste
+        n_to_select = samples_per_organ + (1 if i < remainder else 0)
+        available = indices_by_organ[organ]
+        selected.extend(available[:n_to_select])
+
+    return selected
+
+
 # =============================================================================
 # FONCTIONS DE VISUALISATION (NOUVEAU)
 # =============================================================================
@@ -713,18 +757,26 @@ def main():
     print(f"  → Organs: {np.unique(organ_names)}")
 
     # ==========================================================================
-    # 2. FILTRER LES SAMPLES (≥ min_types)
+    # 2. FILTRER ET ÉQUILIBRER LES SAMPLES
     # ==========================================================================
     print("\n" + "=" * 80)
-    print(f"2. FILTERING SAMPLES (≥ {args.min_types} cell types)")
+    print(f"2. FILTERING SAMPLES (≥ {args.min_types} cell types, balanced by organ)")
     print("=" * 80)
 
     valid_indices = filter_samples_with_min_types(nt_targets, inst_maps, args.min_types)
     print(f"  → {len(valid_indices)} samples have ≥ {args.min_types} types")
 
-    # Sélectionner les premiers n_samples
-    selected_indices = valid_indices[:args.n_samples]
-    print(f"  → Selected {len(selected_indices)} samples for benchmark")
+    # Sélectionner de manière équilibrée entre les organes
+    selected_indices = select_balanced_samples(valid_indices, organ_names, args.n_samples)
+
+    # Afficher la répartition par organe
+    organ_counts = {}
+    for idx in selected_indices:
+        organ = str(organ_names[idx])
+        organ_counts[organ] = organ_counts.get(organ, 0) + 1
+    print(f"  → Selected {len(selected_indices)} samples (balanced):")
+    for organ, count in sorted(organ_counts.items()):
+        print(f"      • {organ}: {count}")
 
     if len(selected_indices) == 0:
         print("❌ No valid samples found!")
