@@ -56,6 +56,9 @@ from src.models.hovernet_decoder import HoVerNetDecoder
 from src.models.loader import ModelLoader
 from src.preprocessing import preprocess_image
 
+# Import CellVitEngine pour pipeline identique à l'IHM
+from src.ui.inference_engine import CellVitEngine
+
 
 # =============================================================================
 # FONCTIONS DE FILTRAGE
@@ -754,14 +757,8 @@ def main():
     print(f"  → Images: {images.shape}, dtype={images.dtype}")
     print(f"  → Organs: {np.unique(organ_names)}")
 
-    # ==========================================================================
-    # 1b. CHARGER LE BACKBONE (extraction features live comme IHM)
-    # ==========================================================================
-    print("\n  Loading H-optimus-0 backbone (live feature extraction like IHM)...")
+    # Device string pour CellVitEngine
     device_str = str(device).split(':')[0]  # "cuda:0" → "cuda"
-    backbone = ModelLoader.load_hoptimus0(device=device_str)
-    backbone.eval()
-    print(f"  ✅ Backbone loaded on {device}")
 
     # ==========================================================================
     # 2. FILTRER ET ÉQUILIBRER LES SAMPLES
@@ -790,46 +787,27 @@ def main():
         return 1
 
     # ==========================================================================
-    # 3. CHARGER LE MODÈLE
+    # 3. CHARGER CellVitEngine (IDENTIQUE À L'IHM)
     # ==========================================================================
     print("\n" + "=" * 80)
-    print("3. LOADING MODEL")
+    print("3. LOADING CellVitEngine (same as IHM)")
     print("=" * 80)
 
-    checkpoint_path = FAMILY_CHECKPOINTS[family]
-    print(f"Checkpoint: {checkpoint_path}")
+    # Organe par défaut pour chaque famille
+    family_organs = {
+        "respiratory": "Lung",
+        "urologic": "Kidney",
+        "glandular": "Breast",
+        "epidermal": "Skin",
+        "digestive": "Colon"
+    }
+    default_organ = family_organs[family]
 
-    if not Path(checkpoint_path).exists():
-        print(f"❌ ERROR: Checkpoint not found: {checkpoint_path}")
-        return 1
-
-    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
-
-    # Détecter les flags du checkpoint
-    use_hybrid = checkpoint.get('use_hybrid', False)
-    use_fpn_chimique = checkpoint.get('use_fpn_chimique', False)
-    use_h_alpha = any('h_alphas' in k for k in checkpoint['model_state_dict'].keys())
-
-    print(f"  use_hybrid: {use_hybrid}")
-    print(f"  use_fpn_chimique: {use_fpn_chimique}")
-    print(f"  use_h_alpha: {use_h_alpha}")
-
-    model = HoVerNetDecoder(
-        embed_dim=1536,
-        n_classes=5,
-        dropout=0.1,
-        use_hybrid=use_hybrid,
-        use_fpn_chimique=use_fpn_chimique,
-        use_h_alpha=use_h_alpha
-    ).to(device)
-
-    model.load_state_dict(checkpoint['model_state_dict'])
-    model.eval()
-    print(f"  ✅ Model loaded (epoch {checkpoint.get('epoch', 'N/A')})")
-
-    # Params watershed
-    watershed_params = FAMILY_WATERSHED_PARAMS[family]
-    print(f"  Watershed params: {watershed_params}")
+    print(f"  Loading CellVitEngine (organ={default_organ})...")
+    engine = CellVitEngine(device=device_str, organ=default_organ)
+    print(f"  ✅ Engine loaded")
+    print(f"  Family: {engine.family}")
+    print(f"  Watershed params: {engine.watershed_params}")
 
     # ==========================================================================
     # 4. CRÉER LE DOSSIER DE SORTIE
@@ -851,8 +829,6 @@ def main():
 
     samples_data = []
 
-    import torchvision.transforms as T
-
     for idx in tqdm(selected_indices, desc="Processing"):
         # Données GT
         image = images[idx]                  # (224, 224, 3) uint8
@@ -860,35 +836,12 @@ def main():
         gt_type = nt_targets[idx]            # (224, 224) int64
         organ = str(organ_names[idx])
 
-        # === EXTRACTION FEATURES LIVE (identique à IHM) ===
-        # Utilise preprocess_image() comme l'IHM (src/ui/inference_engine.py ligne 512)
-        tensor_normalized = preprocess_image(image, device=device_str)
+        # === INFÉRENCE via CellVitEngine (IDENTIQUE À L'IHM) ===
+        result = engine.analyze(image, compute_morphometry=False, compute_uncertainty=False)
 
-        with torch.no_grad():
-            features = backbone.forward_features(tensor_normalized)  # (1, 261, 1536)
-
-        # Image RGB pour mode hybride
-        # CRITIQUE: Utiliser T.ToTensor() comme l'IHM (src/ui/inference_engine.py ligne 516)
-        if use_hybrid:
-            image_tensor = T.ToTensor()(image).unsqueeze(0).to(device)  # (1, 3, 224, 224) [0,1]
-        else:
-            image_tensor = None
-
-        # === INFÉRENCE (utilise run_inference existant) ===
-        np_pred, hv_pred = run_inference(model, features, image_tensor, device=str(device))
-
-        # === WATERSHED (utilise hv_guided_watershed existant) ===
-        pred_inst = hv_guided_watershed(np_pred, hv_pred, **watershed_params)
-
-        # === TYPE MAP PRÉDIT ===
-        # Extraire le type prédit par le modèle
-        with torch.no_grad():
-            outputs = model(features, images_rgb=image_tensor)
-            if isinstance(outputs, dict):
-                nt_out = outputs['nt']
-            else:
-                _, _, nt_out = outputs
-            pred_type = torch.argmax(nt_out, dim=1).cpu().numpy()[0]  # (224, 224)
+        pred_inst = result.instance_map
+        pred_type = result.type_map
+        n_pred = result.n_nuclei
 
         # === ÉVALUATION (utilise evaluate_predictions existant) ===
         eval_result = evaluate_predictions(
@@ -902,7 +855,7 @@ def main():
         gt_overlay = create_contour_overlay(image, gt_inst, gt_type, thickness=2)
         pred_overlay = create_contour_overlay(image, pred_inst, pred_type, thickness=2)
 
-        # Compter les types GT
+        # Compter les types GT et Pred
         gt_type_counts = count_types_in_sample(gt_type, gt_inst)
         pred_type_counts = count_types_in_sample(pred_type, pred_inst)
 
@@ -911,7 +864,7 @@ def main():
             'organ': organ,
             'index': idx,
             'n_gt': eval_result.n_gt,
-            'n_pred': eval_result.n_pred,
+            'n_pred': n_pred,  # Utilise le comptage de CellVitEngine
             'aji': eval_result.aji,
             'dice': eval_result.dice,
             'pq': eval_result.pq,
