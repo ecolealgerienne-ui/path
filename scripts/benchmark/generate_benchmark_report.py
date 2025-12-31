@@ -204,24 +204,22 @@ def assemble_comparison_panels(
     original: np.ndarray,
     gt_overlay: np.ndarray,
     pred_overlay: np.ndarray,
-    diff_overlay: np.ndarray,
     sample_info: Dict,
 ) -> np.ndarray:
     """
-    Assemble les 4 panels en une seule image avec légende.
+    Assemble les 3 panels en une seule image avec légende.
 
     Layout:
-        ┌──────────┬──────────┬──────────┬──────────┐
-        │ Original │    GT    │   Pred   │   Diff   │
-        └──────────┴──────────┴──────────┴──────────┘
-        │  Infos + Métriques                        │
-        └───────────────────────────────────────────┘
+        ┌──────────┬──────────┬──────────┐
+        │ Original │    GT    │   Pred   │
+        └──────────┴──────────┴──────────┘
+        │  Infos + Métriques              │
+        └─────────────────────────────────┘
 
     Args:
         original: Image H&E originale
         gt_overlay: Overlay GT avec contours colorés
         pred_overlay: Overlay Pred avec contours colorés
-        diff_overlay: Overlay des différences
         sample_info: Dict avec métriques
 
     Returns:
@@ -232,26 +230,25 @@ def assemble_comparison_panels(
     panel_h = h
 
     # Hauteur pour le texte d'info
-    info_h = 80
+    info_h = 60
 
-    # Taille totale: 4 panels + barre d'info
-    total_w = panel_w * 4
+    # Taille totale: 3 panels + barre d'info
+    total_w = panel_w * 3
     total_h = panel_h + info_h
 
     # Créer image de sortie (fond blanc)
     output = np.full((total_h, total_w, 3), 255, dtype=np.uint8)
 
-    # Placer les 4 panels
+    # Placer les 3 panels
     output[0:panel_h, 0:panel_w] = original
     output[0:panel_h, panel_w:panel_w*2] = gt_overlay
     output[0:panel_h, panel_w*2:panel_w*3] = pred_overlay
-    output[0:panel_h, panel_w*3:panel_w*4] = diff_overlay
 
     # Ajouter les titres sur chaque panel
-    titles = ["Original", "GT (PanNuke)", "Prediction", "Diff (TP/FN/FP)"]
+    titles = ["Original", "GT (PanNuke)", "Prediction"]
     for i, title in enumerate(titles):
         x = i * panel_w + 5
-        cv2.putText(output, title, (x, 15), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 0, 0), 1)
+        cv2.putText(output, title, (x, 15), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1)
 
     # Zone d'info (fond gris clair)
     output[panel_h:, :] = (240, 240, 240)
@@ -262,27 +259,13 @@ def assemble_comparison_panels(
     # Infos textuelles
     y_base = panel_h + 20
 
-    # Ligne 1: Sample info
-    info_line1 = f"{sample_info['organ']} #{sample_info['index']} | GT: {sample_info['n_gt']} nuclei | Pred: {sample_info['n_pred']} nuclei"
+    # Ligne 1: Sample info + Métriques
+    info_line1 = f"{sample_info['organ']} #{sample_info['index']} | GT: {sample_info['n_gt']} | Pred: {sample_info['n_pred']} | AJI: {sample_info['aji']:.4f} | Dice: {sample_info['dice']:.4f}"
     cv2.putText(output, info_line1, (10, y_base), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 0, 0), 1)
 
-    # Ligne 2: Métriques
-    info_line2 = f"AJI: {sample_info['aji']:.4f} | Dice: {sample_info['dice']:.4f} | PQ: {sample_info['pq']:.4f}"
-    cv2.putText(output, info_line2, (10, y_base + 20), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 0, 0), 1)
-
-    # Ligne 3: Types GT
+    # Ligne 2: Types GT
     gt_types_str = " | ".join([f"{TYPE_NAMES[t]}: {c}" for t, c in sorted(sample_info['gt_type_counts'].items())])
-    cv2.putText(output, f"GT Types: {gt_types_str}", (10, y_base + 40), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (100, 100, 100), 1)
-
-    # Légende Diff (côté droit)
-    legend_x = total_w - 200
-    cv2.putText(output, "Legende:", (legend_x, y_base), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 0), 1)
-    cv2.circle(output, (legend_x + 10, y_base + 15), 5, (50, 255, 50), -1)
-    cv2.putText(output, "TP", (legend_x + 20, y_base + 18), cv2.FONT_HERSHEY_SIMPLEX, 0.35, (0, 0, 0), 1)
-    cv2.circle(output, (legend_x + 60, y_base + 15), 5, (255, 50, 50), -1)
-    cv2.putText(output, "FN", (legend_x + 70, y_base + 18), cv2.FONT_HERSHEY_SIMPLEX, 0.35, (0, 0, 0), 1)
-    cv2.circle(output, (legend_x + 110, y_base + 15), 5, (255, 255, 50), -1)
-    cv2.putText(output, "FP", (legend_x + 120, y_base + 18), cv2.FONT_HERSHEY_SIMPLEX, 0.35, (0, 0, 0), 1)
+    cv2.putText(output, f"GT Types: {gt_types_str}", (10, y_base + 25), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (100, 100, 100), 1)
 
     return output
 
@@ -419,10 +402,10 @@ def generate_html_report(
             overflow: hidden;
             box-shadow: 0 4px 12px rgba(0,0,0,0.15);
         }}
-        .sample-card + .sample-card {{
-            margin-top: 40px;
-            padding-top: 20px;
-            border-top: 3px solid #1a5490;
+        .sample-separator {{
+            height: 3px;
+            background: linear-gradient(90deg, transparent, #1a5490, transparent);
+            margin: 40px 0;
         }}
         .sample-card img {{
             width: 100%;
@@ -601,8 +584,14 @@ def generate_html_report(
         <h2>🖼️ Détail par Échantillon</h2>
 """
 
-    for s in samples_sorted:
+    for i, s in enumerate(samples_sorted):
         sample_id = f"sample-{s['organ']}-{s['index']}"
+
+        # Ajouter séparateur entre les images (pas avant la première)
+        if i > 0:
+            html += """        <div class="sample-separator"></div>
+"""
+
         html += f"""
         <div class="sample-card" id="{sample_id}">
             <img src="{images_dir}/{s['image_filename']}" alt="{s['organ']} #{s['index']}">
@@ -846,7 +835,6 @@ def main():
         # === VISUALISATIONS (utilise create_*_overlay existants) ===
         gt_overlay = create_contour_overlay(image, gt_inst, gt_type, thickness=2)
         pred_overlay = create_contour_overlay(image, pred_inst, pred_type, thickness=2)
-        diff_overlay = create_diff_overlay(image, gt_inst, pred_inst)
 
         # Compter les types GT
         gt_type_counts = count_types_in_sample(gt_type, gt_inst)
@@ -866,7 +854,7 @@ def main():
         }
 
         comparison_img = assemble_comparison_panels(
-            image, gt_overlay, pred_overlay, diff_overlay, sample_info
+            image, gt_overlay, pred_overlay, sample_info
         )
 
         # === SAUVEGARDER L'IMAGE COMPARISON ===
