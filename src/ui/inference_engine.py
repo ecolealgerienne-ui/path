@@ -624,8 +624,14 @@ class CellVitEngine:
         # Nombre d'instances
         n_nuclei = len(np.unique(instance_map)) - 1  # Exclure background
 
-        # Type map (argmax de NT si disponible, sinon 0)
-        type_map = np.zeros_like(instance_map, dtype=np.int32)
+        # Type map: argmax de la sortie NT du modèle
+        with torch.no_grad():
+            outputs = self.hovernet(features, images_rgb=images_rgb if self._is_hybrid else None)
+            if isinstance(outputs, dict):
+                nt_out = outputs['nt']
+            else:
+                _, _, nt_out = outputs
+            type_map = torch.argmax(nt_out, dim=1).cpu().numpy()[0].astype(np.int32)  # (224, 224)
 
         # Incertitude
         uncertainty_map = None
