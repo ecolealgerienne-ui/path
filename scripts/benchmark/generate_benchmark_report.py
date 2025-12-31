@@ -14,13 +14,13 @@ Structure de sortie:
         └── metrics_{family}.csv
 
 Usage:
-    # Test avec 2 images
+    # Test avec 2 images PAR ORGANE
     python scripts/benchmark/generate_benchmark_report.py \
         --family respiratory --n_samples 2 --test
 
-    # Production: 30 images par famille
+    # Production: 5 images par organe (ex: Glandular = 5 organes × 5 = 25 images)
     python scripts/benchmark/generate_benchmark_report.py \
-        --family respiratory --n_samples 30
+        --family glandular --n_samples 5
 
 Author: CellViT-Optimus Project
 Date: 2025-12-30
@@ -116,18 +116,18 @@ def filter_samples_with_min_types(
 def select_balanced_samples(
     valid_indices: List[int],
     organ_names: np.ndarray,
-    n_samples: int
+    n_per_organ: int
 ) -> List[int]:
     """
-    Sélectionne les samples de manière équilibrée entre les organes.
+    Sélectionne n_per_organ samples pour CHAQUE organe.
 
     Args:
         valid_indices: Indices des samples valides (≥2 types)
         organ_names: Noms des organes pour chaque sample
-        n_samples: Nombre total de samples souhaité
+        n_per_organ: Nombre de samples PAR ORGANE (pas total)
 
     Returns:
-        Liste des indices sélectionnés (équilibrés par organe)
+        Liste des indices sélectionnés
     """
     # Grouper les indices par organe
     indices_by_organ = {}
@@ -138,20 +138,15 @@ def select_balanced_samples(
         indices_by_organ[organ].append(idx)
 
     organs = list(indices_by_organ.keys())
-    n_organs = len(organs)
 
-    if n_organs == 0:
+    if len(organs) == 0:
         return []
 
-    # Calculer le nombre de samples par organe
-    samples_per_organ = n_samples // n_organs
-    remainder = n_samples % n_organs
-
     selected = []
-    for i, organ in enumerate(sorted(organs)):
-        # Ajouter 1 sample supplémentaire aux premiers organes pour le reste
-        n_to_select = samples_per_organ + (1 if i < remainder else 0)
+    for organ in sorted(organs):
         available = indices_by_organ[organ]
+        # Prendre min(n_per_organ, disponibles) pour cet organe
+        n_to_select = min(n_per_organ, len(available))
         selected.extend(available[:n_to_select])
 
     return selected
@@ -692,8 +687,8 @@ def main():
     parser.add_argument(
         "--n_samples",
         type=int,
-        default=30,
-        help="Number of samples per family (default: 30)"
+        default=5,
+        help="Number of samples PER ORGAN (default: 5). Ex: 5 organs × 5 samples = 25 total"
     )
     parser.add_argument(
         "--min_types",
@@ -727,7 +722,7 @@ def main():
     print("CELLVIT-OPTIMUS BENCHMARK REPORT GENERATOR")
     print("=" * 80)
     print(f"\nFamily: {family}")
-    print(f"N samples: {args.n_samples}")
+    print(f"N samples per organ: {args.n_samples}")
     print(f"Min types in GT: {args.min_types}")
     print(f"Device: {device}")
     print(f"Output: {args.output_dir / family}/")
