@@ -59,18 +59,13 @@ from src.models.hovernet_decoder import HoVerNetDecoder
 # FONCTIONS DE FILTRAGE
 # =============================================================================
 
-def count_types_in_sample(
-    nt_target: np.ndarray,
-    inst_map: np.ndarray,
-    min_nucleus_area: int = 20  # Même seuil que MorphometryAnalyzer (IHM)
-) -> Dict[int, int]:
+def count_types_in_sample(nt_target: np.ndarray, inst_map: np.ndarray) -> Dict[int, int]:
     """
     Compte le nombre de noyaux par type dans un sample.
 
     Args:
         nt_target: Type map (H, W) avec valeurs 0-4
         inst_map: Instance map (H, W)
-        min_nucleus_area: Surface minimale en pixels (défaut: 20, même que IHM)
 
     Returns:
         Dict {type_id: count}
@@ -80,12 +75,6 @@ def count_types_in_sample(
         if inst_id == 0:
             continue
         mask = inst_map == inst_id
-        area_pixels = mask.sum()
-
-        # Filtre surface minimale (alignement avec IHM MorphometryAnalyzer)
-        if area_pixels < min_nucleus_area:
-            continue
-
         types_in_mask = nt_target[mask]
         if len(types_in_mask) > 0:
             dominant_type = int(np.bincount(types_in_mask.astype(int)).argmax())
