@@ -21,14 +21,15 @@ from src.ui.inference_engine import AnalysisResult
 # ==============================================================================
 
 CLINICAL_INTERPRETATIONS = {
-    # Pléomorphisme — Langage factuel (corrélation, pas suspicion)
+    # Pléomorphisme — Critère morphologique ISOLÉ (1/3 critères Nottingham)
+    # Note: Le grade complet requiert aussi tubules + mitoses
     "pleomorphism_3": (
-        "🔴 **Pléomorphisme sévère (3/3)** — "
-        "Critère morphologique corrélé au grade nucléaire élevé (Nottingham/Elston)"
+        "🔴 **Pléomorphisme sévère (score 3/3)** — "
+        "Critère morphologique isolé corrélé au grade nucléaire élevé"
     ),
     "pleomorphism_2": (
-        "🟡 **Pléomorphisme modéré (2/3)** — "
-        "Variation notable de taille et forme nucléaire"
+        "🟡 **Pléomorphisme modéré (score 2/3)** — "
+        "Variation notable de taille/forme nucléaire (critère isolé)"
     ),
 
     # Mitoses — Faits observés (pas "processus tumoral agressif")
@@ -125,13 +126,21 @@ def interpret_density(density: float) -> str:
 
 
 def interpret_pleomorphism(score: int) -> str:
-    """Interprète le score de pléomorphisme."""
+    """
+    Interprète le score de pléomorphisme.
+
+    Note: Le pléomorphisme nucléaire est UN des 3 critères du grade de Nottingham.
+    Le grade complet requiert aussi: formation tubulaire + index mitotique.
+    """
     interpretations = {
-        1: "Faible (compatible grade I)",
-        2: "Modéré (compatible grade II)",
-        3: "Sévère (compatible grade III)",
+        1: "Faible (score 1/3)",
+        2: "Modéré (score 2/3)",
+        3: "Sévère (score 3/3)",
     }
-    return interpretations.get(score, "Non évalué")
+    base = interpretations.get(score, "Non évalué")
+    if score in (1, 2, 3):
+        return f"{base} *— critère morphologique isolé*"
+    return base
 
 
 def interpret_mitotic_activity(n_candidates: int = 0) -> str:

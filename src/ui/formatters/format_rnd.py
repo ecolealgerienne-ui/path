@@ -125,7 +125,8 @@ def format_metrics_rnd(
 
     # Phase 3: Intelligence Spatiale
     if result.spatial_analysis:
-        score_labels = {1: "Faible", 2: "Modéré", 3: "Sévère"}
+        # Pléomorphisme = critère morphologique ISOLÉ (1/3 critères Nottingham)
+        score_labels = {1: "Faible — isolé", 2: "Modéré — isolé", 3: "Sévère — isolé"}
         score_emoji = {1: "🟢", 2: "🟡", 3: "🔴"}
 
         if result.n_nuclei < 20:
