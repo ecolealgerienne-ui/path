@@ -58,11 +58,15 @@ def export_pdf_core() -> Optional[str]:
         temp_dir = tempfile.mkdtemp()
         pdf_path = Path(temp_dir) / f"cellvit_report_{audit.analysis_id}.pdf"
 
+        # Passer l'organe sélectionné par l'utilisateur (pas OrganHead)
+        selected_organ = state.engine.organ if state.engine else None
+
         create_report_pdf(
             result=result,
             image_overlay=overlay,
             audit=audit,
             output_path=pdf_path,
+            selected_organ=selected_organ,
         )
 
         logger.info(f"PDF exported: {pdf_path}")

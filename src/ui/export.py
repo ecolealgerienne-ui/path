@@ -254,21 +254,23 @@ def create_report_pdf(
     image_overlay: np.ndarray,
     audit: Optional[AuditMetadata] = None,
     output_path: Optional[Path] = None,
+    selected_organ: Optional[str] = None,
 ) -> bytes:
     """
     Crée un rapport PDF clinique formaté.
 
-    Améliorations v2:
-    - Légende déportée pour le graphique circulaire (évite chevauchement)
-    - Espacement vertical amélioré dans les alertes
-    - Paramètres watershed dans un tableau isolé
-    - Codes couleurs pour les alertes (rouge/orange)
+    Améliorations v3:
+    - Organe SÉLECTIONNÉ affiché en primaire (pas OrganHead)
+    - OrganHead utilisé comme VALIDATION (cohérence IA)
+    - Activité mitotique au lieu d'index mitotique
+    - Note technique au lieu de params watershed
 
     Args:
         result: AnalysisResult
         image_overlay: Image avec segmentation overlay
         audit: Métadonnées d'audit
         output_path: Chemin de sortie (optionnel)
+        selected_organ: Organe sélectionné par l'utilisateur (prioritaire sur OrganHead)
 
     Returns:
         Contenu PDF en bytes
@@ -312,9 +314,21 @@ def create_report_pdf(
         for spine in id_box.spines.values():
             spine.set_color('#DEE2E6')
 
+        # Organe = sélectionné par l'utilisateur (pas OrganHead)
+        display_organ = selected_organ or result.organ_name
+
+        # Validation OrganHead (cohérence)
+        if result.organ_confidence >= 0.5:
+            if result.organ_name == display_organ:
+                validation = f"✓ Confirmé IA ({result.organ_confidence:.0%})"
+            else:
+                validation = f"⚠️ IA suggère: {result.organ_name}"
+        else:
+            validation = "ℹ️ Validation IA limitée"
+
         id_lines = [
-            f"Organe: {result.organ_name} ({result.organ_confidence:.0%})",
-            f"Famille: {result.family}",
+            f"Organe: {display_organ}",
+            f"Famille: {result.family} — {validation}",
             f"Surface: 0.01 mm² (champ limité)",
             f"Date: {datetime.now().strftime('%Y-%m-%d %H:%M')}",
         ]

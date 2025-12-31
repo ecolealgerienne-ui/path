@@ -30,34 +30,43 @@ def format_metrics_rnd(
         family: Famille du modèle
         is_dedicated: True si modèle dédié
     """
-    # Afficher le modèle utilisé
-    if is_dedicated:
-        model_info = f"### Modèle: **{organ}** ★ (dédié)"
-        family_info = f"*Famille: {family}*"
-    else:
-        model_info = f"### Modèle: {family or 'N/A'}"
-        family_info = f"*Organe sélectionné: {organ or 'N/A'}*"
+    # ===========================================================================
+    # AFFICHAGE ORGANE: L'organe sélectionné par l'utilisateur est PRIMAIRE
+    # OrganHead est utilisé comme VALIDATION (cohérence IA), pas comme source
+    # ===========================================================================
 
-    # Message contextuel pour organe non déterminé
+    # 1. Organe sélectionné (toujours affiché en premier)
     if is_dedicated:
-        organ_display = f"### Organe: **{organ}** (modèle dédié)"
-    elif result.organ_name == "Unknown" or result.organ_confidence < 0.1:
-        if result.n_nuclei < 20:
-            organ_display = "### Organe détecté (IA): *Non déterminable* (surface insuffisante)"
-        else:
-            organ_display = "### Organe détecté (IA): *Non déterminable* (contexte architectural limité)"
+        organ_display = f"### Organe: **{organ}** ★ (modèle dédié)"
+        model_info = f"*Famille: {family}*"
     else:
-        organ_display = f"### Organe détecté (IA): {result.organ_name} ({result.organ_confidence:.1%})"
+        organ_display = f"### Organe: **{organ}** (famille {family})"
+        model_info = ""
+
+    # 2. Validation OrganHead (cohérence IA)
+    if result.organ_confidence >= 0.5:
+        if result.organ_name == organ:
+            # Cohérent
+            ai_validation = f"*✓ Cohérence IA: {result.organ_name} ({result.organ_confidence:.0%})*"
+        else:
+            # Divergence - afficher l'avertissement
+            ai_validation = f"*⚠️ L'IA suggère: {result.organ_name} ({result.organ_confidence:.0%}) — vérifier le contexte*"
+    elif result.n_nuclei < 20:
+        ai_validation = "*ℹ️ Validation IA: surface insuffisante*"
+    else:
+        ai_validation = "*ℹ️ Validation IA: non déterminable*"
 
     lines = [
         organ_display,
-        model_info,
-        family_info,
+        model_info if model_info else None,
+        ai_validation,
         "",
         f"**Noyaux détectés:** {result.n_nuclei}",
         f"**Temps d'inférence:** {result.inference_time_ms:.0f} ms",
         "",
     ]
+    # Filtrer les None
+    lines = [l for l in lines if l is not None]
 
     if result.morphometry:
         m = result.morphometry

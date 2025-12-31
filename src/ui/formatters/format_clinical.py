@@ -174,24 +174,38 @@ def format_identification_clinical(
     """
     Formate l'identification de l'organe (style clinique).
 
+    L'organe SÉLECTIONNÉ par l'utilisateur est affiché en PRIMAIRE.
+    OrganHead sert de VALIDATION (cohérence), pas de source.
+
     Args:
         result: Résultat d'analyse
-        organ: Nom de l'organe sélectionné
+        organ: Nom de l'organe sélectionné par l'utilisateur
         family: Famille du modèle
         is_dedicated: True si modèle dédié
     """
-    # Afficher le modèle utilisé
+    # 1. Titre = Organe sélectionné (pas OrganHead)
     if is_dedicated:
-        model_line = f"**Modèle:** {organ} ★ (dédié)"
+        title = f"### {organ} ★"
+        model_line = f"*Modèle dédié — famille {family}*"
     else:
-        model_line = f"**Modèle:** {family} (famille)\n*Organe: {organ}*"
+        title = f"### {organ}"
+        model_line = f"*Modèle famille {family}*"
 
-    # Disclaimer surface limitée (224×224 = 0.01 mm² à 0.5 MPP)
-    surface_warning = "*⚠️ Prédiction sur champ limité (0.01 mm²)*"
+    # 2. Validation OrganHead (cohérence)
+    if result.organ_confidence >= 0.5:
+        if result.organ_name == organ:
+            validation_line = f"✓ Cohérence IA confirmée ({result.organ_confidence:.0%})"
+        else:
+            validation_line = f"⚠️ L'IA suggère {result.organ_name} ({result.organ_confidence:.0%})"
+    else:
+        validation_line = "ℹ️ Validation IA non disponible (surface limitée)"
 
-    return f"""### {result.organ_name}
-**Confiance IA:** {result.organ_confidence:.0%}
+    # 3. Disclaimer surface
+    surface_warning = "*Analyse sur champ limité (0.01 mm²)*"
+
+    return f"""{title}
 {model_line}
+{validation_line}
 {surface_warning}"""
 
 
