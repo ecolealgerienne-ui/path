@@ -274,7 +274,7 @@ def assemble_comparison_panels(
     panel_h = h
 
     # Hauteur pour le texte d'info
-    info_h = 60
+    info_h = 80
 
     # Taille totale: 3 panels + barre d'info
     total_w = panel_w * 3
@@ -301,15 +301,19 @@ def assemble_comparison_panels(
     cv2.line(output, (0, panel_h), (total_w, panel_h), (200, 200, 200), 1)
 
     # Infos textuelles
-    y_base = panel_h + 20
+    y_base = panel_h + 18
 
     # Ligne 1: Sample info + Métriques
     info_line1 = f"{sample_info['organ']} #{sample_info['index']} | GT: {sample_info['n_gt']} | Pred: {sample_info['n_pred']} | AJI: {sample_info['aji']:.4f} | Dice: {sample_info['dice']:.4f}"
-    cv2.putText(output, info_line1, (10, y_base), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 0, 0), 1)
+    cv2.putText(output, info_line1, (10, y_base), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 0), 1)
 
     # Ligne 2: Types GT
     gt_types_str = " | ".join([f"{TYPE_NAMES[t]}: {c}" for t, c in sorted(sample_info['gt_type_counts'].items())])
-    cv2.putText(output, f"GT Types: {gt_types_str}", (10, y_base + 25), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (100, 100, 100), 1)
+    cv2.putText(output, f"GT Types: {gt_types_str}", (10, y_base + 22), cv2.FONT_HERSHEY_SIMPLEX, 0.35, (100, 100, 100), 1)
+
+    # Ligne 3: Types Pred
+    pred_types_str = " | ".join([f"{TYPE_NAMES[t]}: {c}" for t, c in sorted(sample_info['pred_type_counts'].items())])
+    cv2.putText(output, f"Pred Types: {pred_types_str}", (10, y_base + 42), cv2.FONT_HERSHEY_SIMPLEX, 0.35, (100, 100, 100), 1)
 
     return output
 
