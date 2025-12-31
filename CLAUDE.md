@@ -844,6 +844,75 @@ final_seg = watershed(np_pred, hv_pred, min_distance=min_distance)
 | Avantage | Implémentable sans réentraînement. Critère densité = métrique pathologique standard. |
 | Complémentaire | Combine bien avec Piste 4 (Z-Aware) |
 
+#### Piste 10: NC-based Beta-Switch (Auto-Tuner) ⭐⭐ PRIORITAIRE
+
+**Concept:** Utiliser la branche NC (Nuclear Classification) pour switcher dynamiquement les paramètres watershed selon le contexte tissulaire.
+
+```python
+# Extraction du ratio de pixels classés "Connective" (ID 2)
+prob_map_nc = outputs['nc']
+connective_ratio = (torch.argmax(prob_map_nc, dim=1) == 2).float().mean()
+
+# Switch dynamique des hyper-paramètres
+if connective_ratio > 0.40:
+    beta = 0.5        # Tissus fibreux → priorité forme
+    min_distance = 4  # Évite sur-segmentation noyaux fusiformes
+else:
+    beta = 2.0        # Tissus épithéliaux → priorité séparation HV
+    min_distance = 2  # Agressif sur amas denses
+```
+
+| Aspect | Évaluation |
+|--------|------------|
+| Faisabilité | **Haute** |
+| Impact | **Haut** |
+| Avantage | NC déjà calculé (gratuit). Adaptation contextuelle automatique. |
+| Cas d'usage | **Uterus/Ovarian** (tissus mésenchymateux, AJI < 0.65) |
+
+### Architecture V13 Production Finale (2025-12-31)
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│              V13 PRODUCTION ARCHITECTURE FINALE                  │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                  │
+│  1. MOTEUR PHYSIQUE (Verrouillé ✅)                             │
+│     └── Extraction Ruifrok FIXE (Beer-Lambert)                  │
+│         • Vecteurs constants: [0.650, 0.704, 0.286]             │
+│         • Macenko INTERDIT (cause -4.3% AJI)                    │
+│                                                                  │
+│  2. OPTIMISATION VISUELLE (Optionnel 🔬)                        │
+│     └── CLAHE Post-Ruifrok sur canal H uniquement               │
+│         • Préserve intégrité Beer-Lambert                       │
+│         • Améliore contraste noyaux vésiculeux                  │
+│                                                                  │
+│  3. INTELLIGENCE CONTEXTUELLE (Nouveau 🎯)                      │
+│     └── NC-based Beta-Switch (Auto-Tuner)                       │
+│         • connective_ratio > 0.40 → β=0.5, min_dist=4           │
+│         • connective_ratio ≤ 0.40 → β=2.0, min_dist=2           │
+│         • Cible: Uterus/Ovarian (tissus mésenchymateux)         │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Bilan Organ-Level (2025-12-31)
+
+**6 organes "Grade Clinique" (AJI ≥ 0.68):**
+
+| Rang | Organe | Famille | AJI |
+|------|--------|---------|-----|
+| 1 | Liver | Respiratory | 0.7207 |
+| 2 | Bladder | Urologic | 0.6997 |
+| 3 | Bile-duct | Digestive | 0.6980 |
+| 4 | Kidney | Urologic | 0.6944 |
+| 5 | Cervix | Urologic | 0.6872 |
+| 6 | Stomach | Digestive | 0.6869 |
+
+**Prochains objectifs:**
+- Testis (97.8%), Esophagus (96.8%), Lung (95.6%) — quick wins potentiels
+- Colon (84.3%) — nécessite investigation outliers (mucine)
+- Uterus (90.8%), Ovarian (92.7%) — cibles NC Beta-Switch
+
 ### Production: Avantage Compétitif
 
 > **⚠️ RAPPEL CRITIQUE (2025-12-25):**
