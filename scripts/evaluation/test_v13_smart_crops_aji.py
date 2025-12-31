@@ -8,13 +8,22 @@ and computes instance segmentation metrics (AJI, PQ) to verify improvement:
 - V13 Smart Crops target: AJI ≥ 0.68 (+18% improvement on VAL data)
 
 The script uses HV-guided watershed for instance segmentation post-processing
-with optimized parameters (beta=1.0 for softmax, min_size=40).
+with optimized parameters per organ (loaded from organ_config.py).
 
 Usage:
+    # Evaluate family with default params
     python scripts/evaluation/test_v13_smart_crops_aji.py \
         --checkpoint models/checkpoints_v13_smart_crops/hovernet_epidermal_v13_smart_crops_best.pth \
         --family epidermal \
         --n_samples 50
+
+    # Evaluate organ with AUTO-LOADED optimized params
+    python scripts/evaluation/test_v13_smart_crops_aji.py \
+        --checkpoint models/checkpoints_v13_smart_crops/hovernet_respiratory_v13_smart_crops_hybrid_fpn_best.pth \
+        --family respiratory \
+        --organ Liver \
+        --use_organ_params \
+        --n_samples 100
 
 Author: CellViT-Optimus Project
 Date: 2025-12-27
@@ -39,6 +48,7 @@ from tqdm import tqdm
 from src.models.hovernet_decoder import HoVerNetDecoder
 from src.metrics.ground_truth_metrics import compute_aji  # Centralized AJI
 from src.postprocessing import hv_guided_watershed  # Single source of truth
+from src.ui.organ_config import ORGAN_WATERSHED_PARAMS, ORGAN_TO_FAMILY
 
 
 def compute_pq(pred_inst: np.ndarray, gt_inst: np.ndarray, iou_threshold: float = 0.5) -> Dict[str, float]:
@@ -151,6 +161,11 @@ def main():
         help="Specific organ (optional). Dynamic filtering from family data (no regeneration needed). Ex: Lung, Colon, Breast"
     )
     parser.add_argument(
+        "--use_organ_params",
+        action="store_true",
+        help="Auto-load optimized watershed params from organ_config.py (requires --organ)"
+    )
+    parser.add_argument(
         "--n_samples",
         type=int,
         default=50,
@@ -216,6 +231,32 @@ def main():
     )
     args = parser.parse_args()
 
+    # =========================================================================
+    # AUTO-LOAD ORGAN-SPECIFIC WATERSHED PARAMS
+    # =========================================================================
+    if args.use_organ_params:
+        if not args.organ:
+            print("❌ ERROR: --use_organ_params requires --organ to be specified")
+            return 1
+
+        if args.organ not in ORGAN_WATERSHED_PARAMS:
+            print(f"❌ ERROR: No optimized params found for organ '{args.organ}'")
+            print(f"  Available organs: {list(ORGAN_WATERSHED_PARAMS.keys())}")
+            return 1
+
+        # Override CLI params with optimized organ-specific params
+        organ_params = ORGAN_WATERSHED_PARAMS[args.organ]
+        args.np_threshold = organ_params["np_threshold"]
+        args.min_size = organ_params["min_size"]
+        args.beta = organ_params["beta"]
+        args.min_distance = organ_params["min_distance"]
+
+        # Validate organ belongs to family
+        expected_family = ORGAN_TO_FAMILY.get(args.organ)
+        if expected_family and expected_family != args.family:
+            print(f"⚠️  WARNING: Organ '{args.organ}' belongs to family '{expected_family}'")
+            print(f"  But you specified --family {args.family}")
+
     device = torch.device(args.device)
     n_classes = 5
 
@@ -230,6 +271,8 @@ def main():
     print(f"  Watershed beta: {args.beta}")
     print(f"  Watershed min_size: {args.min_size}")
     print(f"  Watershed min_distance: {args.min_distance}")
+    if args.use_organ_params:
+        print(f"  ✅ Using OPTIMIZED organ params from organ_config.py")
     print(f"  Hybrid mode: {args.use_hybrid} (H-channel injection)")
     print(f"  FPN Chimique: {args.use_fpn_chimique} (multi-scale H @ 16,32,64,112,224)")
     print(f"  Device: {args.device}")
