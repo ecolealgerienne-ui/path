@@ -260,6 +260,17 @@ Chaque image source 256×256 génère 5 crops 224×224 avec rotations:
 **Insight clé:** Beta optimal varie de **0.5 (Lung)** à **2.0 (Liver)** — les noyaux hépatiques
 nécessitent plus de pondération HV pour la séparation des instances.
 
+#### Epidermal: Skin vs HeadNeck
+
+| Organe | AJI | Beta | Min Size | NP Thr | Min Dist | Status |
+|--------|-----|------|----------|--------|----------|--------|
+| Skin | 0.6359 | 1.5 | 30 | 0.50 | 2 | 93.5% |
+| HeadNeck | 0.6289 | 2.0 | 30 | 0.50 | 4 | 92.5% |
+| *Famille Epidermal* | *0.6203* | *1.0* | *20* | *0.45* | *3* | *91.2%* |
+
+**Insight:** Paramètres similaires entre Skin et HeadNeck (contrairement à Respiratory).
+Amélioration organ-level: +1.4% à +2.5% vs famille. Gap restant ~6-7% vs objectif.
+
 #### Commande Optimisation Organ-Level
 
 ```bash
