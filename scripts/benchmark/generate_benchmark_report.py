@@ -859,8 +859,9 @@ def main():
         features = torch.from_numpy(all_features[idx]).unsqueeze(0).float().to(device)
 
         # Image RGB pour mode hybride
+        # CRITIQUE: Normaliser [0,1] comme le fait T.ToTensor() dans l'IHM
         if use_hybrid:
-            image_tensor = torch.from_numpy(image).permute(2, 0, 1).unsqueeze(0).float().to(device)
+            image_tensor = torch.from_numpy(image).permute(2, 0, 1).unsqueeze(0).float().to(device) / 255.0
         else:
             image_tensor = None
 
