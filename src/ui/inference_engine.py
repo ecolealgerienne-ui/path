@@ -448,6 +448,10 @@ class CellVitEngine:
             use_hybrid = any("h_channel" in k or "fpn" in k.lower() for k in state_dict.keys())
             use_fpn_chimique = use_hybrid  # Si hybrid, probablement FPN chimique
 
+        # Fallback use_h_alpha: détecter par les clés du state_dict
+        if not use_h_alpha:
+            use_h_alpha = any('h_alphas' in k for k in state_dict.keys())
+
         logger.info(f"  Checkpoint flags: use_hybrid={use_hybrid}, use_fpn_chimique={use_fpn_chimique}, use_h_alpha={use_h_alpha}")
 
         # Utiliser HoVerNetDecoder avec les flags appropriés
