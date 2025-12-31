@@ -44,11 +44,17 @@ def load_pannuke_types(pannuke_dir: Path):
         if not types_file.exists():
             raise FileNotFoundError(f"Types file not found: {types_file}")
 
-        types = np.load(types_file)
+        types = np.load(types_file, allow_pickle=True)
 
         # Store as (fold_idx, image_idx) -> organ_name
-        for img_idx, organ_idx in enumerate(types):
-            organ_name = PANNUKE_ORGANS[organ_idx] if organ_idx < len(PANNUKE_ORGANS) else "Unknown"
+        for img_idx, organ_type in enumerate(types):
+            # types.npy can contain strings directly or indices
+            if isinstance(organ_type, (str, np.str_)):
+                organ_name = str(organ_type)
+            elif isinstance(organ_type, (int, np.integer)):
+                organ_name = PANNUKE_ORGANS[organ_type] if organ_type < len(PANNUKE_ORGANS) else "Unknown"
+            else:
+                organ_name = str(organ_type)
             all_types[(fold_idx, img_idx)] = organ_name
 
     return all_types
