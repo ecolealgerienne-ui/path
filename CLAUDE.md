@@ -673,6 +673,58 @@ if uncertainty[region] > 0.7:
 | Impact | Moyen |
 | Limitation | Latence × N configs. Critère "compacité" pas toujours corrélé à la justesse. |
 
+#### Piste 4: Watershed "Z-Aware" Multi-Échelle
+
+**Concept:** Deux passes Watershed en parallèle pour gérer la stratification tissulaire (couche basale vs superficielle).
+
+```python
+# Passe "Basale" (noyaux petits, denses)
+params_basal = {"min_distance": 2, "min_size": 20, "beta": 1.0}
+
+# Passe "Superficielle" (noyaux grands, espacés)
+params_superficial = {"min_distance": 5, "min_size": 40, "beta": 2.0}
+
+# Sélection locale basée sur magnitude gradient HV
+if hv_gradient_magnitude[region] > threshold:
+    use_basal_params()
+else:
+    use_superficial_params()
+```
+
+| Aspect | Évaluation |
+|--------|------------|
+| Faisabilité | Moyenne |
+| Impact | Moyen-Haut |
+| Limitation | Risque d'artefacts aux frontières entre zones. Critère de sélection à valider empiriquement. |
+| Cas d'usage | **Epidermal** (Skin/HeadNeck) où l'écart-type AJI est élevé (0.12-0.14). |
+
+#### Piste 5: Attention Spatiale via Patch Tokens H-Optimus-0 ⭐
+
+**Concept:** Utiliser les 256 patch tokens (features[:, 5:261, :]) pour pondérer les paramètres Watershed localement.
+
+```python
+# Les patch tokens encodent la texture locale (kératine, mélanine, etc.)
+patch_features = features[:, 5:261, :]  # (B, 256, 1536)
+
+# MLP léger pour prédire les paramètres locaux
+local_params = param_predictor(patch_features)  # → beta, min_size par patch
+```
+
+| Aspect | Évaluation |
+|--------|------------|
+| Faisabilité | Moyenne-Haute |
+| Impact | **Haut** |
+| Avantage | Les patch tokens encodent DÉJÀ la texture locale. Pas besoin de feature supplémentaire. |
+| Cas d'usage | Détection automatique zones kératine → augmente min_size. Zones mélanine → ajuste beta. |
+
+### Investigations Prioritaires
+
+> **⚠️ AVANT d'implémenter les pistes avancées:**
+>
+> L'écart-type élevé (0.12-0.14) sur Epidermal nécessite une investigation des outliers.
+> Certains samples avec AJI < 0.50 pourraient avoir un staining H&E défaillant qui
+> "trompe" l'extracteur Ruifrok. Vérifier avant d'investir en R&D avancée.
+
 ### Production: Avantage Compétitif
 
 > **⚠️ RAPPEL CRITIQUE (2025-12-25):**
