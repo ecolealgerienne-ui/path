@@ -74,23 +74,18 @@ def format_metrics_rnd(
         else:
             ie_display = f"**{m.immuno_epithelial_ratio:.2f}**"
 
-        # Index mitotique: séparer Signal IA vs Index clinique
-        # Note: mitotic_index_per_10hpf = None si surface < 0.1 mm² (sanity check)
+        # Activité mitotique: Signal IA (pas un "index mitotique" clinique)
+        # Note: L'index mitotique clinique requiert comptage sur 10 HPF par pathologiste
         n_mitosis = result.n_mitosis_candidates if result.spatial_analysis else 0
-        index_valid = m.mitotic_index_per_10hpf is not None and m.hpf_extrapolation_valid
 
-        if not index_valid:
-            # Surface insuffisante pour extrapolation HPF
-            if n_mitosis == 0:
-                mitotic_display = "*N/A* — Aucun candidat (patch unique)"
-            elif n_mitosis > result.n_nuclei * 0.5:
-                mitotic_display = f"*N/A* — ⚠️ Signal IA: **activité élevée** ({n_mitosis} candidats)"
-            elif n_mitosis > 3:
-                mitotic_display = f"*N/A* — Signal IA: **activité modérée** ({n_mitosis} candidats)"
-            else:
-                mitotic_display = f"*N/A* — Signal IA: {n_mitosis} candidat(s) détecté(s)"
+        if n_mitosis == 0:
+            mitotic_display = "Aucune figure suspecte"
+        elif n_mitosis > result.n_nuclei * 0.5:
+            mitotic_display = f"⚠️ **{n_mitosis} figures suspectes** (activité élevée)"
+        elif n_mitosis > 3:
+            mitotic_display = f"**{n_mitosis} figures suspectes** (activité modérée)"
         else:
-            mitotic_display = f"**{m.mitotic_index_per_10hpf:.1f}**/10 HPF"
+            mitotic_display = f"{n_mitosis} figure(s) suspecte(s)"
 
         lines.extend([
             "---",
@@ -100,8 +95,8 @@ def format_metrics_rnd(
             f"- Circularité: **{m.mean_circularity:.2f}** ± {m.std_circularity:.2f}",
             f"- Hypercellularité: **{m.nuclear_density_percent:.1f}%**",
             "",
-            "### Index & Ratios",
-            f"- Index mitotique: {mitotic_display}",
+            "### Activité & Ratios",
+            f"- Activité mitotique: {mitotic_display}",
             f"- Ratio néoplasique: **{m.neoplastic_ratio:.1%}**",
             f"- Ratio I/E: {ie_display}",
             f"- TILs status: **{m.til_status}**",

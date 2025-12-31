@@ -134,26 +134,31 @@ def interpret_pleomorphism(score: int) -> str:
     return interpretations.get(score, "Non évalué")
 
 
-def interpret_mitotic_index(index: Optional[float], n_candidates: int = 0) -> str:
+def interpret_mitotic_activity(n_candidates: int = 0) -> str:
     """
-    Interprète l'index mitotique.
+    Interprète l'activité mitotique (signal IA, pas un index clinique).
+
+    Note: L'index mitotique clinique requiert un comptage sur 10 HPF
+    par un pathologiste. Cette fonction retourne une évaluation IA
+    des figures mitotiques suspectes.
 
     Args:
-        index: Index mitotique (None si surface insuffisante)
-        n_candidates: Nombre de candidats mitose (Phase 3)
+        n_candidates: Nombre de figures mitotiques suspectes détectées
     """
-    if index is None:
-        # Surface insuffisante pour extrapolation HPF
-        if n_candidates == 0:
-            return "N/A (patch unique)"
-        else:
-            return f"{n_candidates} candidat(s) *(patch unique)*"
-    elif index < 3:
-        return f"{index:.0f}/10 HPF (Faible)"
-    elif index < 8:
-        return f"{index:.0f}/10 HPF (Modéré)"
+    if n_candidates == 0:
+        return "Aucune figure suspecte"
+    elif n_candidates >= 10:
+        return f"Élevée ({n_candidates} figures suspectes)"
+    elif n_candidates >= 5:
+        return f"Modérée ({n_candidates} figures suspectes)"
     else:
-        return f"{index:.0f}/10 HPF (Élevé)"
+        return f"Faible ({n_candidates} figure(s) suspecte(s))"
+
+
+# Alias pour compatibilité (déprécié)
+def interpret_mitotic_index(index: Optional[float], n_candidates: int = 0) -> str:
+    """Déprécié: utiliser interpret_mitotic_activity()"""
+    return interpret_mitotic_activity(n_candidates)
 
 
 # ==============================================================================
@@ -181,9 +186,13 @@ def format_identification_clinical(
     else:
         model_line = f"**Modèle:** {family} (famille)\n*Organe: {organ}*"
 
+    # Disclaimer surface limitée (224×224 = 0.01 mm² à 0.5 MPP)
+    surface_warning = "*⚠️ Prédiction sur champ limité (0.01 mm²)*"
+
     return f"""### {result.organ_name}
 **Confiance IA:** {result.organ_confidence:.0%}
-{model_line}"""
+{model_line}
+{surface_warning}"""
 
 
 def format_metrics_clinical(
@@ -213,10 +222,10 @@ def format_metrics_clinical(
         density_label = interpret_density(m.nuclei_per_mm2)
         lines.append(f"**Densité cellulaire:** {density_label} ({m.nuclei_per_mm2:.0f}/mm²)")
 
-        # Index mitotique interprété (avec n_candidates pour affichage si index=None)
+        # Activité mitotique (signal IA, pas un index clinique)
         n_candidates = result.n_mitosis_candidates if result.spatial_analysis else m.mitotic_candidates
-        mitotic_label = interpret_mitotic_index(m.mitotic_index_per_10hpf, n_candidates)
-        lines.append(f"**Index mitotique:** {mitotic_label}")
+        mitotic_label = interpret_mitotic_activity(n_candidates)
+        lines.append(f"**Activité mitotique:** {mitotic_label}")
 
         # Ratio néoplasique
         if m.neoplastic_ratio > 0.5:

@@ -27,7 +27,8 @@ from .format_clinical import (
     compute_confidence_level,
     interpret_density,
     interpret_pleomorphism,
-    interpret_mitotic_index,
+    interpret_mitotic_activity,
+    interpret_mitotic_index,  # Déprécié, alias vers interpret_mitotic_activity
 )
 
 __all__ = [
@@ -48,5 +49,6 @@ __all__ = [
     "compute_confidence_level",
     "interpret_density",
     "interpret_pleomorphism",
-    "interpret_mitotic_index",
+    "interpret_mitotic_activity",
+    "interpret_mitotic_index",  # Déprécié
 ]

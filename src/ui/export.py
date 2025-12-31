@@ -315,6 +315,7 @@ def create_report_pdf(
         id_lines = [
             f"Organe: {result.organ_name} ({result.organ_confidence:.0%})",
             f"Famille: {result.family}",
+            f"Surface: 0.01 mm² (champ limité)",
             f"Date: {datetime.now().strftime('%Y-%m-%d %H:%M')}",
         ]
         if audit:
@@ -364,18 +365,18 @@ def create_report_pdf(
         # Section Morphométrie (tableau)
         if result.morphometry:
             m = result.morphometry
-            # Mitotic index: N/A si surface insuffisante
-            if m.mitotic_index_per_10hpf is not None:
-                mitotic_str = f"{m.mitotic_index_per_10hpf:.1f} /10 HPF"
+            # Figures mitotiques suspectes (PAS un "index mitotique" clinique)
+            n_cand = result.n_mitosis_candidates if result.spatial_analysis else m.mitotic_candidates
+            if n_cand > 0:
+                mitotic_str = f"{n_cand} figure(s) suspecte(s)"
             else:
-                n_cand = result.n_mitosis_candidates if result.spatial_analysis else m.mitotic_candidates
-                mitotic_str = f"{n_cand} candidat(s)" if n_cand > 0 else "N/A"
+                mitotic_str = "Aucune détectée"
 
             morph_data = [
                 ["Densité", f"{m.nuclei_per_mm2:.0f} /mm²"],
                 ["Aire moy.", f"{m.mean_area_um2:.1f} ± {m.std_area_um2:.1f} µm²"],
                 ["Circularité", f"{m.mean_circularity:.2f}"],
-                ["Index mitotique", mitotic_str],
+                ["Activité mitotique", mitotic_str],
                 ["Ratio néoplasique", f"{m.neoplastic_ratio:.0%}"],
                 ["TILs", m.til_status],
             ]
@@ -470,25 +471,19 @@ def create_report_pdf(
         else:
             fig.text(0.07, 0.19, "✓ Aucune alerte particulière", fontsize=9, color='#27AE60')
 
-        # Paramètres Watershed (tableau gris séparé)
-        ax_params = fig.add_axes([0.65, 0.10, 0.30, 0.15])
-        ax_params.set_facecolor('#ECEFF1')
-        ax_params.set_xticks([])
-        ax_params.set_yticks([])
-        for spine in ax_params.spines.values():
-            spine.set_color('#B0BEC5')
+        # Note technique (remplace les params watershed - plus approprié pour rapport clinique)
+        ax_note = fig.add_axes([0.65, 0.10, 0.30, 0.15])
+        ax_note.set_facecolor('#E8F5E9')
+        ax_note.set_xticks([])
+        ax_note.set_yticks([])
+        for spine in ax_note.spines.values():
+            spine.set_color('#A5D6A7')
 
-        params_data = [
-            ["np_threshold", f"{result.watershed_params.get('np_threshold', 'N/A')}"],
-            ["min_size", f"{result.watershed_params.get('min_size', 'N/A')}"],
-            ["beta", f"{result.watershed_params.get('beta', 'N/A')}"],
-            ["min_distance", f"{result.watershed_params.get('min_distance', 'N/A')}"],
-        ]
-
-        fig.text(0.67, 0.235, "PARAMS WATERSHED", fontsize=8, fontweight='bold', color='#546E7A')
-        for i, (param, val) in enumerate(params_data):
-            fig.text(0.67, 0.205 - i * 0.025, f"{param}:", fontsize=7, color='#78909C')
-            fig.text(0.82, 0.205 - i * 0.025, val, fontsize=7, fontweight='bold', color='#37474F')
+        fig.text(0.67, 0.22, "NOTE TECHNIQUE", fontsize=8, fontweight='bold', color='#2E7D32')
+        fig.text(0.67, 0.19, "Surface analysée:", fontsize=7, color='#558B2F')
+        fig.text(0.67, 0.165, "  0.01 mm² (patch 224×224)", fontsize=7, color='#33691E')
+        fig.text(0.67, 0.14, "Segmentation: HV-Watershed", fontsize=7, color='#558B2F')
+        fig.text(0.67, 0.115, "Paramètres: optimisés/organe", fontsize=7, color='#558B2F')
 
         # Footer
         fig.text(0.5, 0.03,
