@@ -244,6 +244,35 @@ Chaque image source 256×256 génère 5 crops 224×224 avec rotations:
 
 **Objectif atteint:** 1/5 (Respiratory) | **Proche (>96%):** 3/5
 
+### 🔬 Optimisation Organ-Level (2025-12-31)
+
+> **Découverte:** L'optimisation par organe révèle des paramètres watershed très différents
+> masqués par l'approche famille. Gain potentiel significatif.
+
+#### Respiratory: Lung vs Liver
+
+| Organe | AJI | Beta | Min Size | NP Thr | Min Dist | Status |
+|--------|-----|------|----------|--------|----------|--------|
+| **Liver** | **0.7207** | 2.0 | 40 | 0.45 | 2 | ✅ **+6% vs objectif** |
+| Lung | 0.6498 | 0.5 | 40 | 0.50 | 2 | 95.6% |
+| *Famille Respiratory* | *0.6872* | *0.50* | *30* | *0.40* | *5* | *moyenne pondérée* |
+
+**Insight clé:** Beta optimal varie de **0.5 (Lung)** à **2.0 (Liver)** — les noyaux hépatiques
+nécessitent plus de pondération HV pour la séparation des instances.
+
+#### Commande Optimisation Organ-Level
+
+```bash
+# Phase 1: Exploration rapide (20 samples, 400 configs)
+python scripts/evaluation/optimize_watershed_aji.py \
+    --checkpoint models/checkpoints_v13_smart_crops/hovernet_{family}_v13_smart_crops_hybrid_fpn_best.pth \
+    --family {family} \
+    --organ {Organ} \
+    --n_samples 20
+
+# Phase 2: Copier-coller la commande générée automatiquement (100 samples, ~81 configs)
+```
+
 ---
 
 ## Pipeline Complet (Commandes)
