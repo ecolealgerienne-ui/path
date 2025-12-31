@@ -310,8 +310,137 @@ def change_organ(organ: str) -> str:
 def create_ui():
     """Crée l'interface Gradio."""
 
+    # CSS pour l'effet loupe
+    custom_css = """
+    /* Container pour les images avec effet loupe */
+    .loupe-container {
+        position: relative;
+        overflow: hidden;
+    }
+
+    /* Loupe (lentille de zoom) */
+    .loupe-lens {
+        position: absolute;
+        border: 3px solid #007bff;
+        border-radius: 50%;
+        width: 150px;
+        height: 150px;
+        pointer-events: none;
+        box-shadow: 0 0 10px rgba(0, 123, 255, 0.5);
+        background-repeat: no-repeat;
+        display: none;
+        z-index: 1000;
+    }
+
+    .loupe-lens.active {
+        display: block;
+    }
+    """
+
+    # JavaScript pour l'effet loupe
+    custom_js = """
+    function initLoupe() {
+        // Attendre que le DOM soit prêt
+        const checkImages = setInterval(() => {
+            // Trouver toutes les images de segmentation (output)
+            const imageContainers = document.querySelectorAll('.gradio-image img');
+
+            imageContainers.forEach((img, index) => {
+                // Éviter de ré-initialiser
+                if (img.dataset.loupeInit) return;
+                img.dataset.loupeInit = 'true';
+
+                const container = img.closest('.gradio-image');
+                if (!container) return;
+
+                // Créer la lentille
+                let lens = container.querySelector('.loupe-lens');
+                if (!lens) {
+                    lens = document.createElement('div');
+                    lens.className = 'loupe-lens';
+                    container.style.position = 'relative';
+                    container.appendChild(lens);
+                }
+
+                const zoomFactor = 2.5;
+                const lensSize = 150;
+
+                // Événements souris
+                img.addEventListener('mouseenter', (e) => {
+                    lens.classList.add('active');
+                    updateLensBackground();
+                });
+
+                img.addEventListener('mouseleave', () => {
+                    lens.classList.remove('active');
+                });
+
+                img.addEventListener('mousemove', (e) => {
+                    if (!lens.classList.contains('active')) return;
+
+                    const rect = img.getBoundingClientRect();
+                    const x = e.clientX - rect.left;
+                    const y = e.clientY - rect.top;
+
+                    // Position de la lentille (centrée sur le curseur)
+                    const lensX = x - lensSize / 2;
+                    const lensY = y - lensSize / 2;
+                    lens.style.left = lensX + 'px';
+                    lens.style.top = lensY + 'px';
+
+                    // Position du background (zoom)
+                    const bgX = -x * zoomFactor + lensSize / 2;
+                    const bgY = -y * zoomFactor + lensSize / 2;
+                    lens.style.backgroundPosition = bgX + 'px ' + bgY + 'px';
+                });
+
+                function updateLensBackground() {
+                    const imgWidth = img.naturalWidth || img.width;
+                    const imgHeight = img.naturalHeight || img.height;
+                    const displayWidth = img.width;
+                    const displayHeight = img.height;
+
+                    // Calculer le ratio d'affichage
+                    const scaleX = displayWidth / imgWidth;
+                    const scaleY = displayHeight / imgHeight;
+
+                    lens.style.backgroundImage = `url('${img.src}')`;
+                    lens.style.backgroundSize = `${displayWidth * zoomFactor}px ${displayHeight * zoomFactor}px`;
+                }
+
+                // Observer les changements d'image
+                const observer = new MutationObserver(() => {
+                    if (lens.classList.contains('active')) {
+                        updateLensBackground();
+                    }
+                });
+                observer.observe(img, { attributes: true, attributeFilter: ['src'] });
+            });
+        }, 500);
+
+        // Arrêter après 30 secondes
+        setTimeout(() => clearInterval(checkImages), 30000);
+    }
+
+    // Initialiser au chargement
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', initLoupe);
+    } else {
+        initLoupe();
+    }
+
+    // Réinitialiser après les mises à jour Gradio
+    const gradioApp = document.querySelector('gradio-app');
+    if (gradioApp) {
+        const observer = new MutationObserver(initLoupe);
+        observer.observe(gradioApp, { childList: true, subtree: true });
+    }
+    """
+
     with gr.Blocks(
         title="CellViT-Optimus R&D Cockpit",
+        css=custom_css,
+        js=custom_js,
     ) as app:
 
         # Header
