@@ -271,6 +271,22 @@ nécessitent plus de pondération HV pour la séparation des instances.
 **Insight:** Paramètres similaires entre Skin et HeadNeck (contrairement à Respiratory).
 Amélioration organ-level: +1.4% à +2.5% vs famille. Gap restant ~6-7% vs objectif.
 
+#### Digestive: Colon, Stomach, Esophagus, Bile-duct
+
+| Organe | AJI | Beta | Min Size | NP Thr | Min Dist | Status |
+|--------|-----|------|----------|--------|----------|--------|
+| **Bile-duct** | **0.6980** | 1.0 | 30 | 0.50 | 3 | ✅ **102.6%** |
+| **Stomach** | **0.6869** | 1.0 | 70 | 0.50 | 3 | ✅ **101%** |
+| Esophagus | 0.6583 | 0.5 | 30 | 0.45 | 2 | 96.8% |
+| Colon | 0.5730 | 0.5 | 50 | 0.45 | 2 | ❌ 84.3% |
+| *Famille Digestive* | *0.6160* | *2.0* | *60* | *0.45* | *5* | *90.6%* |
+
+**Insights:**
+- **Bile-duct & Stomach** atteignent l'objectif avec params identiques (beta=1.0, np_thr=0.50, min_dist=3)
+- **Stomach min_size=70** — noyaux glandulaires larges, filtre les lymphocytes
+- **Colon = problème majeur** (84.3%) — mucine + inflammation. Écart-type 0.179 (le plus élevé)
+- Le Colon tire la moyenne famille vers le bas; les 3 autres organes sont tous > 0.65
+
 #### Commande Optimisation Organ-Level
 
 ```bash
