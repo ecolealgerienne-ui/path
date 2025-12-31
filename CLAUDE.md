@@ -595,6 +595,94 @@ python scripts/training/train_hovernet_family_v13_smart_crops.py \
 
 ---
 
+## 🔬 Insights Biologiques & R&D Future (2025-12-31)
+
+> **Contexte:** L'optimisation organ-level a révélé des signatures biologiques encodées
+> dans les paramètres watershed optimaux. Ces découvertes ouvrent des pistes R&D avancées.
+
+### Découvertes Clés
+
+#### 1. Le Paradoxe du Beta (Liver β=2.0 vs Lung β=0.5)
+
+| Organe | Beta | Morphologie Nucléaire | Explication |
+|--------|------|----------------------|-------------|
+| **Liver** | 2.0 | Noyaux vésiculeux (clairs) + nucléole central proéminent | Beta élevé → ignore micro-variations NP, se focalise sur gradient HV |
+| **Lung** | 0.5 | Noyaux denses, ratio N/C élevé, débris inflammatoires | Beta bas → pondère plus la probabilité NP |
+
+**Conclusion:** Plus un noyau est "vésiculeux" (clair avec point sombre), plus β doit être élevé.
+Le foie est le "Gold Standard" de cette morphologie.
+
+#### 2. Signal/Bruit par Tissu
+
+| Tissu | Caractéristique | Impact sur AJI |
+|-------|-----------------|----------------|
+| **Liver** | Déterministe (organisé, hépatocytes réguliers) | AJI élevé (0.72) |
+| **Lung** | Stochastique (inflammatoire, débris, N/C variable) | AJI plus bas (0.65) |
+
+Le gap de 10% AJI reflète la complexité tissulaire intrinsèque, pas uniquement la qualité du modèle.
+
+#### 3. Efficacité de l'Injection H-Channel (Ruifrok)
+
+L'injection du canal Hématoxyline via déconvolution Ruifrok permet:
+- `min_distance=2` sans sur-fusion (impossible sans H-channel)
+- Séparation précise des noyaux adjacents
+- "Lubrifiant géométrique" pour le Watershed
+
+> *"Sans l'injection Hybrid V2, descendre à min_distance=2 causerait une explosion de fusions."*
+
+### Pistes R&D Future
+
+#### Piste 1: Régression Dynamique des Paramètres (Meta-Segmentation)
+
+**Concept:** Utiliser les probabilités OrganHead pour interpoler les paramètres watershed.
+
+```
+β_final = P_lung × β_lung + P_liver × β_liver
+```
+
+| Aspect | Évaluation |
+|--------|------------|
+| Faisabilité | Moyenne |
+| Impact | Moyen |
+| Limitation | OrganHead opère au niveau IMAGE, pas noyau. Interpolation uniforme sur tout le patch. |
+
+#### Piste 2: Watershed Adaptatif par Incertitude ⭐ PRIORITAIRE
+
+**Concept:** Moduler β et min_distance localement selon la carte d'incertitude.
+
+```python
+# Pseudo-code
+if uncertainty[region] > 0.7:
+    beta_local = beta_base * 1.5      # Plus conservateur
+    min_dist_local = min_dist_base - 1  # Plus prudent
+```
+
+| Aspect | Évaluation |
+|--------|------------|
+| Faisabilité | **Haute** |
+| Impact | **Haut** |
+| Avantage | L'incertitude est déjà calculée. Adaptation locale zone par zone. |
+
+#### Piste 3: Test-Time Adaptation (TTA)
+
+**Concept:** Exécuter le Watershed avec N configurations, sélectionner selon métrique de compacité.
+
+| Aspect | Évaluation |
+|--------|------------|
+| Faisabilité | Basse |
+| Impact | Moyen |
+| Limitation | Latence × N configs. Critère "compacité" pas toujours corrélé à la justesse. |
+
+### Production: Avantage Compétitif
+
+> **⚠️ RAPPEL CRITIQUE (2025-12-25):**
+>
+> La configuration **Marquage Virtuel Hybride** (Fusion H-Channel via Ruifrok au décodeur)
+> est le cœur de l'avantage compétitif V13. Chaque nouveau modèle d'organe DOIT conserver
+> cette injection à 100% pour maintenir les scores AJI au-dessus de 0.68.
+
+---
+
 ## Références
 
 - H-optimus-0: https://huggingface.co/bioptimus/H-optimus-0
