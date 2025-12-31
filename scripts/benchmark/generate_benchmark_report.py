@@ -53,6 +53,8 @@ from src.ui.visualizations import (
 )
 from src.ui.organ_config import FAMILY_WATERSHED_PARAMS, FAMILY_CHECKPOINTS
 from src.models.hovernet_decoder import HoVerNetDecoder
+from src.models.loader import ModelLoader
+from src.preprocessing import preprocess_image
 
 
 # =============================================================================
@@ -735,13 +737,9 @@ def main():
     print("=" * 80)
 
     val_data_path = Path(f"data/family_data_v13_smart_crops/{family}_val_v13_smart_crops.npz")
-    features_path = Path(f"data/cache/family_data/{family}_rgb_features_v13_smart_crops_val.npz")
 
     if not val_data_path.exists():
         print(f"❌ ERROR: {val_data_path} not found")
-        return 1
-    if not features_path.exists():
-        print(f"❌ ERROR: {features_path} not found")
         return 1
 
     print(f"Loading {val_data_path.name}...")
@@ -752,13 +750,17 @@ def main():
     nt_targets = val_data['nt_targets']   # (N, 224, 224) int64
     organ_names = val_data['organ_names'] # (N,) str
 
-    print(f"Loading {features_path.name}...")
-    features_data = np.load(features_path)
-    all_features = features_data['features']  # (N, 261, 1536)
-
     print(f"  → {len(images)} samples loaded")
     print(f"  → Images: {images.shape}, dtype={images.dtype}")
     print(f"  → Organs: {np.unique(organ_names)}")
+
+    # ==========================================================================
+    # 1b. CHARGER LE BACKBONE (extraction features live comme IHM)
+    # ==========================================================================
+    print("\n  Loading H-optimus-0 backbone (live feature extraction like IHM)...")
+    backbone = ModelLoader.load_hoptimus0(device=device)
+    backbone.eval()
+    print(f"  ✅ Backbone loaded on {device}")
 
     # ==========================================================================
     # 2. FILTRER ET ÉQUILIBRER LES SAMPLES
@@ -848,6 +850,8 @@ def main():
 
     samples_data = []
 
+    import torchvision.transforms as T
+
     for idx in tqdm(selected_indices, desc="Processing"):
         # Données GT
         image = images[idx]                  # (224, 224, 3) uint8
@@ -855,13 +859,17 @@ def main():
         gt_type = nt_targets[idx]            # (224, 224) int64
         organ = str(organ_names[idx])
 
-        # Features
-        features = torch.from_numpy(all_features[idx]).unsqueeze(0).float().to(device)
+        # === EXTRACTION FEATURES LIVE (identique à IHM) ===
+        # Utilise preprocess_image() comme l'IHM (src/ui/inference_engine.py ligne 512)
+        tensor_normalized = preprocess_image(image, device=device)
+
+        with torch.no_grad():
+            features = backbone.forward_features(tensor_normalized)  # (1, 261, 1536)
 
         # Image RGB pour mode hybride
-        # CRITIQUE: Normaliser [0,1] comme le fait T.ToTensor() dans l'IHM
+        # CRITIQUE: Utiliser T.ToTensor() comme l'IHM (src/ui/inference_engine.py ligne 516)
         if use_hybrid:
-            image_tensor = torch.from_numpy(image).permute(2, 0, 1).unsqueeze(0).float().to(device) / 255.0
+            image_tensor = T.ToTensor()(image).unsqueeze(0).to(device)  # (1, 3, 224, 224) [0,1]
         else:
             image_tensor = None
 
