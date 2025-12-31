@@ -137,34 +137,57 @@ def load_model_and_data(checkpoint_path: str, family: str, device: str = "cuda",
     return model, val_data, rgb_features, use_hybrid
 
 
-def cache_predictions(model, val_data, rgb_features, use_hybrid, n_samples, device):
-    """Run inference once and cache all predictions."""
+def cache_predictions(model, val_data, rgb_features, use_hybrid, n_samples, device, batch_size=16):
+    """Run inference once and cache all predictions using batch processing on GPU."""
     images = val_data['images']
     n_to_eval = min(n_samples, len(images))
 
-    print("Running inference on validation samples...")
+    print(f"Running batch inference on GPU (batch_size={batch_size})...")
     predictions = []
 
-    for i in range(n_to_eval):
-        # Prepare inputs
-        features = torch.from_numpy(rgb_features[i:i+1]).float().to(device)
+    # Process in batches for GPU efficiency
+    for batch_start in range(0, n_to_eval, batch_size):
+        batch_end = min(batch_start + batch_size, n_to_eval)
+        batch_indices = range(batch_start, batch_end)
+        current_batch_size = len(batch_indices)
+
+        # Prepare batch on CPU, then transfer once to GPU
+        features_batch = torch.from_numpy(rgb_features[batch_start:batch_end]).float().to(device)
 
         if use_hybrid:
-            image = images[i]
-            if image.shape[-1] == 3:
-                image = np.transpose(image, (2, 0, 1))
-            image_tensor = torch.from_numpy(image).float().unsqueeze(0).to(device)
-            if image_tensor.max() > 1:
-                image_tensor = image_tensor / 255.0
+            # Prepare images batch
+            images_list = []
+            for i in batch_indices:
+                image = images[i]
+                if image.shape[-1] == 3:
+                    image = np.transpose(image, (2, 0, 1))
+                images_list.append(image)
+
+            images_batch = torch.from_numpy(np.stack(images_list)).float().to(device)
+            if images_batch.max() > 1:
+                images_batch = images_batch / 255.0
         else:
-            image_tensor = None
+            images_batch = None
 
-        # Use shared inference function
-        np_pred, hv_pred = run_inference(model, features, image_tensor, device)
-        predictions.append((np_pred, hv_pred))
+        # Batch inference on GPU
+        with torch.no_grad():
+            outputs = model(features_batch, images_rgb=images_batch)
 
-        if (i + 1) % 10 == 0:
-            print(f"  Inference: {i+1}/{n_to_eval}")
+            if isinstance(outputs, dict):
+                np_out = outputs['np']
+                hv_out = outputs['hv']
+            else:
+                np_out, hv_out, _ = outputs
+
+            # Softmax for NP
+            np_probs = torch.softmax(np_out, dim=1)[:, 1].cpu().numpy()  # (B, 224, 224)
+            hv_preds = hv_out.cpu().numpy()  # (B, 2, 224, 224)
+
+        # Store predictions
+        for j in range(current_batch_size):
+            predictions.append((np_probs[j], hv_preds[j]))
+
+        print(f"  Batch {batch_start//batch_size + 1}/{(n_to_eval + batch_size - 1)//batch_size}: {batch_end}/{n_to_eval} samples")
 
     return predictions
 
@@ -267,6 +290,7 @@ def main():
     parser.add_argument("--organ", type=str, default=None,
                         help="Specific organ (optional). Dynamic filtering from family data (no regeneration needed). Ex: Lung, Colon, Breast")
     parser.add_argument("--n_samples", type=int, default=50, help="Number of samples to evaluate")
+    parser.add_argument("--batch_size", type=int, default=16, help="Batch size for GPU inference (default: 16)")
     parser.add_argument("--device", type=str, default="cuda", help="Device to use")
     parser.add_argument("--output_dir", type=str, default="results/watershed_optimization",
                         help="Output directory for results")
@@ -289,10 +313,10 @@ def main():
     print(f"Model loaded. Hybrid mode: {use_hybrid}")
     print(f"Validation samples: {len(val_data['images'])}")
 
-    # Cache predictions (inference runs once)
+    # Cache predictions (batch inference on GPU - much faster)
     predictions = cache_predictions(
         model, val_data, rgb_features, use_hybrid,
-        args.n_samples, args.device
+        args.n_samples, args.device, batch_size=args.batch_size
     )
 
     # Get GT instances
