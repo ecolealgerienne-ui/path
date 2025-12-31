@@ -305,6 +305,23 @@ Amélioration organ-level: +1.4% à +2.5% vs famille. Gap restant ~6-7% vs objec
 - **np_threshold=0.50** optimal pour toute la famille (haute confiance)
 - **Uterus min_size=10** — noyaux très petits, filtrage minimal nécessaire
 
+#### Glandular: Breast, Prostate, Thyroid, Pancreatic, Adrenal_gland
+
+| Organe | AJI | Beta | Min Size | NP Thr | Min Dist | Status |
+|--------|-----|------|----------|--------|----------|--------|
+| **Adrenal_gland** | **0.7236** | 1.0 | 50 | 0.45 | 4 | ✅ **106.4%** 🏆 |
+| Pancreatic | 0.6763 | 1.0 | 20 | 0.50 | 2 | 99.5% |
+| Thyroid | 0.6722 | 1.5 | 30 | 0.50 | 2 | 98.9% |
+| Breast | 0.6566 | 1.5 | 40 | 0.45 | 2 | 96.6% |
+| Prostate | 0.6164 | 1.0 | 10 | 0.50 | 2 | 90.6% |
+| *Famille Glandular* | *0.6566* | *0.50* | *50* | *0.40* | *3* | *96.6%* |
+
+**Insights:**
+- **Adrenal_gland = RECORD ABSOLU** (0.7236) — dépasse même Liver (0.7207)
+- **Pancreatic & Thyroid** très proches de l'objectif (99.5% et 98.9%)
+- **min_distance=4** pour Adrenal_gland — tissus bien séparés, noyaux réguliers
+- **Prostate min_size=10** — noyaux très petits (similaire à Uterus)
+
 #### Commande Optimisation Organ-Level
 
 ```bash
@@ -897,21 +914,22 @@ else:
 
 ### Bilan Organ-Level (2025-12-31)
 
-**6 organes "Grade Clinique" (AJI ≥ 0.68):**
+**7 organes "Grade Clinique" (AJI ≥ 0.68):**
 
 | Rang | Organe | Famille | AJI |
 |------|--------|---------|-----|
-| 1 | Liver | Respiratory | 0.7207 |
-| 2 | Bladder | Urologic | 0.6997 |
-| 3 | Bile-duct | Digestive | 0.6980 |
-| 4 | Kidney | Urologic | 0.6944 |
-| 5 | Cervix | Urologic | 0.6872 |
-| 6 | Stomach | Digestive | 0.6869 |
+| 🏆 1 | **Adrenal_gland** | Glandular | **0.7236** |
+| 2 | Liver | Respiratory | 0.7207 |
+| 3 | Bladder | Urologic | 0.6997 |
+| 4 | Bile-duct | Digestive | 0.6980 |
+| 5 | Kidney | Urologic | 0.6944 |
+| 6 | Cervix | Urologic | 0.6872 |
+| 7 | Stomach | Digestive | 0.6869 |
 
 **Prochains objectifs:**
-- Testis (97.8%), Esophagus (96.8%), Lung (95.6%) — quick wins potentiels
+- Pancreatic (99.5%), Thyroid (98.9%), Testis (97.8%) — quick wins potentiels
 - Colon (84.3%) — nécessite investigation outliers (mucine)
-- Uterus (90.8%), Ovarian (92.7%) — cibles NC Beta-Switch
+- Uterus (90.8%), Ovarian (92.7%), Prostate (90.6%) — cibles NC Beta-Switch
 
 ### Production: Avantage Compétitif
 
