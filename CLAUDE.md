@@ -287,6 +287,24 @@ Amélioration organ-level: +1.4% à +2.5% vs famille. Gap restant ~6-7% vs objec
 - **Colon = problème majeur** (84.3%) — mucine + inflammation. Écart-type 0.179 (le plus élevé)
 - Le Colon tire la moyenne famille vers le bas; les 3 autres organes sont tous > 0.65
 
+#### Urologic: Kidney, Bladder, Testis, Ovarian, Uterus, Cervix
+
+| Organe | AJI | Beta | Min Size | NP Thr | Min Dist | Status |
+|--------|-----|------|----------|--------|----------|--------|
+| **Bladder** | **0.6997** | 2.0 | 20 | 0.50 | 4 | ✅ **102.9%** |
+| **Kidney** | **0.6944** | 1.0 | 20 | 0.50 | 1 | ✅ **102.1%** |
+| **Cervix** | **0.6872** | 0.5 | 20 | 0.50 | 2 | ✅ **101.1%** |
+| Testis | 0.6650 | 2.0 | 50 | 0.50 | 2 | 97.8% |
+| Ovarian | 0.6306 | 0.5 | 40 | 0.50 | 3 | 92.7% |
+| Uterus | 0.6173 | 1.0 | 10 | 0.50 | 1 | 90.8% |
+| *Famille Urologic* | *0.6743* | *0.50* | *30* | *0.45* | *2* | *99.2%* |
+
+**Insights:**
+- **3 organes Grade Clinique:** Bladder, Kidney, Cervix
+- **Kidney min_distance=1** — le plus agressif, possible grâce à l'injection H-channel
+- **np_threshold=0.50** optimal pour toute la famille (haute confiance)
+- **Uterus min_size=10** — noyaux très petits, filtrage minimal nécessaire
+
 #### Commande Optimisation Organ-Level
 
 ```bash
