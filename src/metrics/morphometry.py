@@ -209,12 +209,12 @@ class MorphometryAnalyzer:
     def __init__(
         self,
         pixel_size_um: float = 0.5,  # MPP (microns per pixel)
-        min_nucleus_area: int = 20,   # Pixels minimum pour un noyau valide
+        min_nucleus_area: int = 0,    # Pas de filtre - compte tous les noyaux
     ):
         """
         Args:
             pixel_size_um: Taille d'un pixel en micromètres (0.5 pour 20x)
-            min_nucleus_area: Surface minimale pour considérer un noyau
+            min_nucleus_area: Surface minimale pour considérer un noyau (0 = pas de filtre)
         """
         self.pixel_size_um = pixel_size_um
         self.min_nucleus_area = min_nucleus_area
