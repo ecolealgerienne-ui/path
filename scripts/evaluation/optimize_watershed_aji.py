@@ -38,10 +38,13 @@ def load_model_and_data(checkpoint_path: str, family: str, device: str = "cuda",
     Args:
         checkpoint_path: Path to model checkpoint
         family: Family name (respiratory, digestive, etc.)
-        device: Device to use
+        device: Device to use (string like "cuda" or "cpu")
         organ: Optional organ filter. If specified, only samples from this organ are returned.
                Uses dynamic filtering from family data (no regeneration needed).
     """
+    # Convert to torch.device for explicit GPU handling
+    device = torch.device(device)
+    print(f"  🖥️  Device: {device} (CUDA available: {torch.cuda.is_available()})")
 
     # Load checkpoint
     checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
@@ -134,7 +137,7 @@ def load_model_and_data(checkpoint_path: str, family: str, device: str = "cuda",
         val_data = val_data_raw
         rgb_features = rgb_features_raw
 
-    return model, val_data, rgb_features, use_hybrid
+    return model, val_data, rgb_features, use_hybrid, device
 
 
 def cache_predictions(model, val_data, rgb_features, use_hybrid, n_samples, device, batch_size=16):
@@ -142,7 +145,11 @@ def cache_predictions(model, val_data, rgb_features, use_hybrid, n_samples, devi
     images = val_data['images']
     n_to_eval = min(n_samples, len(images))
 
-    print(f"Running batch inference on GPU (batch_size={batch_size})...")
+    # Ensure device is torch.device
+    if isinstance(device, str):
+        device = torch.device(device)
+
+    print(f"\n🔥 Running batch inference on {device} (batch_size={batch_size})...")
     predictions = []
 
     # Process in batches for GPU efficiency
@@ -307,16 +314,17 @@ def main():
     print(f"  Family: {args.family}")
     if args.organ:
         print(f"  Organ filter: {args.organ} (dynamic filtering)")
-    model, val_data, rgb_features, use_hybrid = load_model_and_data(
+    model, val_data, rgb_features, use_hybrid, device = load_model_and_data(
         args.checkpoint, args.family, args.device, organ=args.organ
     )
     print(f"Model loaded. Hybrid mode: {use_hybrid}")
     print(f"Validation samples: {len(val_data['images'])}")
+    print(f"  🚀 Model on: {next(model.parameters()).device}")
 
     # Cache predictions (batch inference on GPU - much faster)
     predictions = cache_predictions(
         model, val_data, rgb_features, use_hybrid,
-        args.n_samples, args.device, batch_size=args.batch_size
+        args.n_samples, device, batch_size=args.batch_size
     )
 
     # Get GT instances
