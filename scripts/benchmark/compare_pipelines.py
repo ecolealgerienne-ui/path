@@ -22,6 +22,9 @@ from src.evaluation import run_inference
 from src.ui.organ_config import FAMILY_WATERSHED_PARAMS, FAMILY_CHECKPOINTS
 from src.models.hovernet_decoder import HoVerNetDecoder
 
+# Import IHM engine pour comparaison directe
+from src.ui.inference_engine import CellVitEngine
+
 
 def compare_tensors(name: str, t1: torch.Tensor, t2: torch.Tensor, rtol=1e-5, atol=1e-5):
     """Compare deux tensors et affiche les différences."""
@@ -94,35 +97,27 @@ def main():
     print(f"  Loaded {len(images)} images: {images.shape}, dtype={images.dtype}")
 
     # ==========================================================================
-    # 2. CHARGER LES MODÈLES
+    # 2. CHARGER LE MOTEUR IHM (CellVitEngine)
     # ==========================================================================
     print("\n" + "=" * 80)
-    print("2. LOADING MODELS")
+    print("2. LOADING IHM ENGINE (CellVitEngine)")
     print("=" * 80)
 
-    # Backbone
-    print("  Loading H-optimus-0 backbone...")
-    backbone = ModelLoader.load_hoptimus0(device=device_str)
-    backbone.eval()
-    print(f"  ✅ Backbone loaded")
+    # Déterminer l'organe par défaut pour la famille
+    family_organs = {
+        "respiratory": "Lung",
+        "urologic": "Kidney",
+        "glandular": "Breast",
+        "epidermal": "Skin",
+        "digestive": "Colon"
+    }
+    default_organ = family_organs[family]
 
-    # HoVer-Net decoder
-    checkpoint_path = FAMILY_CHECKPOINTS[family]
-    print(f"  Loading HoVer-Net: {checkpoint_path}")
-
-    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
-    model = HoVerNetDecoder(
-        use_hybrid=True,
-        use_fpn_chimique=True,
-        use_h_alpha=True
-    ).to(device)
-    model.load_state_dict(checkpoint['model_state_dict'])
-    model.eval()
-    print(f"  ✅ HoVer-Net loaded")
-
-    # Watershed params
-    watershed_params = FAMILY_WATERSHED_PARAMS[family]
-    print(f"  Watershed params: {watershed_params}")
+    print(f"  Loading CellVitEngine (organ={default_organ})...")
+    engine = CellVitEngine(device=device_str, organ=default_organ)
+    print(f"  ✅ Engine loaded")
+    print(f"  Family: {engine.family}")
+    print(f"  Watershed params: {engine.watershed_params}")
 
     # ==========================================================================
     # 3. COMPARER POUR CHAQUE IMAGE
@@ -131,78 +126,55 @@ def main():
     print("3. COMPARING PIPELINES")
     print("=" * 80)
 
-    all_identical = True
+    results = []
 
     for i, image in enumerate(images):
-        print(f"\n--- Sample {i+1}/{len(images)} ---")
-        print(f"  Image shape: {image.shape}, dtype: {image.dtype}")
-        print(f"  Image range: [{image.min()}, {image.max()}]")
+        print(f"\n{'='*60}")
+        print(f"Sample {i+1}/{len(images)}")
+        print(f"{'='*60}")
+        print(f"  Image: shape={image.shape}, dtype={image.dtype}, range=[{image.min()}, {image.max()}]")
 
         # ======================================================================
-        # ÉTAPE A: Preprocessing pour backbone
+        # PIPELINE IHM (via CellVitEngine.analyze)
         # ======================================================================
-        print("\n  [A] Backbone preprocessing:")
+        print("\n  [IHM] CellVitEngine.analyze():")
 
-        # Pipeline IHM: preprocess_image()
-        tensor_ihm = preprocess_image(image, device=device_str)
-        print(f"      IHM (preprocess_image): shape={tensor_ihm.shape}, range=[{tensor_ihm.min():.3f}, {tensor_ihm.max():.3f}]")
+        result_ihm = engine.analyze(image, compute_morphometry=False, compute_uncertainty=False)
+        n_ihm = result_ihm.n_nuclei
 
-        # Les deux devraient être identiques maintenant
-        # (on utilise preprocess_image pour les deux)
+        print(f"      → Nuclei detected: {n_ihm}")
 
         # ======================================================================
-        # ÉTAPE B: Feature extraction
+        # VÉRIFICATION: Les résultats sont-ils identiques?
         # ======================================================================
-        print("\n  [B] Feature extraction:")
+        print(f"\n  ════════════════════════════════════════")
+        print(f"  IHM (CellVitEngine): {n_ihm} noyaux")
+        print(f"  ════════════════════════════════════════")
 
-        with torch.no_grad():
-            features = backbone.forward_features(tensor_ihm)
+        results.append({
+            'sample': i,
+            'n_ihm': n_ihm,
+        })
 
-        print(f"      Features: shape={features.shape}")
-        print(f"      CLS token std: {features[:, 0, :].std().item():.4f}")
-
-        # ======================================================================
-        # ÉTAPE C: Image tensor pour FPN Chimique
-        # ======================================================================
-        print("\n  [C] FPN Chimique image tensor:")
-
-        # Pipeline IHM: T.ToTensor()
-        image_tensor_ihm = T.ToTensor()(image).unsqueeze(0).to(device)
-        print(f"      IHM (T.ToTensor): shape={image_tensor_ihm.shape}, range=[{image_tensor_ihm.min():.3f}, {image_tensor_ihm.max():.3f}]")
-
-        # ======================================================================
-        # ÉTAPE D: HoVer-Net inference
-        # ======================================================================
-        print("\n  [D] HoVer-Net inference:")
-
-        np_pred, hv_pred = run_inference(model, features, image_tensor_ihm, device=device_str)
-
-        print(f"      NP pred: shape={np_pred.shape}, range=[{np_pred.min():.3f}, {np_pred.max():.3f}]")
-        print(f"      HV pred: shape={hv_pred.shape}, range=[{hv_pred.min():.3f}, {hv_pred.max():.3f}]")
-
-        # ======================================================================
-        # ÉTAPE E: Watershed
-        # ======================================================================
-        print("\n  [E] Watershed:")
-
-        instance_map = hv_guided_watershed(np_pred, hv_pred, **watershed_params)
-        n_nuclei = len(np.unique(instance_map)) - 1
-
-        print(f"      Instance map: shape={instance_map.shape}")
-        print(f"      Nuclei detected: {n_nuclei}")
-
-        print(f"\n  📊 RESULT: {n_nuclei} nuclei detected")
-
+    # ==========================================================================
+    # RÉSUMÉ
+    # ==========================================================================
     print("\n" + "=" * 80)
     print("SUMMARY")
     print("=" * 80)
-    print("""
-Ce script montre le pipeline EXACT utilisé.
-Si les résultats diffèrent encore de l'IHM, vérifier:
 
-1. L'IHM a-t-elle été redémarrée après les modifications?
-2. L'image uploadée est-elle exactement la même? (même taille 224x224?)
-3. Y a-t-il un redimensionnement dans l'IHM avant analyse?
+    print("\n  Sample | IHM (CellVitEngine)")
+    print("  " + "-" * 30)
+    for r in results:
+        print(f"  {r['sample']:6} | {r['n_ihm']:4}")
+
+    print("""
+\nCe script utilise EXACTEMENT le même moteur que l'IHM Gradio.
+Si les résultats diffèrent de ce que vous voyez dans l'IHM web:
+
+1. Vérifiez que l'IHM a été redémarrée après les modifications de code
+2. Vérifiez que l'image uploadée est exactement 224×224 pixels
+3. Vérifiez que l'image est au format RGB (pas BGR)
 """)
 
     return 0
