@@ -758,7 +758,8 @@ def main():
     # 1b. CHARGER LE BACKBONE (extraction features live comme IHM)
     # ==========================================================================
     print("\n  Loading H-optimus-0 backbone (live feature extraction like IHM)...")
-    backbone = ModelLoader.load_hoptimus0(device=device)
+    device_str = str(device).split(':')[0]  # "cuda:0" → "cuda"
+    backbone = ModelLoader.load_hoptimus0(device=device_str)
     backbone.eval()
     print(f"  ✅ Backbone loaded on {device}")
 
@@ -861,7 +862,7 @@ def main():
 
         # === EXTRACTION FEATURES LIVE (identique à IHM) ===
         # Utilise preprocess_image() comme l'IHM (src/ui/inference_engine.py ligne 512)
-        tensor_normalized = preprocess_image(image, device=device)
+        tensor_normalized = preprocess_image(image, device=device_str)
 
         with torch.no_grad():
             features = backbone.forward_features(tensor_normalized)  # (1, 261, 1536)
