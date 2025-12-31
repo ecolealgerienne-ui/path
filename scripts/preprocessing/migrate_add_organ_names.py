@@ -75,42 +75,34 @@ def migrate_npz_file(npz_path: Path, pannuke_types: dict, dry_run: bool = False)
         print(f"  ✅ Already has organ_names, skipping")
         return True
 
-    # Need source_image_ids to look up organs
+    # Need source_image_ids and fold_ids to look up organs
     if 'source_image_ids' not in keys:
         print(f"  ❌ Missing source_image_ids, cannot migrate")
         return False
 
+    if 'fold_ids' not in keys:
+        print(f"  ❌ Missing fold_ids, cannot migrate")
+        return False
+
     source_ids = data['source_image_ids']
+    fold_ids = data['fold_ids']
     n_samples = len(source_ids)
     print(f"  Samples: {n_samples}")
+    print(f"  Sample source_ids[:5]: {source_ids[:5]}")
+    print(f"  Sample fold_ids[:5]: {fold_ids[:5]}")
 
     # Build organ_names array
     organ_names = []
     missing_count = 0
 
-    for sid in source_ids:
-        # source_image_id format: "fold{fold_idx}_{image_idx}" or similar
-        # Parse it to get fold_idx and image_idx
-        sid_str = sid.decode('utf-8') if isinstance(sid, bytes) else str(sid)
+    for i in range(n_samples):
+        fold_idx = int(fold_ids[i])
+        img_idx = int(source_ids[i])
 
-        try:
-            # Try format: "fold0_123" or "0_123"
-            if sid_str.startswith('fold'):
-                parts = sid_str.replace('fold', '').split('_')
-                fold_idx = int(parts[0])
-                img_idx = int(parts[1])
-            else:
-                parts = sid_str.split('_')
-                fold_idx = int(parts[0])
-                img_idx = int(parts[1])
-
-            key = (fold_idx, img_idx)
-            if key in pannuke_types:
-                organ_names.append(pannuke_types[key])
-            else:
-                organ_names.append("Unknown")
-                missing_count += 1
-        except (ValueError, IndexError):
+        key = (fold_idx, img_idx)
+        if key in pannuke_types:
+            organ_names.append(pannuke_types[key])
+        else:
             organ_names.append("Unknown")
             missing_count += 1
 
