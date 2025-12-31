@@ -465,6 +465,48 @@ def generate_html_report(
         tr:hover {{
             background: #f5f5f5;
         }}
+        .toc-section {{
+            background: white;
+            padding: 20px;
+            border-radius: 10px;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+            margin-bottom: 30px;
+        }}
+        .toc-grid {{
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+            gap: 10px;
+            margin-top: 15px;
+        }}
+        .toc-item {{
+            display: flex;
+            align-items: center;
+            padding: 8px 12px;
+            background: #f8f9fa;
+            border-radius: 6px;
+            text-decoration: none;
+            color: #333;
+            transition: background 0.2s;
+        }}
+        .toc-item:hover {{
+            background: #e8f4fc;
+        }}
+        .toc-index {{
+            background: #1a5490;
+            color: white;
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: 0.8em;
+            margin-right: 10px;
+        }}
+        .toc-name {{
+            flex: 1;
+            font-weight: 500;
+        }}
+        .toc-aji {{
+            color: #666;
+            font-size: 0.9em;
+        }}
     </style>
 </head>
 <body>
@@ -523,17 +565,40 @@ def generate_html_report(
     html += """
         </table>
     </div>
-
-    <div class="samples-section">
-        <h2>🖼️ Détail par Échantillon</h2>
 """
 
     # Trier par organe puis par index
     samples_sorted = sorted(samples_data, key=lambda x: (x['organ'], x['index']))
 
-    for s in samples_sorted:
+    # Table des matières
+    html += """
+    <div class="toc-section">
+        <h2>📑 Table des Matières</h2>
+        <div class="toc-grid">
+"""
+    for i, s in enumerate(samples_sorted):
+        sample_id = f"sample-{s['organ']}-{s['index']}"
         html += f"""
-        <div class="sample-card">
+            <a href="#{sample_id}" class="toc-item">
+                <span class="toc-index">{i+1}</span>
+                <span class="toc-name">{s['organ']} #{s['index']}</span>
+                <span class="toc-aji">AJI: {s['aji']:.3f}</span>
+            </a>
+"""
+    html += """
+        </div>
+    </div>
+"""
+
+    html += """
+    <div class="samples-section">
+        <h2>🖼️ Détail par Échantillon</h2>
+"""
+
+    for s in samples_sorted:
+        sample_id = f"sample-{s['organ']}-{s['index']}"
+        html += f"""
+        <div class="sample-card" id="{sample_id}">
             <img src="{images_dir}/{s['image_filename']}" alt="{s['organ']} #{s['index']}">
             <div class="sample-info">
                 <div class="sample-title">{s['organ']} #{s['index']}</div>
