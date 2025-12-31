@@ -413,10 +413,16 @@ def generate_html_report(
             box-shadow: 0 2px 5px rgba(0,0,0,0.1);
         }}
         .sample-card {{
-            border: 1px solid #ddd;
-            border-radius: 8px;
-            margin-bottom: 20px;
+            border: 2px solid #1a5490;
+            border-radius: 10px;
+            margin-bottom: 30px;
             overflow: hidden;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+        }}
+        .sample-card + .sample-card {{
+            margin-top: 40px;
+            padding-top: 20px;
+            border-top: 3px solid #1a5490;
         }}
         .sample-card img {{
             width: 100%;
