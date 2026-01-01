@@ -312,87 +312,130 @@ def create_ui():
 
     # CSS pour l'effet loupe
     custom_css = """
-    /* Loupe (lentille de zoom) */
+    /* Loupe (lentille de zoom) - Compatible Gradio 4.x */
     .loupe-lens {
-        position: absolute;
+        position: fixed;
         border: 3px solid #007bff;
         border-radius: 50%;
-        width: 150px;
-        height: 150px;
+        width: 180px;
+        height: 180px;
         pointer-events: none;
-        box-shadow: 0 0 10px rgba(0, 123, 255, 0.5);
+        box-shadow: 0 0 15px rgba(0, 123, 255, 0.6);
         background-repeat: no-repeat;
         display: none;
-        z-index: 1000;
+        z-index: 9999;
+        background-color: white;
     }
 
     .loupe-lens.active {
         display: block;
     }
+
+    /* Style pour les images zoomables */
+    .gradio-image img {
+        cursor: crosshair;
+    }
     """
 
-    # JavaScript pour l'effet loupe (sera injecté via gr.HTML)
+    # JavaScript pour l'effet loupe (compatible Gradio)
     loupe_script = """
     <script>
     (function() {
+        // Créer une seule lentille globale
+        let lens = null;
+        let currentImg = null;
+        const zoomFactor = 3;
+        const lensSize = 180;
+
+        function createLens() {
+            if (lens) return;
+            lens = document.createElement('div');
+            lens.className = 'loupe-lens';
+            document.body.appendChild(lens);
+        }
+
+        function showLens(img, e) {
+            if (!lens || !img.complete || !img.src) return;
+
+            currentImg = img;
+            lens.classList.add('active');
+
+            // Utiliser l'image source
+            lens.style.backgroundImage = 'url(' + img.src + ')';
+            lens.style.backgroundSize = (img.naturalWidth * zoomFactor) + 'px ' + (img.naturalHeight * zoomFactor) + 'px';
+
+            updateLensPosition(e);
+        }
+
+        function hideLens() {
+            if (lens) {
+                lens.classList.remove('active');
+            }
+            currentImg = null;
+        }
+
+        function updateLensPosition(e) {
+            if (!lens || !currentImg) return;
+
+            const rect = currentImg.getBoundingClientRect();
+
+            // Position relative dans l'image
+            const x = e.clientX - rect.left;
+            const y = e.clientY - rect.top;
+
+            // Vérifier qu'on est dans l'image
+            if (x < 0 || y < 0 || x > rect.width || y > rect.height) {
+                hideLens();
+                return;
+            }
+
+            // Ratio pour images redimensionnées
+            const ratioX = currentImg.naturalWidth / rect.width;
+            const ratioY = currentImg.naturalHeight / rect.height;
+
+            // Position de la lentille (fixe sur l'écran)
+            lens.style.left = (e.clientX - lensSize / 2) + 'px';
+            lens.style.top = (e.clientY - lensSize / 2) + 'px';
+
+            // Position du background (zoom sur la zone)
+            const bgX = -(x * ratioX * zoomFactor) + lensSize / 2;
+            const bgY = -(y * ratioY * zoomFactor) + lensSize / 2;
+            lens.style.backgroundPosition = bgX + 'px ' + bgY + 'px';
+        }
+
         function initLoupe() {
-            // Trouver toutes les images
-            const images = document.querySelectorAll('img');
+            createLens();
 
-            images.forEach((img) => {
-                // Éviter de ré-initialiser
-                if (img.dataset.loupeInit === 'true') return;
-                img.dataset.loupeInit = 'true';
+            // Utiliser la délégation d'événements sur le document
+            document.addEventListener('mouseover', function(e) {
+                const img = e.target;
+                if (img.tagName === 'IMG' && img.closest('.gradio-image, .image-container, [class*="image"]')) {
+                    // Vérifier que c'est une vraie image (pas un placeholder)
+                    if (img.src && !img.src.includes('data:image/svg') && img.naturalWidth > 50) {
+                        showLens(img, e);
+                    }
+                }
+            });
 
-                // Trouver le container parent
-                const container = img.parentElement;
-                if (!container) return;
+            document.addEventListener('mouseout', function(e) {
+                if (e.target.tagName === 'IMG') {
+                    hideLens();
+                }
+            });
 
-                // Créer la lentille
-                let lens = document.createElement('div');
-                lens.className = 'loupe-lens';
-                container.style.position = 'relative';
-                container.style.overflow = 'hidden';
-                container.appendChild(lens);
-
-                const zoomFactor = 2.5;
-                const lensSize = 150;
-
-                // Événements souris
-                img.addEventListener('mouseenter', function(e) {
-                    lens.classList.add('active');
-                    lens.style.backgroundImage = 'url(' + img.src + ')';
-                    lens.style.backgroundSize = (img.width * zoomFactor) + 'px ' + (img.height * zoomFactor) + 'px';
-                });
-
-                img.addEventListener('mouseleave', function() {
-                    lens.classList.remove('active');
-                });
-
-                img.addEventListener('mousemove', function(e) {
-                    if (!lens.classList.contains('active')) return;
-
-                    const rect = img.getBoundingClientRect();
-                    const x = e.clientX - rect.left;
-                    const y = e.clientY - rect.top;
-
-                    // Position de la lentille (centrée sur le curseur)
-                    lens.style.left = (x - lensSize / 2) + 'px';
-                    lens.style.top = (y - lensSize / 2) + 'px';
-
-                    // Position du background (zoom)
-                    const bgX = -x * zoomFactor + lensSize / 2;
-                    const bgY = -y * zoomFactor + lensSize / 2;
-                    lens.style.backgroundPosition = bgX + 'px ' + bgY + 'px';
-                });
+            document.addEventListener('mousemove', function(e) {
+                if (currentImg) {
+                    updateLensPosition(e);
+                }
             });
         }
 
-        // Initialiser périodiquement pour capturer les nouvelles images
-        setInterval(initLoupe, 1000);
-
-        // Initialiser immédiatement
-        initLoupe();
+        // Initialiser au chargement
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', initLoupe);
+        } else {
+            initLoupe();
+        }
     })();
     </script>
     """
