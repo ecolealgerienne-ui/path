@@ -89,31 +89,49 @@ def get_organ_info():
     return state.engine.organ, state.engine.family, state.engine.is_dedicated_model
 
 
-def load_engine(organ: str) -> str:
+def load_engine(organ: str):
     """
     Charge ou change l'organe du moteur.
 
     - Premier appel: charge H-optimus-0 + OrganHead + HoVer-Net
     - Appels suivants: ne recharge que HoVer-Net (changement rapide)
+
+    Returns:
+        Tuple[str, gr.update]: (status_message, analyze_button_update)
     """
     # Si le moteur n'existe pas encore, chargement complet
     if state.engine is None:
         result = load_engine_core(organ)
         if result["success"]:
-            return f"✅ {result['organ']} ({result['model_type']}) chargé"
+            return (
+                f"✅ {result['organ']} ({result['model_type']}) chargé",
+                gr.update(interactive=True, variant="primary")
+            )
         else:
-            return f"❌ Erreur: {result.get('error', 'Inconnue')}"
+            return (
+                f"❌ Erreur: {result.get('error', 'Inconnue')}",
+                gr.update(interactive=False, variant="secondary")
+            )
 
     # Si même organe, rien à faire
     if state.engine.organ == organ:
-        return f"✅ {organ} déjà chargé"
+        return (
+            f"✅ {organ} déjà chargé",
+            gr.update(interactive=True, variant="primary")
+        )
 
     # Changement d'organe: ne recharge que HoVer-Net
     result = change_organ_core(organ)
     if result["success"]:
-        return f"✅ {result['organ']} ({result['model_type']}) — modèle changé"
+        return (
+            f"✅ {result['organ']} ({result['model_type']}) — modèle changé",
+            gr.update(interactive=True, variant="primary")
+        )
     else:
-        return f"❌ Erreur: {result.get('error', 'Inconnue')}"
+        return (
+            f"❌ Erreur: {result.get('error', 'Inconnue')}",
+            gr.update(interactive=False, variant="secondary")
+        )
 
 
 # ==============================================================================
@@ -508,7 +526,7 @@ def create_ui():
                     beta = gr.Slider(0.1, 2.0, 0.50, step=0.1, label="Beta (HV)")
                     min_distance = gr.Slider(1, 10, 5, step=1, label="Distance min")
 
-                analyze_btn = gr.Button("🔬 Analyser", variant="primary", size="lg")
+                analyze_btn = gr.Button("🔬 Analyser", variant="secondary", size="lg", interactive=False)
 
             # Colonne droite: Métriques
             with gr.Column(scale=1):
@@ -584,14 +602,14 @@ def create_ui():
         load_btn.click(
             fn=load_engine,
             inputs=[organ_select],
-            outputs=[status_text],
+            outputs=[status_text, analyze_btn],
         )
 
         # Auto-chargement quand on change l'organe
         organ_select.change(
             fn=load_engine,
             inputs=[organ_select],
-            outputs=[status_text],
+            outputs=[status_text, analyze_btn],
         )
 
         # Analyse
