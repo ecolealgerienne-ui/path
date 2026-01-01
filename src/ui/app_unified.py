@@ -243,15 +243,73 @@ def analyze_image(
 # ==============================================================================
 
 
-def on_image_click(evt: gr.SelectData, profile: str) -> str:
-    """Gère le clic sur l'image pour afficher les infos du noyau."""
+def create_zoom_crop(x: int, y: int, zoom: int = 6) -> Optional[np.ndarray]:
+    """
+    Crée un crop zoomé ×6 centré sur le point cliqué.
+
+    Args:
+        x, y: Coordonnées du clic
+        zoom: Facteur de zoom (défaut: 6)
+
+    Returns:
+        Image numpy RGB du crop zoomé, ou None si pas d'image
+    """
+    if state.current_result is None or state.current_result.image_rgb is None:
+        return None
+
+    image = state.current_result.image_rgb
+    h, w = image.shape[:2]
+
+    # Taille du crop source (pour avoir un résultat de ~150px après zoom)
+    crop_size = 25  # 25px × 6 = 150px affiché
+
+    # Calculer les bornes du crop centré sur (x, y)
+    half = crop_size // 2
+    x1 = max(0, x - half)
+    y1 = max(0, y - half)
+    x2 = min(w, x + half + 1)
+    y2 = min(h, y + half + 1)
+
+    # Extraire le crop
+    crop = image[y1:y2, x1:x2].copy()
+
+    if crop.size == 0:
+        return None
+
+    # Zoomer avec interpolation nearest pour voir les pixels nets
+    import cv2
+    zoomed = cv2.resize(crop, None, fx=zoom, fy=zoom, interpolation=cv2.INTER_NEAREST)
+
+    # Ajouter un crosshair au centre
+    zh, zw = zoomed.shape[:2]
+    cx, cy = zw // 2, zh // 2
+    # Lignes du crosshair (rouge)
+    zoomed[cy-1:cy+2, :] = [255, 0, 0]  # Horizontal
+    zoomed[:, cx-1:cx+2] = [255, 0, 0]  # Vertical
+    # Centre blanc pour visibilité
+    zoomed[cy-1:cy+2, cx-1:cx+2] = [255, 255, 255]
+
+    return zoomed
+
+
+def on_image_click(evt: gr.SelectData, profile: str) -> Tuple[str, Optional[np.ndarray]]:
+    """
+    Gère le clic sur l'image pour afficher les infos du noyau et le zoom ×6.
+
+    Returns:
+        Tuple[str, np.ndarray]: (info_markdown, zoom_image)
+    """
     if state.current_result is None:
-        return "⚠️ Aucune analyse active"
+        return "⚠️ Aucune analyse active", None
 
     is_clinical = PROFILES.get(profile, {}).get("clinical_language", False)
 
     try:
         x, y = evt.index
+
+        # Générer le zoom ×6 centré sur le clic
+        zoom_image = create_zoom_crop(int(x), int(y))
+
         nucleus = state.current_result.get_nucleus_at(y, x)
 
         if nucleus is None:
@@ -263,10 +321,10 @@ def on_image_click(evt: gr.SelectData, profile: str) -> str:
                     raw_id = state.current_result.instance_map[y_int, x_int]
                     if raw_id > 0:
                         if is_clinical:
-                            return f"⚠️ Noyau ID:{raw_id} — exclu du rapport (filtrage qualité)"
+                            return f"⚠️ Noyau ID:{raw_id} — exclu du rapport (filtrage qualité)", zoom_image
                         else:
-                            return f"⚠️ Noyau identifié (ID:{raw_id}) mais exclu des métriques (filtrage Phase 2/3)"
-            return "Clic sur le fond (pas de noyau)"
+                            return f"⚠️ Noyau identifié (ID:{raw_id}) mais exclu des métriques (filtrage Phase 2/3)", zoom_image
+            return "Clic sur le fond (pas de noyau)", zoom_image
 
         # Format selon profil
         is_small = nucleus.circularity == 0 and nucleus.perimeter_um == 0
@@ -326,10 +384,10 @@ def on_image_click(evt: gr.SelectData, profile: str) -> str:
                 lines.append("⚠️ **SUR-SEGMENTATION**")
                 lines.append(f"   {nucleus.anomaly_reason}")
 
-        return "\n".join(lines)
+        return "\n".join(lines), zoom_image
 
     except Exception as e:
-        return f"Erreur: {e}"
+        return f"Erreur: {e}", None
 
 
 # ==============================================================================
@@ -549,6 +607,14 @@ def create_ui():
                 with gr.Accordion("Noyau sélectionné", open=True):
                     nucleus_info = gr.Markdown("*Cliquer sur un noyau*")
 
+                with gr.Accordion("🔍 Loupe ×6", open=True):
+                    zoom_display = gr.Image(
+                        label=None,
+                        height=160,
+                        show_label=False,
+                        show_download_button=False,
+                    )
+
                 # Confidence badge (pathologiste)
                 confidence_html = gr.HTML("", visible=True)
 
@@ -638,11 +704,11 @@ def create_ui():
             ],
         )
 
-        # Clic sur image
+        # Clic sur image → infos noyau + zoom ×6
         output_image.select(
             fn=on_image_click,
             inputs=[profile_select],
-            outputs=[nucleus_info],
+            outputs=[nucleus_info, zoom_display],
         )
 
         # Exports R&D
