@@ -80,21 +80,30 @@ is_running() {
 # =============================================================================
 
 start_unified() {
-    local organ="${1:-$DEFAULT_ORGAN}"
+    local organ="$1"  # Optional: organ to preload
 
     if is_running "unified"; then
         log_warn "Unified UI already running (PID: $(get_pid unified))"
         return 1
     fi
 
-    log_info "Starting Unified UI on port $UNIFIED_PORT (organ: $organ)..."
+    if [[ -n "$organ" ]]; then
+        log_info "Starting Unified UI on port $UNIFIED_PORT (preload: $organ)..."
+    else
+        log_info "Starting Unified UI on port $UNIFIED_PORT (no preload)..."
+    fi
 
     cd "$PROJECT_ROOT"
-    nohup python -m src.ui.app_unified \
-        --preload \
-        --organ "$organ" \
-        --port "$UNIFIED_PORT" \
-        > "$LOG_DIR/unified.log" 2>&1 &
+    if [[ -n "$organ" ]]; then
+        nohup python -m src.ui.app_unified \
+            --organ "$organ" \
+            --port "$UNIFIED_PORT" \
+            > "$LOG_DIR/unified.log" 2>&1 &
+    else
+        nohup python -m src.ui.app_unified \
+            --port "$UNIFIED_PORT" \
+            > "$LOG_DIR/unified.log" 2>&1 &
+    fi
 
     local pid=$!
     echo "$pid" > "$PID_DIR/unified.pid"
@@ -344,11 +353,11 @@ usage() {
     echo "  all         Same as 'unified' (default)"
     echo ""
     echo "Options:"
-    echo "  --organ ORGAN   Set initial organ (default: Lung)"
+    echo "  --organ ORGAN   Preload a specific organ model (optional for unified)"
     echo ""
     echo "Examples:"
-    echo "  $0 start                        # Start unified UI (recommended)"
-    echo "  $0 start unified --organ Breast # Start with Breast model"
+    echo "  $0 start                        # Start unified UI (no preload)"
+    echo "  $0 start unified --organ Breast # Start with Breast model preloaded"
     echo "  $0 stop all                     # Stop all UIs"
     echo "  $0 restart unified              # Restart unified UI"
     echo "  $0 status                       # Show status"
@@ -358,7 +367,7 @@ usage() {
 # Parse arguments
 COMMAND="${1:-}"
 TARGET="${2:-all}"
-ORGAN="$DEFAULT_ORGAN"
+ORGAN=""  # No default preload for unified; use --organ to specify
 
 # Parse options
 shift 2 2>/dev/null || true

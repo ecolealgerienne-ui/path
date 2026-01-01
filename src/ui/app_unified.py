@@ -664,14 +664,14 @@ def create_ui():
 
 def main():
     parser = argparse.ArgumentParser(description="CellViT-Optimus Interface Unifiée")
-    parser.add_argument("--organ", default="Lung", help="Organe initial")
+    parser.add_argument("--organ", default=None, help="Organe à précharger (optionnel)")
     parser.add_argument("--port", type=int, default=7860, help="Port Gradio")
-    parser.add_argument("--preload", action="store_true", help="Précharger le modèle")
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO)
 
-    if args.preload:
+    # Préchargement seulement si --organ est spécifié
+    if args.organ:
         logger.info(f"Préchargement du moteur pour {args.organ}...")
         load_engine(args.organ)
 
