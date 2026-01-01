@@ -612,7 +612,6 @@ def create_ui():
                         label=None,
                         height=160,
                         show_label=False,
-                        show_download_button=False,
                     )
 
                 # Confidence badge (pathologiste)
