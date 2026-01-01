@@ -635,15 +635,30 @@ def create_ui():
     }
 
     /* ============================================
-       CACHER TOOLBAR SUR LA LOUPE (backup CSS)
+       CACHER TOOLBAR SUR LA LOUPE (Gradio 3.x/4.x)
        ============================================ */
     #loupe-image button,
     #loupe-image .icon-button,
     #loupe-image [class*="icon"],
-    #loupe-column .image-container button,
-    #loupe-column [data-testid="image"] button {
+    #loupe-image .wrap,
+    #loupe-image > div > div:first-child,
+    #loupe-column button,
+    #loupe-column .absolute,
+    #loupe-column .top-\[5px\],
+    #loupe-column .right-\[5px\],
+    #loupe-column [class*="svelte"],
+    #component-loupe-image button {
         display: none !important;
         visibility: hidden !important;
+        opacity: 0 !important;
+        pointer-events: none !important;
+    }
+
+    /* Forcer pas de toolbar sur loupe */
+    #loupe-image .image-frame > div:not(.image-container),
+    #loupe-image .image-frame button,
+    #loupe-column .overflow-hidden > div:first-child:not(:only-child) {
+        display: none !important;
     }
     """
 
@@ -772,7 +787,7 @@ def create_ui():
             # Colonne 3: Loupe Interactive
             with gr.Column(scale=1, elem_id="loupe-column"):
                 gr.Markdown("### 🔍 Loupe ×3")
-                zoom_display = gr.Image(height=180, show_label=False, elem_id="loupe-image", show_download_button=False, show_fullscreen_button=False, show_share_button=False)
+                zoom_display = gr.Image(height=180, show_label=False, elem_id="loupe-image", interactive=False)
                 nucleus_info = gr.Markdown("*Cliquer sur un noyau*")
 
         # ==================================================================
