@@ -31,6 +31,9 @@ from src.postprocessing.watershed import hv_guided_watershed
 from src.metrics.morphometry import MorphometryAnalyzer, MorphometryReport, CELL_TYPES
 from src.preprocessing import preprocess_image, validate_features
 
+# OrganHead - SINGLE SOURCE OF TRUTH pour prédiction organe
+from src.models.organ_head import PANNUKE_ORGANS, OrganPrediction
+
 # Phase 3: Analyse spatiale
 from src.ui.spatial_analysis import (
     run_spatial_analysis,
@@ -568,40 +571,38 @@ class CellVitEngine:
         else:
             logger.debug(f"Features OK: CLS std={validation['cls_std']:.3f}")
 
-        # Prédiction organe (optionnel)
+        # Prédiction organe via OrganHead.predict_with_ood() — SINGLE SOURCE OF TRUTH
         organ_name = "Unknown"
         organ_confidence = 0.0
         predicted_family = self.family  # Par défaut: famille du modèle chargé
 
         if self.organ_head is not None:
             cls_token = features[:, 0, :]  # (1, 1536)
-            organ_logits = self.organ_head(cls_token)
-            organ_probs = torch.softmax(organ_logits, dim=1)
-            organ_idx = organ_probs.argmax(dim=1).item()
-            organ_confidence = organ_probs[0, organ_idx].item()
 
-            # Mapper l'index vers le nom (source: scripts/training/train_organ_head.py)
-            ORGAN_NAMES = [
-                "Adrenal_gland", "Bile-duct", "Bladder", "Breast", "Cervix",
-                "Colon", "Esophagus", "HeadNeck", "Kidney", "Liver",
-                "Lung", "Ovarian", "Pancreatic", "Prostate", "Skin",
-                "Stomach", "Testis", "Thyroid", "Uterus"
-            ]
-            if organ_idx < len(ORGAN_NAMES):
-                organ_name = ORGAN_NAMES[organ_idx]
-                # CRITIQUE: Utiliser la famille de l'organe PRÉDIT
-                try:
-                    predicted_family = get_family_for_organ(organ_name)
-                    # CRITIQUE: En mode Auto, utiliser les params de l'organe prédit
-                    # En mode Manuel, garder les params fournis par l'utilisateur
-                    if watershed_params is None:
-                        organ_info = get_model_for_organ(organ_name)
-                        params = organ_info["watershed_params"].copy()
-                        logger.debug(f"Auto params for predicted organ {organ_name}: {params}")
-                    else:
-                        logger.debug(f"Manual params (user override): {params}")
-                except ValueError:
-                    predicted_family = self.family  # Fallback si organe inconnu
+            # Utiliser la méthode officielle avec Temperature Scaling + OOD
+            organ_pred: OrganPrediction = self.organ_head.predict_with_ood(cls_token)
+
+            organ_name = organ_pred.organ_name
+            organ_confidence = organ_pred.confidence_calibrated  # Confiance calibrée T=0.5
+
+            logger.debug(
+                f"OrganHead: {organ_name} (raw={organ_pred.confidence:.2f}, "
+                f"calibrated={organ_pred.confidence_calibrated:.2f}, "
+                f"OOD={organ_pred.is_ood})"
+            )
+
+            # CRITIQUE: Utiliser la famille de l'organe PRÉDIT
+            try:
+                predicted_family = get_family_for_organ(organ_name)
+                # En mode Auto, utiliser les params de l'organe prédit
+                if watershed_params is None:
+                    organ_info = get_model_for_organ(organ_name)
+                    params = organ_info["watershed_params"].copy()
+                    logger.debug(f"Auto params for predicted organ {organ_name}: {params}")
+                else:
+                    logger.debug(f"Manual params (user override): {params}")
+            except ValueError:
+                predicted_family = self.family  # Fallback si organe inconnu
 
         # Inférence HoVer-Net (utilise run_inference de src.evaluation)
         # images_rgb passé uniquement si modèle hybrid (FPN Chimique)

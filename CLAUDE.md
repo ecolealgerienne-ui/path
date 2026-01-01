@@ -517,20 +517,23 @@ features (B, 261, 1536):
 
 > **"On touche pas l'existant"** — Les scripts existants fonctionnent. Toute modification requiert validation explicite.
 
-### 2. Modules Partagés OBLIGATOIRES
+### 2. Modules Partagés OBLIGATOIRES — SINGLE SOURCE OF TRUTH
 
 > **🚫 JAMAIS de duplication de code critique**
 >
 > Les algorithmes critiques DOIVENT être dans `src/` et importés par tous les scripts.
-> **NE JAMAIS copier-coller** une fonction entre scripts — créer un module partagé.
+> **NE JAMAIS copier-coller** une fonction, constante ou liste entre scripts.
 
 **Modules partagés existants:**
 
-| Module | Fonction | Usage |
-|--------|----------|-------|
+| Module | Fonction/Constante | Usage |
+|--------|-------------------|-------|
 | `src/postprocessing/watershed.py` | `hv_guided_watershed()` | Segmentation instances |
 | `src/metrics/ground_truth_metrics.py` | `compute_aji()` | Calcul AJI+ |
 | `src/evaluation/instance_evaluation.py` | `run_inference()`, `evaluate_sample()`, `evaluate_batch_with_params()` | Évaluation complète |
+| `src/models/organ_head.py` | `PANNUKE_ORGANS`, `OrganPrediction`, `predict_with_ood()` | Prédiction organe |
+| `src/preprocessing/__init__.py` | `preprocess_image()`, `HOPTIMUS_MEAN`, `HOPTIMUS_STD` | Normalisation images |
+| `src/constants.py` | Toutes les constantes globales | Configuration |
 
 **Import obligatoire:**
 
@@ -539,13 +542,40 @@ features (B, 261, 1536):
 from src.postprocessing import hv_guided_watershed
 from src.metrics.ground_truth_metrics import compute_aji
 from src.evaluation import run_inference, evaluate_batch_with_params
+from src.models.organ_head import PANNUKE_ORGANS, OrganPrediction
+from src.preprocessing import preprocess_image, HOPTIMUS_MEAN, HOPTIMUS_STD
 
 # ❌ INTERDIT - Duplication de code
 def hv_guided_watershed(...):  # Copie locale
 def run_inference(...):        # Copie locale
+ORGAN_NAMES = ["Adrenal_gland", ...]  # Liste dupliquée
+organ_probs = torch.softmax(logits, dim=1)  # Réimplémentation au lieu de predict_with_ood()
+MEAN = (0.485, 0.456, 0.406)  # Constante dupliquée
 ```
 
-**Pourquoi:** Évite les divergences d'algorithme entre scripts (bug découvert 2025-12-29: scipy.ndimage.label vs skimage.measure.label causait -2.8% AJI).
+**🔍 Comment vérifier AVANT de coder:**
+
+1. **Avant d'écrire une fonction** → `grep -r "def ma_fonction" src/` — existe-t-elle déjà ?
+2. **Avant de définir une constante** → `grep -r "MA_CONSTANTE" src/` — est-elle déjà définie ?
+3. **Avant de définir une liste** → `grep -r "ORGAN\|FAMILY\|PANNUKE" src/` — existe-t-elle ?
+4. **Avant d'appeler un modèle** → Vérifier si une méthode officielle existe (ex: `predict_with_ood()`)
+
+**🔍 Audit périodique (à faire lors des reviews):**
+
+```bash
+# Chercher des duplications de listes d'organes
+grep -rn "Adrenal_gland.*Bile-duct" --include="*.py" | grep -v "organ_head.py"
+
+# Chercher des réimplémentations de softmax pour OrganHead
+grep -rn "softmax.*organ\|organ.*softmax" --include="*.py" | grep -v "organ_head.py"
+
+# Chercher des constantes de normalisation dupliquées
+grep -rn "0.707223\|0.485.*0.456" --include="*.py" | grep -v "constants.py\|preprocessing"
+```
+
+**Pourquoi:**
+- Bug 2025-12-29: scipy.ndimage.label vs skimage.measure.label → -2.8% AJI
+- Bug 2025-12-31: softmax brut vs Temperature Scaling → confiance OrganHead 0.66 au lieu de 0.90+
 
 ### 3. FPN Chimique = use_hybrid + use_fpn_chimique
 
