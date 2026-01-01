@@ -327,8 +327,8 @@ def create_report_pdf(
             validation = "ℹ️ Validation IA limitée"
 
         id_lines = [
-            f"Organe: {display_organ}",
-            f"Famille: {result.family} — {validation}",
+            f"Organe: {display_organ} — {validation}",
+            f"Modèle: famille {result.family}",
             f"Surface: 0.01 mm² (champ limité)",
             f"Date: {datetime.now().strftime('%Y-%m-%d %H:%M')}",
         ]
