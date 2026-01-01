@@ -117,7 +117,7 @@ def compute_confidence_level(result: AnalysisResult) -> Tuple[str, str, Optional
     if organ_conf < 0.5:
         organ_penalty = 0.30
         organ_mention = f"{result.organ_name} {int(organ_conf * 100)}%"
-    elif organ_conf < 0.7:
+    elif organ_conf <= 0.7:  # Inclut 70%
         organ_penalty = 0.15
         organ_mention = f"{result.organ_name} {int(organ_conf * 100)}%"
 
