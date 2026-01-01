@@ -716,6 +716,9 @@ def create_ui():
             settings_btn = gr.Button("⚙️", scale=0, size="sm", visible=False)
             gr.Column(scale=1)  # Spacer droit
 
+        # Fichier téléchargeable (toujours visible)
+        export_file_download = gr.File(label="📥 Télécharger le rapport", visible=True)
+
         # Paramètres Watershed (R&D seulement, caché par défaut)
         params_accordion = gr.Accordion("⚙️ Paramètres Watershed", open=False, visible=False)
         with params_accordion:
@@ -844,10 +847,10 @@ def create_ui():
         )
 
         # Exports
-        export_pdf_btn.click(fn=export_pdf_handler, outputs=[export_file_rnd])
-        export_json_btn.click(fn=export_json_handler, outputs=[export_file_rnd])
-        export_nuclei_btn.click(fn=export_nuclei_csv_handler, outputs=[export_file_rnd])
-        export_summary_btn.click(fn=export_summary_csv_handler, outputs=[export_file_rnd])
+        export_pdf_btn.click(fn=export_pdf_handler, outputs=[export_file_download])
+        export_json_btn.click(fn=export_json_handler, outputs=[export_file_download])
+        export_nuclei_btn.click(fn=export_nuclei_csv_handler, outputs=[export_file_download])
+        export_summary_btn.click(fn=export_summary_csv_handler, outputs=[export_file_download])
 
     return app
 
