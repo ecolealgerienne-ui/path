@@ -160,7 +160,7 @@ stop_cockpit() {
     local count=0
     while is_running "cockpit" && [[ $count -lt 10 ]]; do
         sleep 1
-        ((count++))
+        count=$((count + 1))
     done
 
     # Force kill if still running
@@ -189,7 +189,7 @@ stop_pathologist() {
     local count=0
     while is_running "pathologist" && [[ $count -lt 10 ]]; do
         sleep 1
-        ((count++))
+        count=$((count + 1))
     done
 
     # Force kill if still running
