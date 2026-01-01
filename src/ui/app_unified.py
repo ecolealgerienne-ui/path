@@ -635,10 +635,9 @@ def create_ui():
     }
 
     /* ============================================
-       CACHER TOOLBAR SUR LA LOUPE
+       CACHER TOOLBAR SUR LA LOUPE (image seulement)
        ============================================ */
-    #loupe-image .icon-buttons,
-    #loupe-image button[aria-label] {
+    #loupe-image button {
         display: none !important;
     }
     """
