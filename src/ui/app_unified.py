@@ -517,7 +517,7 @@ def create_ui():
        ============================================ */
     .gradio-container {
         max-width: 100% !important;
-        padding: 0 20px !important;
+        padding: 0 30px !important;
     }
 
     /* Conteneur principal */
@@ -526,37 +526,42 @@ def create_ui():
     }
 
     /* ============================================
-       TYPOGRAPHIE PLUS GRANDE
+       TYPOGRAPHIE GRANDE (ÉCRAN LARGE)
        ============================================ */
     body, .gradio-container {
-        font-size: 16px !important;
+        font-size: 18px !important;
     }
 
     /* Titres */
-    h1 { font-size: 2em !important; }
-    h2 { font-size: 1.6em !important; }
-    h3 { font-size: 1.3em !important; }
+    h1 { font-size: 2.2em !important; }
+    h2 { font-size: 1.8em !important; }
+    h3 { font-size: 1.5em !important; }
 
     /* Labels et textes */
     label, .label-wrap, span {
-        font-size: 1em !important;
+        font-size: 1.1em !important;
     }
 
     /* Markdown */
     .markdown-text, .prose {
-        font-size: 1em !important;
-        line-height: 1.5 !important;
+        font-size: 1.1em !important;
+        line-height: 1.6 !important;
+    }
+
+    .prose p, .prose li {
+        font-size: 1.1em !important;
     }
 
     /* Boutons */
     button {
-        font-size: 1.1em !important;
-        padding: 12px 24px !important;
+        font-size: 1.2em !important;
+        padding: 14px 28px !important;
     }
 
-    /* Dropdowns */
+    /* Dropdowns et inputs */
     select, input, textarea {
-        font-size: 1em !important;
+        font-size: 1.1em !important;
+        padding: 10px !important;
     }
 
     /* ============================================
@@ -564,19 +569,19 @@ def create_ui():
        ============================================ */
     .header-dark {
         background: linear-gradient(90deg, #1a1a2e 0%, #16213e 100%);
-        padding: 16px 30px;
+        padding: 20px 35px;
         border-radius: 10px;
-        margin-bottom: 16px;
+        margin-bottom: 20px;
         color: white;
     }
     .header-dark h1 {
         color: white !important;
         margin: 0 !important;
-        font-size: 1.8em !important;
+        font-size: 2em !important;
     }
     .header-dark .version {
         color: #888;
-        font-size: 0.9em;
+        font-size: 1em;
     }
 
     /* ============================================
@@ -584,14 +589,14 @@ def create_ui():
        ============================================ */
     .action-bar {
         background: #f8f9fa;
-        padding: 16px 20px;
+        padding: 18px 24px;
         border-radius: 8px;
-        margin: 15px 0;
+        margin: 18px 0;
         border: 1px solid #dee2e6;
     }
 
     .action-bar button {
-        min-width: 180px;
+        min-width: 200px;
         font-weight: 600 !important;
     }
 
@@ -599,14 +604,14 @@ def create_ui():
        DEEP DIVE - 3 COLONNES
        ============================================ */
     .deep-dive {
-        margin-top: 20px;
-        gap: 20px;
+        margin-top: 25px;
+        gap: 25px;
     }
 
     .deep-dive h3 {
         border-bottom: 2px solid #007bff;
-        padding-bottom: 8px;
-        margin-bottom: 12px;
+        padding-bottom: 10px;
+        margin-bottom: 15px;
     }
 
     /* ============================================
@@ -615,18 +620,38 @@ def create_ui():
     .disclaimer {
         background-color: #fff3cd;
         border: 1px solid #ffc107;
-        padding: 12px 20px;
+        padding: 14px 24px;
         border-radius: 5px;
-        margin-bottom: 16px;
+        margin-bottom: 18px;
         text-align: center;
-        font-size: 1em;
+        font-size: 1.1em;
     }
 
     /* ============================================
-       IMAGES PLUS GRANDES
+       IMAGES
        ============================================ */
     .image-container img {
         max-height: none !important;
+    }
+
+    /* ============================================
+       CACHER LE MENU SUR LA LOUPE
+       ============================================ */
+    #loupe-container .image-container > div:first-child,
+    #loupe-container .icon-buttons,
+    #loupe-container button[aria-label],
+    #loupe-container .download-button,
+    #loupe-container .share-button,
+    #loupe-container .fullscreen-button,
+    .loupe-image .image-container > div:first-child {
+        display: none !important;
+    }
+
+    /* Cacher tous les boutons d'action sur les images de la loupe */
+    #loupe-container .svelte-1pijsyv,
+    #loupe-container [class*="icon"],
+    #loupe-container .absolute {
+        display: none !important;
     }
     """
 
