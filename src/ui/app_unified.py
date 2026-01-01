@@ -633,6 +633,16 @@ def create_ui():
     .image-container img {
         max-height: none !important;
     }
+
+    /* ============================================
+       LOUPE: Garder seulement fullscreen
+       ============================================ */
+    #loupe-image button[aria-label="Download"],
+    #loupe-image button[aria-label="Share"],
+    #loupe-image button[title="Download"],
+    #loupe-image button[title="Share"] {
+        display: none !important;
+    }
     """
 
     with gr.Blocks(
