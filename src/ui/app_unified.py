@@ -635,29 +635,10 @@ def create_ui():
     }
 
     /* ============================================
-       CACHER TOOLBAR SUR LA LOUPE (Gradio 3.x/4.x)
+       CACHER TOOLBAR SUR LA LOUPE
        ============================================ */
-    #loupe-image button,
-    #loupe-image .icon-button,
-    #loupe-image [class*="icon"],
-    #loupe-image .wrap,
-    #loupe-image > div > div:first-child,
-    #loupe-column button,
-    #loupe-column .absolute,
-    #loupe-column .top-\[5px\],
-    #loupe-column .right-\[5px\],
-    #loupe-column [class*="svelte"],
-    #component-loupe-image button {
-        display: none !important;
-        visibility: hidden !important;
-        opacity: 0 !important;
-        pointer-events: none !important;
-    }
-
-    /* Forcer pas de toolbar sur loupe */
-    #loupe-image .image-frame > div:not(.image-container),
-    #loupe-image .image-frame button,
-    #loupe-column .overflow-hidden > div:first-child:not(:only-child) {
+    #loupe-image .icon-buttons,
+    #loupe-image button[aria-label] {
         display: none !important;
     }
     """
