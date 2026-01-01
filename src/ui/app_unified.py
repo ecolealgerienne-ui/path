@@ -562,8 +562,15 @@ def create_ui():
             ],
         )
 
-        # Chargement moteur
+        # Chargement moteur (bouton ou changement dropdown)
         load_btn.click(
+            fn=load_engine,
+            inputs=[organ_select],
+            outputs=[status_text],
+        )
+
+        # Auto-chargement quand on change l'organe
+        organ_select.change(
             fn=load_engine,
             inputs=[organ_select],
             outputs=[status_text],
