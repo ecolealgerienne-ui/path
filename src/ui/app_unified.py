@@ -90,10 +90,28 @@ def get_organ_info():
 
 
 def load_engine(organ: str) -> str:
-    """Charge le moteur (wrapper UI)."""
-    result = load_engine_core(organ)
+    """
+    Charge ou change l'organe du moteur.
+
+    - Premier appel: charge H-optimus-0 + OrganHead + HoVer-Net
+    - Appels suivants: ne recharge que HoVer-Net (changement rapide)
+    """
+    # Si le moteur n'existe pas encore, chargement complet
+    if state.engine is None:
+        result = load_engine_core(organ)
+        if result["success"]:
+            return f"✅ {result['organ']} ({result['model_type']}) chargé"
+        else:
+            return f"❌ Erreur: {result.get('error', 'Inconnue')}"
+
+    # Si même organe, rien à faire
+    if state.engine.organ == organ:
+        return f"✅ {organ} déjà chargé"
+
+    # Changement d'organe: ne recharge que HoVer-Net
+    result = change_organ_core(organ)
     if result["success"]:
-        return f"✅ {result['organ']} ({result['model_type']}) chargé sur {result['device']}"
+        return f"✅ {result['organ']} ({result['model_type']}) — modèle changé"
     else:
         return f"❌ Erreur: {result.get('error', 'Inconnue')}"
 
