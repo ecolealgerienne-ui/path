@@ -272,6 +272,114 @@ Les patches extraits sont envoyés en batch au moteur HoVerNet v13:
 - Décodeur: FPN Chimique avec injection H-Channel Ruifrok
 - Configuration: Production 2026 (voir CLAUDE.md)
 
+### 4.4 Motifs de Sélection (Post-Analyse)
+
+> **Décision:** Les motifs sont générés APRÈS passage par v13 (Option B).
+> L'affichage se fait uniquement après traitement complet.
+
+#### Principe
+
+Le "Motif de Sélection" explique **pourquoi** un patch a été sélectionné et **ce qui a été trouvé**.
+Ces badges dynamiques lient CleaningNet v14 (sélection) aux métriques v13 (analyse).
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│  AFFICHAGE POST-TRAITEMENT                                  │
+│  ─────────────────────────────────────────────────────────  │
+│  Patch #42: 🔴 Haute densité | 🔍 Atypie chromatinienne     │
+│  Source: Métriques v13 HoVerNet                             │
+└─────────────────────────────────────────────────────────────┘
+```
+
+#### Implémentation
+
+```python
+def generate_selection_motifs(
+    h_entropy: float,
+    v13_result: Dict[str, Any],
+) -> List[str]:
+    """
+    Génère les motifs de sélection après analyse v13.
+
+    Args:
+        h_entropy: Entropie H calculée en Phase 2
+        v13_result: Résultats de l'inférence HoVerNet v13
+
+    Returns:
+        Liste de badges emoji + texte
+    """
+    motifs = []
+
+    # === Motifs basés sur H-channel (Phase 2) ===
+    if h_entropy > 5.0:
+        motifs.append("🔴 Haute densité nucléaire")
+
+    # === Motifs basés sur v13 (Phase 3) ===
+    if v13_result.get("nuclei_count", 0) > 100:
+        motifs.append("🔬 Amas cellulaires")
+
+    if v13_result.get("pleomorphism_score", 0) > 0.7:
+        motifs.append("🔍 Atypie chromatinienne")
+
+    if v13_result.get("mitosis_count", 0) > 0:
+        motifs.append("⚡ Activité mitotique")
+
+    if v13_result.get("nc_ratio", 0) > 0.6:
+        motifs.append("🧬 Ratio N/C élevé")
+
+    if v13_result.get("anomaly_score", 0) > 0.8:
+        motifs.append("⚠️ Zone suspecte")
+
+    # === Motifs structurels ===
+    dominant_type = v13_result.get("dominant_cell_type")
+    if dominant_type == "Neoplastic":
+        motifs.append("🎯 Cellules néoplasiques")
+    elif dominant_type == "Inflammatory":
+        motifs.append("🔥 Infiltrat inflammatoire")
+
+    return motifs
+```
+
+#### Vocabulaire Standardisé
+
+| Emoji | Motif | Critère | Source |
+|-------|-------|---------|--------|
+| 🔴 | Haute densité nucléaire | H-entropy > 5.0 | Phase 2 |
+| 🎨 | Hétérogénéité chromatinienne | H-variance > 0.15 | Phase 2 |
+| 🔬 | Amas cellulaires | nuclei_count > 100 | v13 |
+| 🔍 | Atypie chromatinienne | pleomorphism > 0.7 | v13 |
+| ⚡ | Activité mitotique | mitosis_count > 0 | v13 |
+| 🧬 | Ratio N/C élevé | nc_ratio > 0.6 | v13 |
+| ⚠️ | Zone suspecte | anomaly_score > 0.8 | v13 |
+| 🎯 | Cellules néoplasiques | dominant_type = Neoplastic | v13 |
+| 🔥 | Infiltrat inflammatoire | dominant_type = Inflammatory | v13 |
+| 📐 | Structure glandulaire | gland_pattern detected | v13 |
+
+#### Intégration JSON
+
+Les motifs sont inclus dans le schéma de sortie:
+
+```json
+{
+  "patches": [
+    {
+      "id": "x1024_y2048",
+      "coords_40x": [1024, 2048],
+      "roi_score": 0.82,
+      "h_entropy": 5.2,
+      "motifs": [
+        "🔴 Haute densité nucléaire",
+        "🔍 Atypie chromatinienne"
+      ],
+      "v13_metrics": {
+        "nuclei_count": 127,
+        "pleomorphism_score": 0.78,
+        "dominant_cell_type": "Neoplastic"
+      }
+    }
+  ]
+}
+
 ---
 
 ## 5. Contrôle Qualité (QC)
@@ -361,7 +469,18 @@ Le module v14 génère un fichier de métadonnées pour le moteur v13:
       "coords_40x": [1024, 2048],
       "roi_score": 0.82,
       "h_entropy": 4.5,
-      "blur_score": 245.3
+      "blur_score": 245.3,
+      "motifs": [
+        "🔴 Haute densité nucléaire",
+        "🔍 Atypie chromatinienne"
+      ],
+      "v13_metrics": {
+        "nuclei_count": 127,
+        "pleomorphism_score": 0.78,
+        "mitosis_count": 2,
+        "dominant_cell_type": "Neoplastic",
+        "anomaly_score": 0.45
+      }
     }
   ]
 }
