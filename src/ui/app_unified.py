@@ -312,7 +312,9 @@ def on_profile_change(profile: str):
         gr.update(visible=is_rnd),
         # Overlays checkboxes R&D
         gr.update(visible=is_rnd),
-        # Exports (visible pour pathologiste)
+        # Exports R&D (tous les exports)
+        gr.update(visible=is_rnd),
+        # Exports Pathologiste (PDF seulement)
         gr.update(visible=not is_rnd),
         # Confidence badge (pathologiste seulement)
         gr.update(visible=not is_rnd),
@@ -521,17 +523,25 @@ def create_ui():
                 phase3_overlay = gr.Image(label="Phase 3 Overlay", height=180)
 
         # ======================================================================
-        # EXPORTS (Pathologiste seulement)
+        # EXPORTS R&D (tous les exports)
         # ======================================================================
-        exports_accordion = gr.Accordion("📤 Exports", open=False, visible=True)
-        with exports_accordion:
+        exports_rnd_accordion = gr.Accordion("📤 Exports", open=False, visible=False)
+        with exports_rnd_accordion:
             with gr.Row():
-                export_pdf_btn = gr.Button("📄 Rapport PDF", variant="primary")
+                export_pdf_rnd_btn = gr.Button("📄 Rapport PDF", variant="primary")
                 export_json_btn = gr.Button("📋 JSON")
                 export_nuclei_btn = gr.Button("📊 CSV Noyaux")
                 export_summary_btn = gr.Button("📊 CSV Résumé")
 
-            export_file = gr.File(label="Fichier généré")
+            export_file_rnd = gr.File(label="Fichier généré")
+
+        # ======================================================================
+        # EXPORTS PATHOLOGISTE (PDF seulement)
+        # ======================================================================
+        exports_patho_accordion = gr.Accordion("📤 Export Rapport", open=False, visible=True)
+        with exports_patho_accordion:
+            export_pdf_patho_btn = gr.Button("📄 Générer Rapport PDF", variant="primary", size="lg")
+            export_file_patho = gr.File(label="Rapport PDF")
 
         # ======================================================================
         # CONNEXIONS
@@ -546,7 +556,8 @@ def create_ui():
                 debug_accordion_phase2,
                 debug_accordion_phase3,
                 overlays_row,
-                exports_accordion,
+                exports_rnd_accordion,
+                exports_patho_accordion,
                 confidence_html,
             ],
         )
@@ -587,11 +598,14 @@ def create_ui():
             outputs=[nucleus_info],
         )
 
-        # Exports
-        export_pdf_btn.click(fn=export_pdf_handler, outputs=[export_file])
-        export_json_btn.click(fn=export_json_handler, outputs=[export_file])
-        export_nuclei_btn.click(fn=export_nuclei_csv_handler, outputs=[export_file])
-        export_summary_btn.click(fn=export_summary_csv_handler, outputs=[export_file])
+        # Exports R&D
+        export_pdf_rnd_btn.click(fn=export_pdf_handler, outputs=[export_file_rnd])
+        export_json_btn.click(fn=export_json_handler, outputs=[export_file_rnd])
+        export_nuclei_btn.click(fn=export_nuclei_csv_handler, outputs=[export_file_rnd])
+        export_summary_btn.click(fn=export_summary_csv_handler, outputs=[export_file_rnd])
+
+        # Export Pathologiste (PDF seulement)
+        export_pdf_patho_btn.click(fn=export_pdf_handler, outputs=[export_file_patho])
 
     return app
 
