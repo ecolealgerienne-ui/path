@@ -633,13 +633,6 @@ def create_ui():
     .image-container img {
         max-height: none !important;
     }
-
-    /* ============================================
-       CACHER TOOLBAR SUR LA LOUPE (image seulement)
-       ============================================ */
-    #loupe-image button {
-        display: none !important;
-    }
     """
 
     with gr.Blocks(
