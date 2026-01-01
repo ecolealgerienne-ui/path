@@ -635,23 +635,15 @@ def create_ui():
     }
 
     /* ============================================
-       CACHER LE MENU SUR LA LOUPE
+       CACHER TOOLBAR SUR LA LOUPE (backup CSS)
        ============================================ */
-    #loupe-container .image-container > div:first-child,
-    #loupe-container .icon-buttons,
-    #loupe-container button[aria-label],
-    #loupe-container .download-button,
-    #loupe-container .share-button,
-    #loupe-container .fullscreen-button,
-    .loupe-image .image-container > div:first-child {
+    #loupe-image button,
+    #loupe-image .icon-button,
+    #loupe-image [class*="icon"],
+    #loupe-column .image-container button,
+    #loupe-column [data-testid="image"] button {
         display: none !important;
-    }
-
-    /* Cacher tous les boutons d'action sur les images de la loupe */
-    #loupe-container .svelte-1pijsyv,
-    #loupe-container [class*="icon"],
-    #loupe-container .absolute {
-        display: none !important;
+        visibility: hidden !important;
     }
     """
 
@@ -778,9 +770,9 @@ def create_ui():
                 chart_image = gr.Image(label="Distribution", height=180, show_label=False)
 
             # Colonne 3: Loupe Interactive
-            with gr.Column(scale=1):
+            with gr.Column(scale=1, elem_id="loupe-column"):
                 gr.Markdown("### 🔍 Loupe ×3")
-                zoom_display = gr.Image(height=180, show_label=False)
+                zoom_display = gr.Image(height=180, show_label=False, elem_id="loupe-image", show_download_button=False, show_fullscreen_button=False, show_share_button=False)
                 nucleus_info = gr.Markdown("*Cliquer sur un noyau*")
 
         # ==================================================================
