@@ -88,29 +88,49 @@ CLINICAL_INTERPRETATIONS = {
 # FONCTIONS D'INTERPRÉTATION CLINIQUE
 # ==============================================================================
 
-def compute_confidence_level(result: AnalysisResult) -> Tuple[str, str]:
+def compute_confidence_level(result: AnalysisResult) -> Tuple[str, str, Optional[str]]:
     """
-    Calcule le niveau de confiance global de l'IA.
+    Calcule le niveau de confiance morphologique de l'IA.
+
+    Philosophie clinique:
+    - La confiance MORPHOLOGIQUE (segmentation) domine le badge
+    - L'incertitude ORGANE est un modulateur léger, pas un verrou
+    - Un pathologiste valide la morphologie même si l'organe est incertain
 
     Returns:
-        (niveau, couleur) - ex: ("Élevée", "green")
+        (niveau, couleur, mention_organe) - ex: ("Élevée", "green", "Bile-duct 70%")
     """
     if result.uncertainty_map is None:
-        return "Non disponible", "gray"
+        return "Non disponible", "gray", None
 
-    # Moyenne d'incertitude
-    mean_uncertainty = result.uncertainty_map.mean()
+    # Score morphologique pur (DOMINANT)
+    mean_uncertainty = float(result.uncertainty_map.mean())
+    morpho_conf = 1.0 - mean_uncertainty
 
-    # Confiance organe
+    # Confiance organe (modulateur léger)
     organ_conf = result.organ_confidence
 
-    # Score combiné
-    if mean_uncertainty < 0.3 and organ_conf > 0.9:
-        return "Élevée", "green"
-    elif mean_uncertainty < 0.5 and organ_conf > 0.7:
-        return "Modérée", "orange"
+    # Pénalité organe (légère, NON bloquante)
+    organ_penalty = 0.0
+    organ_mention = None
+
+    if organ_conf < 0.5:
+        organ_penalty = 0.30
+        organ_mention = f"{result.organ_name} {int(organ_conf * 100)}%"
+    elif organ_conf < 0.7:
+        organ_penalty = 0.15
+        organ_mention = f"{result.organ_name} {int(organ_conf * 100)}%"
+
+    # Score final
+    final_conf = morpho_conf - organ_penalty
+
+    # Seuils révisés (alignés pratique pathologique)
+    if final_conf > 0.75:
+        return "Élevée", "green", organ_mention
+    elif final_conf >= 0.55:
+        return "Modérée", "orange", organ_mention
     else:
-        return "Faible", "red"
+        return "Faible", "red", organ_mention
 
 
 def interpret_density(density: float) -> str:
@@ -363,8 +383,14 @@ def format_alerts_clinical(result: AnalysisResult) -> str:
 
 
 def format_confidence_badge(result: AnalysisResult) -> str:
-    """Crée le badge de confiance HTML."""
-    level, color = compute_confidence_level(result)
+    """
+    Crée le badge de confiance morphologique HTML.
+
+    Affiche:
+    - Badge principal: Confiance morphologique IA
+    - Mention secondaire: Contexte organe incertain (si applicable)
+    """
+    level, color, organ_mention = compute_confidence_level(result)
 
     color_map = {
         "green": "#28a745",
@@ -375,7 +401,8 @@ def format_confidence_badge(result: AnalysisResult) -> str:
 
     bg_color = color_map.get(color, "#6c757d")
 
-    return f"""
+    # Badge principal
+    badge_html = f"""
     <div style="
         display: inline-block;
         background-color: {bg_color};
@@ -388,6 +415,22 @@ def format_confidence_badge(result: AnalysisResult) -> str:
         Confiance IA : {level}
     </div>
     """
+
+    # Mention secondaire si incertitude organe
+    if organ_mention:
+        badge_html += f"""
+    <div style="
+        display: block;
+        margin-top: 6px;
+        color: #6c757d;
+        font-size: 0.85em;
+        font-style: italic;
+    ">
+        ℹ️ Contexte organe incertain ({organ_mention})
+    </div>
+    """
+
+    return badge_html
 
 
 def format_nucleus_info_clinical(nucleus_data: Dict[str, Any]) -> str:
