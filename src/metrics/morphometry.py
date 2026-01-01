@@ -209,12 +209,12 @@ class MorphometryAnalyzer:
     def __init__(
         self,
         pixel_size_um: float = 0.5,  # MPP (microns per pixel)
-        min_nucleus_area: int = 20,   # Pixels minimum pour un noyau valide
+        min_nucleus_area: int = 0,    # Pas de filtre - compte tous les noyaux
     ):
         """
         Args:
             pixel_size_um: Taille d'un pixel en micromètres (0.5 pour 20x)
-            min_nucleus_area: Surface minimale pour considérer un noyau
+            min_nucleus_area: Surface minimale pour considérer un noyau (0 = pas de filtre)
         """
         self.pixel_size_um = pixel_size_um
         self.min_nucleus_area = min_nucleus_area
@@ -281,7 +281,14 @@ class MorphometryAnalyzer:
         n_neoplastic = type_counts["Neoplastic"]
         n_connective = type_counts["Connective"]
 
-        immuno_epithelial = n_inflammatory / max(n_epithelial, 1)
+        # Ratio I/E: Inflammatory / Epithelial
+        # - Si Epithelial = 0 et Inflammatory > 0 → inf (ratio non défini)
+        # - Si Epithelial = 0 et Inflammatory = 0 → 0.0 (pas d'infiltration)
+        # - Sinon → ratio normal
+        if n_epithelial == 0:
+            immuno_epithelial = float('inf') if n_inflammatory > 0 else 0.0
+        else:
+            immuno_epithelial = n_inflammatory / n_epithelial
         neoplastic_ratio = n_neoplastic / max(total, 1)
 
         # Distance Stroma-Tumeur
@@ -758,7 +765,15 @@ class MorphometryAnalyzer:
             alert_nuclei_ids["neoplasique"] = neoplastic[:20]
 
         # Infiltration lymphocytaire (TILs) - informatif
-        if immuno_epithelial > 2.0:
+        # Note: immuno_epithelial = inf quand Epithelial = 0 et Inflammatory > 0
+        if immuno_epithelial == float('inf'):
+            # Cas spécial: pas de cellules épithéliales mais présence inflammatoire
+            inflammatory = [n.id for n in nuclei if n.type_name == "Inflammatory"]
+            n_inf = len(inflammatory)
+            if n_inf > 0:
+                alerts.append(f"ℹ️ Infiltration inflammatoire ({n_inf} cellules, absence de composante épithéliale)")
+                alert_nuclei_ids["infiltration"] = inflammatory
+        elif immuno_epithelial > 2.0:
             alerts.append(f"ℹ️ Infiltration lymphocytaire notable (ratio I/E={immuno_epithelial:.1f})")
             inflammatory = [n.id for n in nuclei if n.type_name == "Inflammatory"]
             alert_nuclei_ids["infiltration"] = inflammatory
@@ -889,7 +904,12 @@ class MorphometryAnalyzer:
             narrative += "Absence de massif néoplasique significatif sur ce patch. "
 
         # TILs
-        if report.immuno_epithelial_ratio > 0.5:
+        if report.immuno_epithelial_ratio == float('inf'):
+            # Cas spécial: pas de cellules épithéliales
+            n_inf = report.type_counts.get("Inflammatory", 0)
+            if n_inf > 0:
+                narrative += f"Infiltration inflammatoire ({n_inf} cellules, sans composante épithéliale). "
+        elif report.immuno_epithelial_ratio > 0.5:
             narrative += f"Infiltration inflammatoire notable (ratio I/E={report.immuno_epithelial_ratio:.1f}). "
 
         narrative += f"\n\nConfiance du modèle : {report.confidence_level}."

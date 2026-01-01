@@ -107,17 +107,51 @@ FAMILY_WATERSHED_PARAMS = {
     "digestive": {"np_threshold": 0.45, "min_size": 60, "beta": 2.00, "min_distance": 5},    # AJI 0.6160
 }
 
-# Override par organe (optionnel - si vide, utilise les params de la famille)
-ORGAN_WATERSHED_PARAMS = {
-    # Breast: paramètres ajustés après analyse expert (run 3)
-    # Diagnostic: beta=0.75 causait encore sous-segmentation
-    # - np_threshold=0.50: affine contours, décolle noyaux adjacents
-    # - min_distance=2: évite fusions sur noyaux pléomorphes (validé)
-    # - beta=0.50: évite sous-segmentation (0.75/1.5 trop agressifs)
-    "Breast": {"np_threshold": 0.50, "min_size": 30, "beta": 0.50, "min_distance": 2},
+# =============================================================================
+# PARAMÈTRES WATERSHED PAR ORGANE (Optimisés 2025-12-31)
+# =============================================================================
+# Source: Optimisation organ-level avec optimize_watershed_aji.py
+# Voir CLAUDE.md section "Optimisation Organ-Level" pour détails
 
-    # Colon: paramètres optimisés (source: tests organ-specific)
-    # Architecture variable → params de la famille digestive
+ORGAN_WATERSHED_PARAMS = {
+    # =========================================================================
+    # RESPIRATORY (2 organes)
+    # =========================================================================
+    "Liver": {"np_threshold": 0.45, "min_size": 40, "beta": 2.0, "min_distance": 2},   # AJI 0.7207 ✅
+    "Lung": {"np_threshold": 0.50, "min_size": 40, "beta": 0.5, "min_distance": 2},    # AJI 0.6498
+
+    # =========================================================================
+    # DIGESTIVE (4 organes)
+    # =========================================================================
+    "Bile-duct": {"np_threshold": 0.50, "min_size": 30, "beta": 1.0, "min_distance": 3},  # AJI 0.6980 ✅
+    "Stomach": {"np_threshold": 0.50, "min_size": 70, "beta": 1.0, "min_distance": 3},    # AJI 0.6869 ✅
+    "Esophagus": {"np_threshold": 0.45, "min_size": 30, "beta": 0.5, "min_distance": 2},  # AJI 0.6583
+    "Colon": {"np_threshold": 0.45, "min_size": 50, "beta": 0.5, "min_distance": 2},      # AJI 0.5730 ❌
+
+    # =========================================================================
+    # UROLOGIC (6 organes)
+    # =========================================================================
+    "Bladder": {"np_threshold": 0.50, "min_size": 20, "beta": 2.0, "min_distance": 4},   # AJI 0.6997 ✅
+    "Kidney": {"np_threshold": 0.50, "min_size": 20, "beta": 1.0, "min_distance": 1},    # AJI 0.6944 ✅
+    "Cervix": {"np_threshold": 0.50, "min_size": 20, "beta": 0.5, "min_distance": 2},    # AJI 0.6872 ✅
+    "Testis": {"np_threshold": 0.50, "min_size": 50, "beta": 2.0, "min_distance": 2},    # AJI 0.6650
+    "Ovarian": {"np_threshold": 0.50, "min_size": 40, "beta": 0.5, "min_distance": 3},   # AJI 0.6306
+    "Uterus": {"np_threshold": 0.50, "min_size": 10, "beta": 1.0, "min_distance": 1},    # AJI 0.6173
+
+    # =========================================================================
+    # EPIDERMAL (2 organes)
+    # =========================================================================
+    "Skin": {"np_threshold": 0.50, "min_size": 30, "beta": 1.5, "min_distance": 2},      # AJI 0.6359
+    "HeadNeck": {"np_threshold": 0.50, "min_size": 30, "beta": 2.0, "min_distance": 4},  # AJI 0.6289
+
+    # =========================================================================
+    # GLANDULAR (5 organes)
+    # =========================================================================
+    "Adrenal_gland": {"np_threshold": 0.45, "min_size": 50, "beta": 1.0, "min_distance": 4},  # AJI 0.7236 ✅ RECORD
+    "Pancreatic": {"np_threshold": 0.50, "min_size": 20, "beta": 1.0, "min_distance": 2},     # AJI 0.6763
+    "Thyroid": {"np_threshold": 0.50, "min_size": 30, "beta": 1.5, "min_distance": 2},        # AJI 0.6722
+    "Breast": {"np_threshold": 0.45, "min_size": 40, "beta": 1.5, "min_distance": 2},         # AJI 0.6566
+    "Prostate": {"np_threshold": 0.50, "min_size": 10, "beta": 1.0, "min_distance": 2},       # AJI 0.6164
 }
 
 

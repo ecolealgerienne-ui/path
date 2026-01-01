@@ -157,13 +157,21 @@ def export_summary_csv_handler() -> Optional[str]:
 def on_image_click(evt: gr.SelectData) -> str:
     """Gère le clic sur l'image pour afficher les infos du noyau."""
     if state.current_result is None:
-        return "Aucune analyse"
+        return "⚠️ Aucune analyse active"
 
     try:
         x, y = evt.index
         nucleus = state.current_result.get_nucleus_at(y, x)
 
         if nucleus is None:
+            # Vérification de sécurité: récupérer l'ID brut sur la map
+            if state.current_result.instance_map is not None:
+                y_int, x_int = int(y), int(x)
+                if 0 <= y_int < state.current_result.instance_map.shape[0] and \
+                   0 <= x_int < state.current_result.instance_map.shape[1]:
+                    raw_id = state.current_result.instance_map[y_int, x_int]
+                    if raw_id > 0:
+                        return f"⚠️ Noyau identifié (ID:{raw_id}) mais exclu des métriques (filtrage Phase 2/3)"
             return "Clic sur le fond (pas de noyau)"
 
         # Détection petit noyau (pas de métriques complètes)
@@ -310,9 +318,93 @@ def change_organ(organ: str) -> str:
 def create_ui():
     """Crée l'interface Gradio."""
 
+    # CSS pour l'effet loupe
+    custom_css = """
+    /* Loupe (lentille de zoom) - Compatible Gradio 4.x */
+    .loupe-lens {
+        position: fixed;
+        border: 3px solid #007bff;
+        border-radius: 50%;
+        width: 180px;
+        height: 180px;
+        pointer-events: none;
+        box-shadow: 0 0 15px rgba(0, 123, 255, 0.6);
+        background-repeat: no-repeat;
+        display: none;
+        z-index: 9999;
+        background-color: white;
+    }
+
+    .loupe-lens.active {
+        display: block;
+    }
+
+    /* Style pour les images zoomables */
+    .gradio-image img {
+        cursor: crosshair;
+    }
+    """
+
+    # JavaScript pour l'effet loupe (compatible Gradio 4.x avec overlay)
+    loupe_script = """
+    <script>
+    (function() {
+        let lens = null;
+        const zoomFactor = 2.5;
+        const lensSize = 150;
+
+        function init() {
+            if (!lens) {
+                lens = document.createElement('div');
+                lens.style.cssText = "position:fixed; border:2px solid #007bff; border-radius:50%; width:150px; height:150px; pointer-events:none; display:none; z-index:10000; box-shadow:0 0 10px rgba(0,0,0,0.5); background-repeat:no-repeat; background-color:black;";
+                document.body.appendChild(lens);
+            }
+
+            document.addEventListener('mousemove', function(e) {
+                // Utiliser closest() pour contourner les overlays Gradio
+                const container = e.target.closest('.gradio-image, .image-container, [class*="image"]');
+                const img = container ? container.querySelector('img') : null;
+
+                if (img && img.src && img.naturalWidth > 0 && !img.src.includes('data:image/svg')) {
+                    const rect = img.getBoundingClientRect();
+                    const x = e.clientX - rect.left;
+                    const y = e.clientY - rect.top;
+
+                    // Vérifier qu'on est dans l'image
+                    if (x < 0 || y < 0 || x > rect.width || y > rect.height) {
+                        lens.style.display = 'none';
+                        return;
+                    }
+
+                    // Ratio pour images redimensionnées
+                    const ratioX = img.naturalWidth / rect.width;
+                    const ratioY = img.naturalHeight / rect.height;
+
+                    lens.style.display = 'block';
+                    lens.style.left = (e.clientX - lensSize / 2) + 'px';
+                    lens.style.top = (e.clientY - lensSize / 2) + 'px';
+                    lens.style.backgroundImage = 'url(' + img.src + ')';
+                    lens.style.backgroundSize = (img.naturalWidth * zoomFactor) + 'px ' + (img.naturalHeight * zoomFactor) + 'px';
+                    lens.style.backgroundPosition = '-' + (x * ratioX * zoomFactor - lensSize / 2) + 'px -' + (y * ratioY * zoomFactor - lensSize / 2) + 'px';
+                } else {
+                    lens.style.display = 'none';
+                }
+            });
+        }
+
+        // Délai pour laisser Gradio charger complètement
+        setTimeout(init, 1000);
+    })();
+    </script>
+    """
+
     with gr.Blocks(
         title="CellViT-Optimus R&D Cockpit",
+        css=custom_css,
     ) as app:
+
+        # Injection du script loupe
+        gr.HTML(loupe_script)
 
         # Header
         gr.Markdown("# CellViT-Optimus — R&D Cockpit")

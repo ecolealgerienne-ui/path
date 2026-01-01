@@ -3,11 +3,13 @@
 # CellViT-Optimus UI Manager
 # =============================================================================
 # Usage:
-#   ./scripts/ui_manager.sh start [cockpit|pathologist|all]
-#   ./scripts/ui_manager.sh stop [cockpit|pathologist|all]
-#   ./scripts/ui_manager.sh restart [cockpit|pathologist|all]
+#   ./scripts/ui_manager.sh start [unified|cockpit|pathologist|all]
+#   ./scripts/ui_manager.sh stop [unified|cockpit|pathologist|all]
+#   ./scripts/ui_manager.sh restart [unified|cockpit|pathologist|all]
 #   ./scripts/ui_manager.sh status
-#   ./scripts/ui_manager.sh logs [cockpit|pathologist]
+#   ./scripts/ui_manager.sh logs [unified|cockpit|pathologist]
+#
+# Recommended: Use 'unified' for single app with profile selector (shared engine)
 # =============================================================================
 
 set -e
@@ -19,6 +21,7 @@ LOG_DIR="$PROJECT_ROOT/logs"
 PID_DIR="$PROJECT_ROOT/.pids"
 
 # Ports
+UNIFIED_PORT=7860
 COCKPIT_PORT=7860
 PATHOLOGIST_PORT=7861
 
@@ -75,6 +78,48 @@ is_running() {
 # =============================================================================
 # Start functions
 # =============================================================================
+
+start_unified() {
+    local organ="$1"  # Optional: organ to preload
+
+    if is_running "unified"; then
+        log_warn "Unified UI already running (PID: $(get_pid unified))"
+        return 1
+    fi
+
+    if [[ -n "$organ" ]]; then
+        log_info "Starting Unified UI on port $UNIFIED_PORT (preload: $organ)..."
+    else
+        log_info "Starting Unified UI on port $UNIFIED_PORT (no preload)..."
+    fi
+
+    cd "$PROJECT_ROOT"
+    if [[ -n "$organ" ]]; then
+        nohup python -m src.ui.app_unified \
+            --organ "$organ" \
+            --port "$UNIFIED_PORT" \
+            > "$LOG_DIR/unified.log" 2>&1 &
+    else
+        nohup python -m src.ui.app_unified \
+            --port "$UNIFIED_PORT" \
+            > "$LOG_DIR/unified.log" 2>&1 &
+    fi
+
+    local pid=$!
+    echo "$pid" > "$PID_DIR/unified.pid"
+
+    # Wait a bit and check if still running
+    sleep 2
+    if is_running "unified"; then
+        log_success "Unified UI started (PID: $pid)"
+        log_info "  URL: http://localhost:$UNIFIED_PORT"
+        log_info "  Logs: $LOG_DIR/unified.log"
+        log_info "  Use profile selector to switch between R&D and Pathologist views"
+    else
+        log_error "Unified UI failed to start. Check logs: $LOG_DIR/unified.log"
+        return 1
+    fi
+}
 
 start_cockpit() {
     local organ="${1:-$DEFAULT_ORGAN}"
@@ -144,6 +189,35 @@ start_pathologist() {
 # Stop functions
 # =============================================================================
 
+stop_unified() {
+    if ! is_running "unified"; then
+        log_warn "Unified UI is not running"
+        rm -f "$PID_DIR/unified.pid"
+        return 0
+    fi
+
+    local pid=$(get_pid "unified")
+    log_info "Stopping Unified UI (PID: $pid)..."
+
+    kill "$pid" 2>/dev/null || true
+
+    # Wait for graceful shutdown
+    local count=0
+    while is_running "unified" && [[ $count -lt 10 ]]; do
+        sleep 1
+        count=$((count + 1))
+    done
+
+    # Force kill if still running
+    if is_running "unified"; then
+        log_warn "Force killing Unified UI..."
+        kill -9 "$pid" 2>/dev/null || true
+    fi
+
+    rm -f "$PID_DIR/unified.pid"
+    log_success "Unified UI stopped"
+}
+
 stop_cockpit() {
     if ! is_running "cockpit"; then
         log_warn "R&D Cockpit is not running"
@@ -160,7 +234,7 @@ stop_cockpit() {
     local count=0
     while is_running "cockpit" && [[ $count -lt 10 ]]; do
         sleep 1
-        ((count++))
+        count=$((count + 1))
     done
 
     # Force kill if still running
@@ -189,7 +263,7 @@ stop_pathologist() {
     local count=0
     while is_running "pathologist" && [[ $count -lt 10 ]]; do
         sleep 1
-        ((count++))
+        count=$((count + 1))
     done
 
     # Force kill if still running
@@ -211,7 +285,16 @@ show_status() {
     echo "=== CellViT-Optimus UI Status ==="
     echo ""
 
-    # Cockpit
+    # Unified (recommended)
+    if is_running "unified"; then
+        local pid=$(get_pid "unified")
+        echo -e "Unified UI:      ${GREEN}RUNNING${NC} (PID: $pid) ★ Recommended"
+        echo "  URL: http://localhost:$UNIFIED_PORT"
+    else
+        echo -e "Unified UI:      ${RED}STOPPED${NC}"
+    fi
+
+    # Cockpit (legacy)
     if is_running "cockpit"; then
         local pid=$(get_pid "cockpit")
         echo -e "R&D Cockpit:     ${GREEN}RUNNING${NC} (PID: $pid)"
@@ -220,7 +303,7 @@ show_status() {
         echo -e "R&D Cockpit:     ${RED}STOPPED${NC}"
     fi
 
-    # Pathologist
+    # Pathologist (legacy)
     if is_running "pathologist"; then
         local pid=$(get_pid "pathologist")
         echo -e "Pathologist UI:  ${GREEN}RUNNING${NC} (PID: $pid)"
@@ -257,28 +340,34 @@ usage() {
     echo "Usage: $0 <command> [target] [options]"
     echo ""
     echo "Commands:"
-    echo "  start [cockpit|pathologist|all]   Start UI(s)"
-    echo "  stop [cockpit|pathologist|all]    Stop UI(s)"
-    echo "  restart [cockpit|pathologist|all] Restart UI(s)"
-    echo "  status                            Show status"
-    echo "  logs [cockpit|pathologist]        Show logs (tail -f)"
+    echo "  start [unified|cockpit|pathologist|all]   Start UI"
+    echo "  stop [unified|cockpit|pathologist|all]    Stop UI"
+    echo "  restart [unified|cockpit|pathologist|all] Restart UI"
+    echo "  status                                     Show status"
+    echo "  logs [unified|cockpit|pathologist]        Show logs (tail -f)"
+    echo ""
+    echo "Targets:"
+    echo "  unified     ★ RECOMMENDED: Single app with profile selector (shared engine)"
+    echo "  cockpit     Legacy: R&D Cockpit only"
+    echo "  pathologist Legacy: Pathologist UI only"
+    echo "  all         Same as 'unified' (default)"
     echo ""
     echo "Options:"
-    echo "  --organ ORGAN   Set initial organ (default: Lung)"
+    echo "  --organ ORGAN   Preload a specific organ model (optional for unified)"
     echo ""
     echo "Examples:"
-    echo "  $0 start all                    # Start both UIs"
-    echo "  $0 start cockpit --organ Breast # Start cockpit with Breast model"
+    echo "  $0 start                        # Start unified UI (no preload)"
+    echo "  $0 start unified --organ Breast # Start with Breast model preloaded"
     echo "  $0 stop all                     # Stop all UIs"
-    echo "  $0 restart pathologist          # Restart pathologist UI"
+    echo "  $0 restart unified              # Restart unified UI"
     echo "  $0 status                       # Show status"
-    echo "  $0 logs cockpit                 # Follow cockpit logs"
+    echo "  $0 logs unified                 # Follow unified logs"
 }
 
 # Parse arguments
 COMMAND="${1:-}"
 TARGET="${2:-all}"
-ORGAN="$DEFAULT_ORGAN"
+ORGAN=""  # No default preload for unified; use --organ to specify
 
 # Parse options
 shift 2 2>/dev/null || true
@@ -297,6 +386,9 @@ done
 case "$COMMAND" in
     start)
         case "$TARGET" in
+            unified)
+                start_unified "$ORGAN"
+                ;;
             cockpit)
                 start_cockpit "$ORGAN"
                 ;;
@@ -304,8 +396,7 @@ case "$COMMAND" in
                 start_pathologist "$ORGAN"
                 ;;
             all)
-                start_cockpit "$ORGAN"
-                start_pathologist "$ORGAN"
+                start_unified "$ORGAN"
                 ;;
             *)
                 log_error "Unknown target: $TARGET"
@@ -317,6 +408,9 @@ case "$COMMAND" in
 
     stop)
         case "$TARGET" in
+            unified)
+                stop_unified
+                ;;
             cockpit)
                 stop_cockpit
                 ;;
@@ -324,6 +418,7 @@ case "$COMMAND" in
                 stop_pathologist
                 ;;
             all)
+                stop_unified
                 stop_cockpit
                 stop_pathologist
                 ;;
@@ -337,6 +432,11 @@ case "$COMMAND" in
 
     restart)
         case "$TARGET" in
+            unified)
+                stop_unified
+                sleep 1
+                start_unified "$ORGAN"
+                ;;
             cockpit)
                 stop_cockpit
                 sleep 1
@@ -348,11 +448,9 @@ case "$COMMAND" in
                 start_pathologist "$ORGAN"
                 ;;
             all)
-                stop_cockpit
-                stop_pathologist
+                stop_unified
                 sleep 1
-                start_cockpit "$ORGAN"
-                start_pathologist "$ORGAN"
+                start_unified "$ORGAN"
                 ;;
             *)
                 log_error "Unknown target: $TARGET"
@@ -368,7 +466,7 @@ case "$COMMAND" in
 
     logs)
         if [[ "$TARGET" == "all" ]]; then
-            log_error "Please specify cockpit or pathologist"
+            log_error "Please specify unified, cockpit, or pathologist"
             exit 1
         fi
         show_logs "$TARGET"

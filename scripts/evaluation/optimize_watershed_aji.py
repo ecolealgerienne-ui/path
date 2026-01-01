@@ -32,8 +32,19 @@ from src.evaluation import run_inference, evaluate_batch_with_params
 from src.postprocessing import hv_guided_watershed  # Pour sanity check seulement
 
 
-def load_model_and_data(checkpoint_path: str, family: str, device: str = "cuda", data_prefix: str = None):
-    """Load model and validation data - use checkpoint metadata for hybrid mode."""
+def load_model_and_data(checkpoint_path: str, family: str, device: str = "cuda", organ: str = None):
+    """Load model and validation data - use checkpoint metadata for hybrid mode.
+
+    Args:
+        checkpoint_path: Path to model checkpoint
+        family: Family name (respiratory, digestive, etc.)
+        device: Device to use (string like "cuda" or "cpu")
+        organ: Optional organ filter. If specified, only samples from this organ are returned.
+               Uses dynamic filtering from family data (no regeneration needed).
+    """
+    # Convert to torch.device for explicit GPU handling
+    device = torch.device(device)
+    print(f"  🖥️  Device: {device} (CUDA available: {torch.cuda.is_available()})")
 
     # Load checkpoint
     checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
@@ -67,56 +78,123 @@ def load_model_and_data(checkpoint_path: str, family: str, device: str = "cuda",
     elif use_hybrid:
         print(f"  ✅ Mode HYBRID activé: injection H-channel via RuifrokExtractor")
 
-    # Load validation data (utilise data_prefix si spécifié)
-    prefix = data_prefix if data_prefix else family
+    # Load validation data (always from family file)
     data_dir = Path("data/family_data_v13_smart_crops")
-    val_file = data_dir / f"{prefix}_val_v13_smart_crops.npz"
+    val_file = data_dir / f"{family}_val_v13_smart_crops.npz"
 
     if not val_file.exists():
         raise FileNotFoundError(f"Validation data not found: {val_file}")
 
-    val_data = np.load(val_file, allow_pickle=True)
+    val_data_raw = np.load(val_file, allow_pickle=True)
 
-    # Load features (utilise prefix)
+    # Load features (always from family file)
     features_dir = Path("data/cache/family_data")
-    rgb_features_file = features_dir / f"{prefix}_rgb_features_v13_smart_crops_val.npz"
+    rgb_features_file = features_dir / f"{family}_rgb_features_v13_smart_crops_val.npz"
 
     if not rgb_features_file.exists():
         raise FileNotFoundError(f"RGB features not found: {rgb_features_file}")
 
-    rgb_features = np.load(rgb_features_file, allow_pickle=True)['features']
+    rgb_features_raw = np.load(rgb_features_file, allow_pickle=True)['features']
 
-    return model, val_data, rgb_features, use_hybrid
+    # =========================================================================
+    # FILTRAGE DYNAMIQUE PAR ORGANE (sans régénération des données)
+    # =========================================================================
+    if organ:
+        organ_names = val_data_raw.get('organ_names', None)
+        if organ_names is None:
+            raise ValueError(f"organ_names not found in {val_file}. Regenerate data with latest prepare_v13_smart_crops.py")
+
+        # Normaliser les noms (gérer bytes vs str)
+        organ_names = np.array([
+            name.decode('utf-8') if isinstance(name, bytes) else name
+            for name in organ_names
+        ])
+
+        # Créer le masque de filtre
+        organ_mask = organ_names == organ
+        n_organ = organ_mask.sum()
+
+        if n_organ == 0:
+            available_organs = np.unique(organ_names)
+            raise ValueError(f"No samples found for organ '{organ}'. Available: {available_organs}")
+
+        print(f"  🔬 Filtrage organe: {organ} → {n_organ}/{len(organ_names)} samples")
+
+        # Appliquer le masque sur toutes les données
+        val_data = {
+            'images': val_data_raw['images'][organ_mask],
+            'inst_maps': val_data_raw['inst_maps'][organ_mask],
+            'organ_names': organ_names[organ_mask],
+        }
+        # Copier les autres clés si présentes
+        for key in ['hv_targets', 'nt_targets', 'source_image_ids']:
+            if key in val_data_raw.files:
+                val_data[key] = val_data_raw[key][organ_mask]
+
+        rgb_features = rgb_features_raw[organ_mask]
+    else:
+        # Mode famille: utiliser toutes les données
+        val_data = val_data_raw
+        rgb_features = rgb_features_raw
+
+    return model, val_data, rgb_features, use_hybrid, device
 
 
-def cache_predictions(model, val_data, rgb_features, use_hybrid, n_samples, device):
-    """Run inference once and cache all predictions."""
+def cache_predictions(model, val_data, rgb_features, use_hybrid, n_samples, device, batch_size=16):
+    """Run inference once and cache all predictions using batch processing on GPU."""
     images = val_data['images']
     n_to_eval = min(n_samples, len(images))
 
-    print("Running inference on validation samples...")
+    # Ensure device is torch.device
+    if isinstance(device, str):
+        device = torch.device(device)
+
+    print(f"\n🔥 Running batch inference on {device} (batch_size={batch_size})...")
     predictions = []
 
-    for i in range(n_to_eval):
-        # Prepare inputs
-        features = torch.from_numpy(rgb_features[i:i+1]).float().to(device)
+    # Process in batches for GPU efficiency
+    for batch_start in range(0, n_to_eval, batch_size):
+        batch_end = min(batch_start + batch_size, n_to_eval)
+        batch_indices = range(batch_start, batch_end)
+        current_batch_size = len(batch_indices)
+
+        # Prepare batch on CPU, then transfer once to GPU
+        features_batch = torch.from_numpy(rgb_features[batch_start:batch_end]).float().to(device)
 
         if use_hybrid:
-            image = images[i]
-            if image.shape[-1] == 3:
-                image = np.transpose(image, (2, 0, 1))
-            image_tensor = torch.from_numpy(image).float().unsqueeze(0).to(device)
-            if image_tensor.max() > 1:
-                image_tensor = image_tensor / 255.0
+            # Prepare images batch
+            images_list = []
+            for i in batch_indices:
+                image = images[i]
+                if image.shape[-1] == 3:
+                    image = np.transpose(image, (2, 0, 1))
+                images_list.append(image)
+
+            images_batch = torch.from_numpy(np.stack(images_list)).float().to(device)
+            if images_batch.max() > 1:
+                images_batch = images_batch / 255.0
         else:
-            image_tensor = None
+            images_batch = None
 
-        # Use shared inference function
-        np_pred, hv_pred = run_inference(model, features, image_tensor, device)
-        predictions.append((np_pred, hv_pred))
+        # Batch inference on GPU
+        with torch.no_grad():
+            outputs = model(features_batch, images_rgb=images_batch)
 
-        if (i + 1) % 10 == 0:
-            print(f"  Inference: {i+1}/{n_to_eval}")
+            if isinstance(outputs, dict):
+                np_out = outputs['np']
+                hv_out = outputs['hv']
+            else:
+                np_out, hv_out, _ = outputs
+
+            # Softmax for NP
+            np_probs = torch.softmax(np_out, dim=1)[:, 1].cpu().numpy()  # (B, 224, 224)
+            hv_preds = hv_out.cpu().numpy()  # (B, 2, 224, 224)
+
+        # Store predictions
+        for j in range(current_batch_size):
+            predictions.append((np_probs[j], hv_preds[j]))
+
+        print(f"  Batch {batch_start//batch_size + 1}/{(n_to_eval + batch_size - 1)//batch_size}: {batch_end}/{n_to_eval} samples")
 
     return predictions
 
@@ -217,11 +295,22 @@ def main():
     parser.add_argument("--checkpoint", type=str, required=True, help="Path to model checkpoint")
     parser.add_argument("--family", type=str, default="epidermal", help="Family to evaluate")
     parser.add_argument("--organ", type=str, default=None,
-                        help="Specific organ (optional). If specified, loads {organ}_val.npz instead of {family}_val.npz")
+                        help="Specific organ (optional). Dynamic filtering from family data (no regeneration needed). Ex: Lung, Colon, Breast")
     parser.add_argument("--n_samples", type=int, default=50, help="Number of samples to evaluate")
+    parser.add_argument("--batch_size", type=int, default=16, help="Batch size for GPU inference (default: 16)")
     parser.add_argument("--device", type=str, default="cuda", help="Device to use")
     parser.add_argument("--output_dir", type=str, default="results/watershed_optimization",
                         help="Output directory for results")
+
+    # Custom parameter ranges for Phase 2 refinement
+    parser.add_argument("--beta_range", type=str, default=None,
+                        help="Custom beta values (comma-separated). Ex: '1.0,1.5,2.0'")
+    parser.add_argument("--min_size_range", type=str, default=None,
+                        help="Custom min_size values (comma-separated). Ex: '35,40,45'")
+    parser.add_argument("--np_threshold_range", type=str, default=None,
+                        help="Custom np_threshold values (comma-separated). Ex: '0.40,0.45,0.50'")
+    parser.add_argument("--min_distance_range", type=str, default=None,
+                        help="Custom min_distance values (comma-separated). Ex: '3,4,5'")
 
     args = parser.parse_args()
 
@@ -230,31 +319,46 @@ def main():
         print("CUDA not available, using CPU")
         args.device = "cpu"
 
-    # Préfixe pour les fichiers de données (organe ou famille)
-    data_prefix = args.organ.lower() if args.organ else args.family
-
-    # Load model and data
+    # Load model and data (with optional organ filter - dynamic, no regeneration needed)
     print(f"\nLoading model from: {args.checkpoint}")
+    print(f"  Family: {args.family}")
     if args.organ:
-        print(f"  Organ filter: {args.organ}")
-        print(f"  Data prefix: {data_prefix}")
-    model, val_data, rgb_features, use_hybrid = load_model_and_data(
-        args.checkpoint, args.family, args.device, data_prefix=data_prefix
+        print(f"  Organ filter: {args.organ} (dynamic filtering)")
+    model, val_data, rgb_features, use_hybrid, device = load_model_and_data(
+        args.checkpoint, args.family, args.device, organ=args.organ
     )
     print(f"Model loaded. Hybrid mode: {use_hybrid}")
     print(f"Validation samples: {len(val_data['images'])}")
+    print(f"  🚀 Model on: {next(model.parameters()).device}")
 
-    # Cache predictions (inference runs once)
+    # Cache predictions (batch inference on GPU - much faster)
     predictions = cache_predictions(
         model, val_data, rgb_features, use_hybrid,
-        args.n_samples, args.device
+        args.n_samples, device, batch_size=args.batch_size
     )
 
     # Get GT instances
     gt_instances = list(val_data['inst_maps'][:len(predictions)])
 
+    # Parse custom parameter ranges (for Phase 2 refinement)
+    beta_range = [float(x) for x in args.beta_range.split(',')] if args.beta_range else None
+    min_size_range = [int(x) for x in args.min_size_range.split(',')] if args.min_size_range else None
+    np_threshold_range = [float(x) for x in args.np_threshold_range.split(',')] if args.np_threshold_range else None
+    min_distance_range = [int(x) for x in args.min_distance_range.split(',')] if args.min_distance_range else None
+
+    # Build kwargs for grid_search (only override if custom range provided)
+    grid_kwargs = {}
+    if beta_range:
+        grid_kwargs['beta_range'] = beta_range
+    if min_size_range:
+        grid_kwargs['min_size_range'] = min_size_range
+    if np_threshold_range:
+        grid_kwargs['np_threshold_range'] = np_threshold_range
+    if min_distance_range:
+        grid_kwargs['min_distance_range'] = min_distance_range
+
     # Run grid search using shared evaluation module
-    best_params, results = grid_search(predictions, gt_instances)
+    best_params, results = grid_search(predictions, gt_instances, **grid_kwargs)
 
     # Sort results by AJI
     results_sorted = sorted(results, key=lambda x: x['aji_mean'], reverse=True)
@@ -296,11 +400,14 @@ def main():
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    # Nom du fichier: organe si spécifié, sinon famille
+    output_prefix = args.organ.lower() if args.organ else args.family
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    results_file = output_dir / f"watershed_optimization_{data_prefix}_{timestamp}.json"
+    results_file = output_dir / f"watershed_optimization_{output_prefix}_{timestamp}.json"
 
     output_data = {
         'family': args.family,
+        'organ': args.organ,  # None si mode famille
         'n_samples': args.n_samples,
         'best_params': best_params,
         'best_aji': results_sorted[0]['aji_mean'],
@@ -322,7 +429,80 @@ def main():
     print(f"  --min_size {best_params['min_size']}")
     print(f"  --np_threshold {best_params['np_threshold']}")
     print(f"  --min_distance {best_params['min_distance']}")
-    print(f"{'='*80}\n")
+    print(f"{'='*80}")
+
+    # =========================================================================
+    # PHASE 2 COMMAND GENERATION (narrowed ranges around best params)
+    # =========================================================================
+    # Only suggest Phase 2 if we're using wide ranges (no custom ranges specified)
+    if not any([args.beta_range, args.min_size_range, args.np_threshold_range, args.min_distance_range]):
+        print(f"\n{'='*80}")
+        print("🔬 PHASE 2: REFINEMENT COMMAND")
+        print(f"{'='*80}")
+        print("Run with more samples and narrowed ranges around best parameters:")
+        print()
+
+        # Generate narrowed ranges (±1 step around best)
+        best_beta = best_params['beta']
+        best_min_size = best_params['min_size']
+        best_np_thr = best_params['np_threshold']
+        best_min_dist = best_params['min_distance']
+
+        # Narrowed ranges with bounds
+        beta_narrow = [max(0.5, best_beta - 0.5), best_beta, min(3.0, best_beta + 0.5)]
+        min_size_narrow = [max(10, best_min_size - 10), best_min_size, min(80, best_min_size + 10)]
+        np_thr_narrow = [max(0.25, best_np_thr - 0.05), best_np_thr, min(0.55, best_np_thr + 0.05)]
+        min_dist_narrow = [max(1, best_min_dist - 1), best_min_dist, min(7, best_min_dist + 1)]
+
+        # Remove duplicates and sort
+        beta_narrow = sorted(list(set(beta_narrow)))
+        min_size_narrow = sorted(list(set(min_size_narrow)))
+        np_thr_narrow = sorted(list(set(np_thr_narrow)))
+        min_dist_narrow = sorted(list(set(min_dist_narrow)))
+
+        # Build command
+        cmd_parts = [
+            "python scripts/evaluation/optimize_watershed_aji.py",
+            f"    --checkpoint {args.checkpoint}",
+            f"    --family {args.family}",
+        ]
+        if args.organ:
+            cmd_parts.append(f"    --organ {args.organ}")
+        cmd_parts.extend([
+            "    --n_samples 100",
+            f"    --batch_size {args.batch_size}",
+            f"    --beta_range \"{','.join(f'{v:.1f}' for v in beta_narrow)}\"",
+            f"    --min_size_range \"{','.join(str(v) for v in min_size_narrow)}\"",
+            f"    --np_threshold_range \"{','.join(f'{v:.2f}' for v in np_thr_narrow)}\"",
+            f"    --min_distance_range \"{','.join(str(v) for v in min_dist_narrow)}\""
+        ])
+
+        print(" \\\n".join(cmd_parts))
+        n_configs = len(beta_narrow) * len(min_size_narrow) * len(np_thr_narrow) * len(min_dist_narrow)
+        print(f"\n📊 Phase 2: {n_configs} configurations (vs 400 in Phase 1)")
+        print(f"{'='*80}\n")
+    else:
+        # Phase 2 already running - just show test command
+        print(f"\n{'='*80}")
+        print("✅ FINAL TEST COMMAND")
+        print(f"{'='*80}")
+        cmd_parts = [
+            "python scripts/evaluation/test_v13_smart_crops_aji.py",
+            f"    --checkpoint {args.checkpoint}",
+            f"    --family {args.family}",
+        ]
+        if args.organ:
+            cmd_parts.append(f"    --organ {args.organ}")
+        cmd_parts.extend([
+            "    --n_samples 100",
+            "    --use_hybrid --use_fpn_chimique",
+            f"    --beta {best_params['beta']}",
+            f"    --min_size {best_params['min_size']}",
+            f"    --np_threshold {best_params['np_threshold']}",
+            f"    --min_distance {best_params['min_distance']}"
+        ])
+        print(" \\\n".join(cmd_parts))
+        print(f"{'='*80}\n")
 
 
 if __name__ == "__main__":

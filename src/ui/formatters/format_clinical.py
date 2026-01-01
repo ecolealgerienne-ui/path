@@ -21,14 +21,15 @@ from src.ui.inference_engine import AnalysisResult
 # ==============================================================================
 
 CLINICAL_INTERPRETATIONS = {
-    # Pléomorphisme — Langage factuel (corrélation, pas suspicion)
+    # Pléomorphisme — Critère morphologique ISOLÉ (1/3 critères Nottingham)
+    # Note: Le grade complet requiert aussi tubules + mitoses
     "pleomorphism_3": (
-        "🔴 **Pléomorphisme sévère (3/3)** — "
-        "Critère morphologique corrélé au grade nucléaire élevé (Nottingham/Elston)"
+        "🔴 **Pléomorphisme sévère (score 3/3)** — "
+        "Critère morphologique isolé corrélé au grade nucléaire élevé"
     ),
     "pleomorphism_2": (
-        "🟡 **Pléomorphisme modéré (2/3)** — "
-        "Variation notable de taille et forme nucléaire"
+        "🟡 **Pléomorphisme modéré (score 2/3)** — "
+        "Variation notable de taille/forme nucléaire (critère isolé)"
     ),
 
     # Mitoses — Faits observés (pas "processus tumoral agressif")
@@ -87,29 +88,78 @@ CLINICAL_INTERPRETATIONS = {
 # FONCTIONS D'INTERPRÉTATION CLINIQUE
 # ==============================================================================
 
-def compute_confidence_level(result: AnalysisResult) -> Tuple[str, str]:
+def compute_confidence_level(result: AnalysisResult) -> Tuple[str, str, Optional[str]]:
     """
-    Calcule le niveau de confiance global de l'IA.
+    Calcule le niveau de confiance morphologique de l'IA.
+
+    Philosophie clinique:
+    - La confiance MORPHOLOGIQUE (segmentation) domine le badge
+    - L'incertitude ORGANE est un modulateur léger, pas un verrou
+    - Un pathologiste valide la morphologie même si l'organe est incertain
+    - Des signaux morphologiques FORTS garantissent un plancher de confiance
 
     Returns:
-        (niveau, couleur) - ex: ("Élevée", "green")
+        (niveau, couleur, mention_organe) - ex: ("Élevée", "green", "Bile-duct 70%")
     """
     if result.uncertainty_map is None:
-        return "Non disponible", "gray"
+        return "Non disponible", "gray", None
 
-    # Moyenne d'incertitude
-    mean_uncertainty = result.uncertainty_map.mean()
+    # Score morphologique pur (DOMINANT)
+    mean_uncertainty = float(result.uncertainty_map.mean())
+    morpho_conf = 1.0 - mean_uncertainty
 
-    # Confiance organe
+    # Confiance organe (modulateur léger)
     organ_conf = result.organ_confidence
 
-    # Score combiné
-    if mean_uncertainty < 0.3 and organ_conf > 0.9:
-        return "Élevée", "green"
-    elif mean_uncertainty < 0.5 and organ_conf > 0.7:
-        return "Modérée", "orange"
+    # Pénalité organe (légère, NON bloquante)
+    organ_penalty = 0.0
+    organ_mention = None
+
+    if organ_conf < 0.5:
+        organ_penalty = 0.30
+        organ_mention = f"{result.organ_name} {int(organ_conf * 100)}%"
+    elif organ_conf <= 0.7:  # Inclut 70%
+        organ_penalty = 0.15
+        organ_mention = f"{result.organ_name} {int(organ_conf * 100)}%"
+
+    # Score final
+    final_conf = morpho_conf - organ_penalty
+
+    # ==========================================================================
+    # PLANCHER DE CONFIANCE: Signaux morphologiques forts
+    # ==========================================================================
+    # Si des signaux morphologiques forts et convergents sont détectés,
+    # la confiance ne peut PAS être "Faible" — c'est cliniquement incorrect.
+    # Un pathologiste serait très confiant dans la morphologie même si
+    # le contexte organe est incertain.
+    # ==========================================================================
+    has_strong_signal = False
+
+    # Signal 1: Pléomorphisme modéré ou sévère (≥2/3)
+    if result.pleomorphism_score >= 2:
+        has_strong_signal = True
+
+    # Signal 2: Activité mitotique significative (≥5 candidates)
+    if result.n_mitosis_candidates >= 5:
+        has_strong_signal = True
+
+    # Signal 3: Anisocaryose marquée (CV ≥ 0.5)
+    if result.spatial_analysis and hasattr(result.spatial_analysis, 'pleomorphism'):
+        pleo = result.spatial_analysis.pleomorphism
+        if pleo and hasattr(pleo, 'area_cv') and pleo.area_cv >= 0.5:
+            has_strong_signal = True
+
+    # Appliquer le plancher si signaux forts détectés
+    if has_strong_signal and final_conf < 0.55:
+        final_conf = 0.55  # Force "Modérée" minimum
+
+    # Seuils révisés (alignés pratique pathologique)
+    if final_conf > 0.75:
+        return "Élevée", "green", organ_mention
+    elif final_conf >= 0.55:
+        return "Modérée", "orange", organ_mention
     else:
-        return "Faible", "red"
+        return "Faible", "red", organ_mention
 
 
 def interpret_density(density: float) -> str:
@@ -125,35 +175,48 @@ def interpret_density(density: float) -> str:
 
 
 def interpret_pleomorphism(score: int) -> str:
-    """Interprète le score de pléomorphisme."""
-    interpretations = {
-        1: "Faible (compatible grade I)",
-        2: "Modéré (compatible grade II)",
-        3: "Sévère (compatible grade III)",
-    }
-    return interpretations.get(score, "Non évalué")
-
-
-def interpret_mitotic_index(index: Optional[float], n_candidates: int = 0) -> str:
     """
-    Interprète l'index mitotique.
+    Interprète le score de pléomorphisme.
+
+    Note: Le pléomorphisme nucléaire est UN des 3 critères du grade de Nottingham.
+    Le grade complet requiert aussi: formation tubulaire + index mitotique.
+    """
+    interpretations = {
+        1: "Faible (score 1/3)",
+        2: "Modéré (score 2/3)",
+        3: "Sévère (score 3/3)",
+    }
+    base = interpretations.get(score, "Non évalué")
+    if score in (1, 2, 3):
+        return f"{base} *— critère morphologique isolé*"
+    return base
+
+
+def interpret_mitotic_activity(n_candidates: int = 0) -> str:
+    """
+    Interprète l'activité mitotique (signal IA, pas un index clinique).
+
+    Note: L'index mitotique clinique requiert un comptage sur 10 HPF
+    par un pathologiste. Cette fonction retourne une évaluation IA
+    des figures mitotiques suspectes.
 
     Args:
-        index: Index mitotique (None si surface insuffisante)
-        n_candidates: Nombre de candidats mitose (Phase 3)
+        n_candidates: Nombre de figures mitotiques suspectes détectées
     """
-    if index is None:
-        # Surface insuffisante pour extrapolation HPF
-        if n_candidates == 0:
-            return "N/A (patch unique)"
-        else:
-            return f"{n_candidates} candidat(s) *(patch unique)*"
-    elif index < 3:
-        return f"{index:.0f}/10 HPF (Faible)"
-    elif index < 8:
-        return f"{index:.0f}/10 HPF (Modéré)"
+    if n_candidates == 0:
+        return "Aucune figure suspecte"
+    elif n_candidates >= 10:
+        return f"Élevée ({n_candidates} figures suspectes)"
+    elif n_candidates >= 5:
+        return f"Modérée ({n_candidates} figures suspectes)"
     else:
-        return f"{index:.0f}/10 HPF (Élevé)"
+        return f"Faible ({n_candidates} figure(s) suspecte(s))"
+
+
+# Alias pour compatibilité (déprécié)
+def interpret_mitotic_index(index: Optional[float], n_candidates: int = 0) -> str:
+    """Déprécié: utiliser interpret_mitotic_activity()"""
+    return interpret_mitotic_activity(n_candidates)
 
 
 # ==============================================================================
@@ -169,21 +232,39 @@ def format_identification_clinical(
     """
     Formate l'identification de l'organe (style clinique).
 
+    L'organe SÉLECTIONNÉ par l'utilisateur est affiché en PRIMAIRE.
+    OrganHead sert de VALIDATION (cohérence), pas de source.
+
     Args:
         result: Résultat d'analyse
-        organ: Nom de l'organe sélectionné
+        organ: Nom de l'organe sélectionné par l'utilisateur
         family: Famille du modèle
         is_dedicated: True si modèle dédié
     """
-    # Afficher le modèle utilisé
+    # 1. Titre = Organe sélectionné (pas OrganHead)
     if is_dedicated:
-        model_line = f"**Modèle:** {organ} ★ (dédié)"
+        title = f"### {organ} ★"
+        model_line = f"*Modèle dédié — famille {family}*"
     else:
-        model_line = f"**Modèle:** {family} (famille)\n*Organe: {organ}*"
+        title = f"### {organ}"
+        model_line = f"*Modèle famille {family}*"
 
-    return f"""### {result.organ_name}
-**Confiance IA:** {result.organ_confidence:.0%}
-{model_line}"""
+    # 2. Validation OrganHead (cohérence)
+    if result.organ_confidence >= 0.5:
+        if result.organ_name == organ:
+            validation_line = f"✓ Cohérence IA confirmée ({result.organ_confidence:.0%})"
+        else:
+            validation_line = f"⚠️ L'IA suggère {result.organ_name} ({result.organ_confidence:.0%})"
+    else:
+        validation_line = "ℹ️ Validation IA non disponible (surface limitée)"
+
+    # 3. Disclaimer surface
+    surface_warning = "*Analyse sur champ limité (0.01 mm²)*"
+
+    return f"""{title}
+{model_line}
+{validation_line}
+{surface_warning}"""
 
 
 def format_metrics_clinical(
@@ -213,10 +294,10 @@ def format_metrics_clinical(
         density_label = interpret_density(m.nuclei_per_mm2)
         lines.append(f"**Densité cellulaire:** {density_label} ({m.nuclei_per_mm2:.0f}/mm²)")
 
-        # Index mitotique interprété (avec n_candidates pour affichage si index=None)
+        # Activité mitotique (signal IA, pas un index clinique)
         n_candidates = result.n_mitosis_candidates if result.spatial_analysis else m.mitotic_candidates
-        mitotic_label = interpret_mitotic_index(m.mitotic_index_per_10hpf, n_candidates)
-        lines.append(f"**Index mitotique:** {mitotic_label}")
+        mitotic_label = interpret_mitotic_activity(n_candidates)
+        lines.append(f"**Activité mitotique:** {mitotic_label}")
 
         # Ratio néoplasique
         if m.neoplastic_ratio > 0.5:
@@ -331,8 +412,14 @@ def format_alerts_clinical(result: AnalysisResult) -> str:
 
 
 def format_confidence_badge(result: AnalysisResult) -> str:
-    """Crée le badge de confiance HTML."""
-    level, color = compute_confidence_level(result)
+    """
+    Crée le badge de confiance morphologique HTML.
+
+    Affiche:
+    - Badge principal: Confiance morphologique IA
+    - Mention secondaire: Contexte organe incertain (si applicable)
+    """
+    level, color, organ_mention = compute_confidence_level(result)
 
     color_map = {
         "green": "#28a745",
@@ -343,7 +430,8 @@ def format_confidence_badge(result: AnalysisResult) -> str:
 
     bg_color = color_map.get(color, "#6c757d")
 
-    return f"""
+    # Badge principal
+    badge_html = f"""
     <div style="
         display: inline-block;
         background-color: {bg_color};
@@ -356,6 +444,22 @@ def format_confidence_badge(result: AnalysisResult) -> str:
         Confiance IA : {level}
     </div>
     """
+
+    # Mention secondaire si incertitude organe
+    if organ_mention:
+        badge_html += f"""
+    <div style="
+        display: block;
+        margin-top: 6px;
+        color: #6c757d;
+        font-size: 0.85em;
+        font-style: italic;
+    ">
+        ℹ️ Contexte organe incertain ({organ_mention})
+    </div>
+    """
+
+    return badge_html
 
 
 def format_nucleus_info_clinical(nucleus_data: Dict[str, Any]) -> str:

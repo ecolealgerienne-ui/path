@@ -244,6 +244,97 @@ Chaque image source 256×256 génère 5 crops 224×224 avec rotations:
 
 **Objectif atteint:** 1/5 (Respiratory) | **Proche (>96%):** 3/5
 
+### 🔬 Optimisation Organ-Level (2025-12-31)
+
+> **Découverte:** L'optimisation par organe révèle des paramètres watershed très différents
+> masqués par l'approche famille. Gain potentiel significatif.
+
+#### Respiratory: Lung vs Liver
+
+| Organe | AJI | Beta | Min Size | NP Thr | Min Dist | Status |
+|--------|-----|------|----------|--------|----------|--------|
+| **Liver** | **0.7207** | 2.0 | 40 | 0.45 | 2 | ✅ **+6% vs objectif** |
+| Lung | 0.6498 | 0.5 | 40 | 0.50 | 2 | 95.6% |
+| *Famille Respiratory* | *0.6872* | *0.50* | *30* | *0.40* | *5* | *moyenne pondérée* |
+
+**Insight clé:** Beta optimal varie de **0.5 (Lung)** à **2.0 (Liver)** — les noyaux hépatiques
+nécessitent plus de pondération HV pour la séparation des instances.
+
+#### Epidermal: Skin vs HeadNeck
+
+| Organe | AJI | Beta | Min Size | NP Thr | Min Dist | Status |
+|--------|-----|------|----------|--------|----------|--------|
+| Skin | 0.6359 | 1.5 | 30 | 0.50 | 2 | 93.5% |
+| HeadNeck | 0.6289 | 2.0 | 30 | 0.50 | 4 | 92.5% |
+| *Famille Epidermal* | *0.6203* | *1.0* | *20* | *0.45* | *3* | *91.2%* |
+
+**Insight:** Paramètres similaires entre Skin et HeadNeck (contrairement à Respiratory).
+Amélioration organ-level: +1.4% à +2.5% vs famille. Gap restant ~6-7% vs objectif.
+
+#### Digestive: Colon, Stomach, Esophagus, Bile-duct
+
+| Organe | AJI | Beta | Min Size | NP Thr | Min Dist | Status |
+|--------|-----|------|----------|--------|----------|--------|
+| **Bile-duct** | **0.6980** | 1.0 | 30 | 0.50 | 3 | ✅ **102.6%** |
+| **Stomach** | **0.6869** | 1.0 | 70 | 0.50 | 3 | ✅ **101%** |
+| Esophagus | 0.6583 | 0.5 | 30 | 0.45 | 2 | 96.8% |
+| Colon | 0.5730 | 0.5 | 50 | 0.45 | 2 | ❌ 84.3% |
+| *Famille Digestive* | *0.6160* | *2.0* | *60* | *0.45* | *5* | *90.6%* |
+
+**Insights:**
+- **Bile-duct & Stomach** atteignent l'objectif avec params identiques (beta=1.0, np_thr=0.50, min_dist=3)
+- **Stomach min_size=70** — noyaux glandulaires larges, filtre les lymphocytes
+- **Colon = problème majeur** (84.3%) — mucine + inflammation. Écart-type 0.179 (le plus élevé)
+- Le Colon tire la moyenne famille vers le bas; les 3 autres organes sont tous > 0.65
+
+#### Urologic: Kidney, Bladder, Testis, Ovarian, Uterus, Cervix
+
+| Organe | AJI | Beta | Min Size | NP Thr | Min Dist | Status |
+|--------|-----|------|----------|--------|----------|--------|
+| **Bladder** | **0.6997** | 2.0 | 20 | 0.50 | 4 | ✅ **102.9%** |
+| **Kidney** | **0.6944** | 1.0 | 20 | 0.50 | 1 | ✅ **102.1%** |
+| **Cervix** | **0.6872** | 0.5 | 20 | 0.50 | 2 | ✅ **101.1%** |
+| Testis | 0.6650 | 2.0 | 50 | 0.50 | 2 | 97.8% |
+| Ovarian | 0.6306 | 0.5 | 40 | 0.50 | 3 | 92.7% |
+| Uterus | 0.6173 | 1.0 | 10 | 0.50 | 1 | 90.8% |
+| *Famille Urologic* | *0.6743* | *0.50* | *30* | *0.45* | *2* | *99.2%* |
+
+**Insights:**
+- **3 organes Grade Clinique:** Bladder, Kidney, Cervix
+- **Kidney min_distance=1** — le plus agressif, possible grâce à l'injection H-channel
+- **np_threshold=0.50** optimal pour toute la famille (haute confiance)
+- **Uterus min_size=10** — noyaux très petits, filtrage minimal nécessaire
+
+#### Glandular: Breast, Prostate, Thyroid, Pancreatic, Adrenal_gland
+
+| Organe | AJI | Beta | Min Size | NP Thr | Min Dist | Status |
+|--------|-----|------|----------|--------|----------|--------|
+| **Adrenal_gland** | **0.7236** | 1.0 | 50 | 0.45 | 4 | ✅ **106.4%** 🏆 |
+| Pancreatic | 0.6763 | 1.0 | 20 | 0.50 | 2 | 99.5% |
+| Thyroid | 0.6722 | 1.5 | 30 | 0.50 | 2 | 98.9% |
+| Breast | 0.6566 | 1.5 | 40 | 0.45 | 2 | 96.6% |
+| Prostate | 0.6164 | 1.0 | 10 | 0.50 | 2 | 90.6% |
+| *Famille Glandular* | *0.6566* | *0.50* | *50* | *0.40* | *3* | *96.6%* |
+
+**Insights:**
+- **Adrenal_gland = RECORD ABSOLU** (0.7236) — dépasse même Liver (0.7207)
+- **Pancreatic & Thyroid** très proches de l'objectif (99.5% et 98.9%)
+- **min_distance=4** pour Adrenal_gland — tissus bien séparés, noyaux réguliers
+- **Prostate min_size=10** — noyaux très petits (similaire à Uterus)
+
+#### Commande Optimisation Organ-Level
+
+```bash
+# Phase 1: Exploration rapide (20 samples, 400 configs)
+python scripts/evaluation/optimize_watershed_aji.py \
+    --checkpoint models/checkpoints_v13_smart_crops/hovernet_{family}_v13_smart_crops_hybrid_fpn_best.pth \
+    --family {family} \
+    --organ {Organ} \
+    --n_samples 20
+
+# Phase 2: Copier-coller la commande générée automatiquement (100 samples, ~81 configs)
+```
+
 ---
 
 ## Pipeline Complet (Commandes)
@@ -426,20 +517,23 @@ features (B, 261, 1536):
 
 > **"On touche pas l'existant"** — Les scripts existants fonctionnent. Toute modification requiert validation explicite.
 
-### 2. Modules Partagés OBLIGATOIRES
+### 2. Modules Partagés OBLIGATOIRES — SINGLE SOURCE OF TRUTH
 
 > **🚫 JAMAIS de duplication de code critique**
 >
 > Les algorithmes critiques DOIVENT être dans `src/` et importés par tous les scripts.
-> **NE JAMAIS copier-coller** une fonction entre scripts — créer un module partagé.
+> **NE JAMAIS copier-coller** une fonction, constante ou liste entre scripts.
 
 **Modules partagés existants:**
 
-| Module | Fonction | Usage |
-|--------|----------|-------|
+| Module | Fonction/Constante | Usage |
+|--------|-------------------|-------|
 | `src/postprocessing/watershed.py` | `hv_guided_watershed()` | Segmentation instances |
 | `src/metrics/ground_truth_metrics.py` | `compute_aji()` | Calcul AJI+ |
 | `src/evaluation/instance_evaluation.py` | `run_inference()`, `evaluate_sample()`, `evaluate_batch_with_params()` | Évaluation complète |
+| `src/models/organ_head.py` | `PANNUKE_ORGANS`, `OrganPrediction`, `predict_with_ood()` | Prédiction organe |
+| `src/preprocessing/__init__.py` | `preprocess_image()`, `HOPTIMUS_MEAN`, `HOPTIMUS_STD` | Normalisation images |
+| `src/constants.py` | Toutes les constantes globales | Configuration |
 
 **Import obligatoire:**
 
@@ -448,13 +542,40 @@ features (B, 261, 1536):
 from src.postprocessing import hv_guided_watershed
 from src.metrics.ground_truth_metrics import compute_aji
 from src.evaluation import run_inference, evaluate_batch_with_params
+from src.models.organ_head import PANNUKE_ORGANS, OrganPrediction
+from src.preprocessing import preprocess_image, HOPTIMUS_MEAN, HOPTIMUS_STD
 
 # ❌ INTERDIT - Duplication de code
 def hv_guided_watershed(...):  # Copie locale
 def run_inference(...):        # Copie locale
+ORGAN_NAMES = ["Adrenal_gland", ...]  # Liste dupliquée
+organ_probs = torch.softmax(logits, dim=1)  # Réimplémentation au lieu de predict_with_ood()
+MEAN = (0.485, 0.456, 0.406)  # Constante dupliquée
 ```
 
-**Pourquoi:** Évite les divergences d'algorithme entre scripts (bug découvert 2025-12-29: scipy.ndimage.label vs skimage.measure.label causait -2.8% AJI).
+**🔍 Comment vérifier AVANT de coder:**
+
+1. **Avant d'écrire une fonction** → `grep -r "def ma_fonction" src/` — existe-t-elle déjà ?
+2. **Avant de définir une constante** → `grep -r "MA_CONSTANTE" src/` — est-elle déjà définie ?
+3. **Avant de définir une liste** → `grep -r "ORGAN\|FAMILY\|PANNUKE" src/` — existe-t-elle ?
+4. **Avant d'appeler un modèle** → Vérifier si une méthode officielle existe (ex: `predict_with_ood()`)
+
+**🔍 Audit périodique (à faire lors des reviews):**
+
+```bash
+# Chercher des duplications de listes d'organes
+grep -rn "Adrenal_gland.*Bile-duct" --include="*.py" | grep -v "organ_head.py"
+
+# Chercher des réimplémentations de softmax pour OrganHead
+grep -rn "softmax.*organ\|organ.*softmax" --include="*.py" | grep -v "organ_head.py"
+
+# Chercher des constantes de normalisation dupliquées
+grep -rn "0.707223\|0.485.*0.456" --include="*.py" | grep -v "constants.py\|preprocessing"
+```
+
+**Pourquoi:**
+- Bug 2025-12-29: scipy.ndimage.label vs skimage.measure.label → -2.8% AJI
+- Bug 2025-12-31: softmax brut vs Temperature Scaling → confiance OrganHead 0.66 au lieu de 0.90+
 
 ### 3. FPN Chimique = use_hybrid + use_fpn_chimique
 
@@ -530,6 +651,7 @@ python scripts/training/train_hovernet_family_v13_smart_crops.py \
 | [docs/V13_SMART_CROPS_STRATEGY.md](./docs/V13_SMART_CROPS_STRATEGY.md) | Stratégie V13 (CTO validée) |
 | [docs/sessions/2025-12-29_respiratory_v13_smart_crops_results.md](./docs/sessions/2025-12-29_respiratory_v13_smart_crops_results.md) | Résultats Respiratory |
 | [docs/UI_COCKPIT.md](./docs/UI_COCKPIT.md) | **R&D Cockpit (IHM Gradio)** — Architecture, API, Phases |
+| [docs/specs/V14_WSI_TRIAGE_SPEC.md](./docs/specs/V14_WSI_TRIAGE_SPEC.md) | **Spec v14.0** — Triage WSI pyramidal (< 2 min/lame) |
 
 ---
 
@@ -552,6 +674,301 @@ python scripts/training/train_hovernet_family_v13_smart_crops.py \
 1. **Watershed tuning** — Continuer optimisation des paramètres par famille
 2. **Data augmentation** — Augmentations légères (luminosité, contraste)
 3. **Transfer learning** — Utiliser Respiratory comme pretrained pour les autres familles
+
+---
+
+## 🔬 Insights Biologiques & R&D Future (2025-12-31)
+
+> **Contexte:** L'optimisation organ-level a révélé des signatures biologiques encodées
+> dans les paramètres watershed optimaux. Ces découvertes ouvrent des pistes R&D avancées.
+
+### Découvertes Clés
+
+#### 1. Le Paradoxe du Beta (Liver β=2.0 vs Lung β=0.5)
+
+| Organe | Beta | Morphologie Nucléaire | Explication |
+|--------|------|----------------------|-------------|
+| **Liver** | 2.0 | Noyaux vésiculeux (clairs) + nucléole central proéminent | Beta élevé → ignore micro-variations NP, se focalise sur gradient HV |
+| **Lung** | 0.5 | Noyaux denses, ratio N/C élevé, débris inflammatoires | Beta bas → pondère plus la probabilité NP |
+
+**Conclusion:** Plus un noyau est "vésiculeux" (clair avec point sombre), plus β doit être élevé.
+Le foie est le "Gold Standard" de cette morphologie.
+
+#### 2. Signal/Bruit par Tissu
+
+| Tissu | Caractéristique | Impact sur AJI |
+|-------|-----------------|----------------|
+| **Liver** | Déterministe (organisé, hépatocytes réguliers) | AJI élevé (0.72) |
+| **Lung** | Stochastique (inflammatoire, débris, N/C variable) | AJI plus bas (0.65) |
+
+Le gap de 10% AJI reflète la complexité tissulaire intrinsèque, pas uniquement la qualité du modèle.
+
+#### 3. Efficacité de l'Injection H-Channel (Ruifrok)
+
+L'injection du canal Hématoxyline via déconvolution Ruifrok permet:
+- `min_distance=2` sans sur-fusion (impossible sans H-channel)
+- Séparation précise des noyaux adjacents
+- "Lubrifiant géométrique" pour le Watershed
+
+> *"Sans l'injection Hybrid V2, descendre à min_distance=2 causerait une explosion de fusions."*
+
+### Pistes R&D Future
+
+#### Piste 1: Régression Dynamique des Paramètres (Meta-Segmentation)
+
+**Concept:** Utiliser les probabilités OrganHead pour interpoler les paramètres watershed.
+
+```
+β_final = P_lung × β_lung + P_liver × β_liver
+```
+
+| Aspect | Évaluation |
+|--------|------------|
+| Faisabilité | Moyenne |
+| Impact | Moyen |
+| Limitation | OrganHead opère au niveau IMAGE, pas noyau. Interpolation uniforme sur tout le patch. |
+
+#### Piste 2: Watershed Adaptatif par Incertitude ⭐ PRIORITAIRE
+
+**Concept:** Moduler β et min_distance localement selon la carte d'incertitude.
+
+```python
+# Pseudo-code
+if uncertainty[region] > 0.7:
+    beta_local = beta_base * 1.5      # Plus conservateur
+    min_dist_local = min_dist_base - 1  # Plus prudent
+```
+
+| Aspect | Évaluation |
+|--------|------------|
+| Faisabilité | **Haute** |
+| Impact | **Haut** |
+| Avantage | L'incertitude est déjà calculée. Adaptation locale zone par zone. |
+
+#### Piste 3: Test-Time Adaptation (TTA)
+
+**Concept:** Exécuter le Watershed avec N configurations, sélectionner selon métrique de compacité.
+
+| Aspect | Évaluation |
+|--------|------------|
+| Faisabilité | Basse |
+| Impact | Moyen |
+| Limitation | Latence × N configs. Critère "compacité" pas toujours corrélé à la justesse. |
+
+#### Piste 4: Watershed "Z-Aware" Multi-Échelle
+
+**Concept:** Deux passes Watershed en parallèle pour gérer la stratification tissulaire (couche basale vs superficielle).
+
+```python
+# Passe "Basale" (noyaux petits, denses)
+params_basal = {"min_distance": 2, "min_size": 20, "beta": 1.0}
+
+# Passe "Superficielle" (noyaux grands, espacés)
+params_superficial = {"min_distance": 5, "min_size": 40, "beta": 2.0}
+
+# Sélection locale basée sur magnitude gradient HV
+if hv_gradient_magnitude[region] > threshold:
+    use_basal_params()
+else:
+    use_superficial_params()
+```
+
+| Aspect | Évaluation |
+|--------|------------|
+| Faisabilité | Moyenne |
+| Impact | Moyen-Haut |
+| Limitation | Risque d'artefacts aux frontières entre zones. Critère de sélection à valider empiriquement. |
+| Cas d'usage | **Epidermal** (Skin/HeadNeck) où l'écart-type AJI est élevé (0.12-0.14). |
+
+#### Piste 5: Attention Spatiale via Patch Tokens H-Optimus-0 ⭐
+
+**Concept:** Utiliser les 256 patch tokens (features[:, 5:261, :]) pour pondérer les paramètres Watershed localement.
+
+```python
+# Les patch tokens encodent la texture locale (kératine, mélanine, etc.)
+patch_features = features[:, 5:261, :]  # (B, 256, 1536)
+
+# MLP léger pour prédire les paramètres locaux
+local_params = param_predictor(patch_features)  # → beta, min_size par patch
+```
+
+| Aspect | Évaluation |
+|--------|------------|
+| Faisabilité | Moyenne-Haute |
+| Impact | **Haut** |
+| Avantage | Les patch tokens encodent DÉJÀ la texture locale. Pas besoin de feature supplémentaire. |
+| Cas d'usage | Détection automatique zones kératine → augmente min_size. Zones mélanine → ajuste beta. |
+
+### Investigations Prioritaires
+
+> **⚠️ AVANT d'implémenter les pistes avancées:**
+>
+> L'écart-type élevé (0.12-0.14) sur Epidermal nécessite une investigation des outliers.
+> Certains samples avec AJI < 0.50 pourraient avoir un staining H&E défaillant qui
+> "trompe" l'extracteur Ruifrok. Vérifier avant d'investir en R&D avancée.
+
+### Pistes Exploratoires (Risque Variable)
+
+#### Piste 6: Extraction H-Channel Adaptative (Macenko Dynamique)
+
+> **⚠️ ATTENTION: CONTRADICTION AVEC RÉSULTATS V13**
+>
+> Cette piste **contredit** les résultats documentés: Macenko cause **-4.3% AJI** vs Raw.
+> Le conflit Ruifrok/Macenko est établi. Explorer avec précaution.
+
+**Concept:** Estimer les vecteurs de densité optique (OD) par patch au lieu de vecteurs Ruifrok fixes.
+
+| Aspect | Évaluation |
+|--------|------------|
+| Faisabilité | Moyenne |
+| Impact | Incertain |
+| **Risque** | **ÉLEVÉ** — Macenko déplace Éosine vers vecteur H → "fantômes" cytoplasme |
+| Statut | ❌ Non recommandé sans investigation approfondie |
+
+#### Piste 7: Exploitation des Register Tokens (H-Optimus-0)
+
+**Concept:** Utiliser les 4 register tokens (features[:, 1:5, :]) actuellement ignorés pour pondérer β dynamiquement.
+
+```python
+# Register tokens capturent structure globale / type de stroma
+register_tokens = features[:, 1:5, :]  # (B, 4, 1536)
+
+# Si stroma fibreux dense détecté → augmente β
+beta_modifier = stroma_classifier(register_tokens)
+beta_final = beta_base * beta_modifier
+```
+
+| Aspect | Évaluation |
+|--------|------------|
+| Faisabilité | Moyenne |
+| Impact | Moyen |
+| Avantage | Tokens déjà disponibles, pas de coût d'extraction supplémentaire |
+| Limitation | Nécessite recherche sur ce que H-Optimus-0 encode dans ces tokens |
+
+#### Piste 8: FPN Chimique Multispectrale (CLAHE/LBP)
+
+**Concept:** Injecter des canaux de texture (CLAHE, LBP) en plus du canal H dans les couches hautes de la FPN.
+
+```python
+# Injection multi-canal dans FPN
+h_channel = ruifrok_extract(image)      # Canal Hématoxyline
+clahe_channel = apply_clahe(image)       # Contraste local adaptatif
+lbp_channel = compute_lbp(image)         # Texture Local Binary Pattern
+
+fpn_input = concat([h_channel, clahe_channel, lbp_channel])
+```
+
+| Aspect | Évaluation |
+|--------|------------|
+| Faisabilité | Basse |
+| Impact | Moyen-Haut |
+| Limitation | Requiert modification architecture + réentraînement complet |
+| Cas d'usage | Tissus haute hétérogénéité (Epidermal, Grade III) |
+
+#### Piste 9: Watershed Itératif par Densité Nucléaire ⭐
+
+**Concept:** Deux passes — estimer densité locale, puis ajuster min_distance.
+
+```python
+# Passe 1: Segmentation rapide → estimation densité
+quick_seg = watershed(np_pred, hv_pred, min_distance=3)
+density = count_nuclei(quick_seg) / area_mm2
+
+# Passe 2: Ajustement local
+if density > 2500:  # Amas dense (noyaux/mm²)
+    min_distance = 2
+elif density < 1000:  # Zone éparse
+    min_distance = 5
+else:
+    min_distance = 3
+
+final_seg = watershed(np_pred, hv_pred, min_distance=min_distance)
+```
+
+| Aspect | Évaluation |
+|--------|------------|
+| Faisabilité | **Haute** |
+| Impact | **Haut** |
+| Avantage | Implémentable sans réentraînement. Critère densité = métrique pathologique standard. |
+| Complémentaire | Combine bien avec Piste 4 (Z-Aware) |
+
+#### Piste 10: NC-based Beta-Switch (Auto-Tuner) ⭐⭐ PRIORITAIRE
+
+**Concept:** Utiliser la branche NC (Nuclear Classification) pour switcher dynamiquement les paramètres watershed selon le contexte tissulaire.
+
+```python
+# Extraction du ratio de pixels classés "Connective" (ID 2)
+prob_map_nc = outputs['nc']
+connective_ratio = (torch.argmax(prob_map_nc, dim=1) == 2).float().mean()
+
+# Switch dynamique des hyper-paramètres
+if connective_ratio > 0.40:
+    beta = 0.5        # Tissus fibreux → priorité forme
+    min_distance = 4  # Évite sur-segmentation noyaux fusiformes
+else:
+    beta = 2.0        # Tissus épithéliaux → priorité séparation HV
+    min_distance = 2  # Agressif sur amas denses
+```
+
+| Aspect | Évaluation |
+|--------|------------|
+| Faisabilité | **Haute** |
+| Impact | **Haut** |
+| Avantage | NC déjà calculé (gratuit). Adaptation contextuelle automatique. |
+| Cas d'usage | **Uterus/Ovarian** (tissus mésenchymateux, AJI < 0.65) |
+
+### Architecture V13 Production Finale (2025-12-31)
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│              V13 PRODUCTION ARCHITECTURE FINALE                  │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                  │
+│  1. MOTEUR PHYSIQUE (Verrouillé ✅)                             │
+│     └── Extraction Ruifrok FIXE (Beer-Lambert)                  │
+│         • Vecteurs constants: [0.650, 0.704, 0.286]             │
+│         • Macenko INTERDIT (cause -4.3% AJI)                    │
+│                                                                  │
+│  2. OPTIMISATION VISUELLE (Optionnel 🔬)                        │
+│     └── CLAHE Post-Ruifrok sur canal H uniquement               │
+│         • Préserve intégrité Beer-Lambert                       │
+│         • Améliore contraste noyaux vésiculeux                  │
+│                                                                  │
+│  3. INTELLIGENCE CONTEXTUELLE (Nouveau 🎯)                      │
+│     └── NC-based Beta-Switch (Auto-Tuner)                       │
+│         • connective_ratio > 0.40 → β=0.5, min_dist=4           │
+│         • connective_ratio ≤ 0.40 → β=2.0, min_dist=2           │
+│         • Cible: Uterus/Ovarian (tissus mésenchymateux)         │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Bilan Organ-Level (2025-12-31)
+
+**7 organes "Grade Clinique" (AJI ≥ 0.68):**
+
+| Rang | Organe | Famille | AJI |
+|------|--------|---------|-----|
+| 🏆 1 | **Adrenal_gland** | Glandular | **0.7236** |
+| 2 | Liver | Respiratory | 0.7207 |
+| 3 | Bladder | Urologic | 0.6997 |
+| 4 | Bile-duct | Digestive | 0.6980 |
+| 5 | Kidney | Urologic | 0.6944 |
+| 6 | Cervix | Urologic | 0.6872 |
+| 7 | Stomach | Digestive | 0.6869 |
+
+**Prochains objectifs:**
+- Pancreatic (99.5%), Thyroid (98.9%), Testis (97.8%) — quick wins potentiels
+- Colon (84.3%) — nécessite investigation outliers (mucine)
+- Uterus (90.8%), Ovarian (92.7%), Prostate (90.6%) — cibles NC Beta-Switch
+
+### Production: Avantage Compétitif
+
+> **⚠️ RAPPEL CRITIQUE (2025-12-25):**
+>
+> La configuration **Marquage Virtuel Hybride** (Fusion H-Channel via Ruifrok au décodeur)
+> est le cœur de l'avantage compétitif V13. Chaque nouveau modèle d'organe DOIT conserver
+> cette injection à 100% pour maintenir les scores AJI au-dessus de 0.68.
 
 ---
 

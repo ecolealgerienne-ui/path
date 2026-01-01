@@ -114,9 +114,11 @@ def hv_guided_watershed(
         unique_before = np.unique(instances)
         print(f"    After watershed: {len(unique_before)} unique values")
 
-    # Remove small objects
+    # Remove small objects (skip if only 0 or 1 label to avoid warning)
     if min_size > 0:
-        instances = remove_small_objects(instances, min_size=min_size)
+        n_labels = len(np.unique(instances)) - 1  # Exclude background
+        if n_labels > 1:
+            instances = remove_small_objects(instances, min_size=min_size)
 
     # Relabel to ensure consecutive IDs
     instances = label(instances)[0]

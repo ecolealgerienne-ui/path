@@ -30,34 +30,43 @@ def format_metrics_rnd(
         family: Famille du modèle
         is_dedicated: True si modèle dédié
     """
-    # Afficher le modèle utilisé
-    if is_dedicated:
-        model_info = f"### Modèle: **{organ}** ★ (dédié)"
-        family_info = f"*Famille: {family}*"
-    else:
-        model_info = f"### Modèle: {family or 'N/A'}"
-        family_info = f"*Organe sélectionné: {organ or 'N/A'}*"
+    # ===========================================================================
+    # AFFICHAGE ORGANE: L'organe sélectionné par l'utilisateur est PRIMAIRE
+    # OrganHead est utilisé comme VALIDATION (cohérence IA), pas comme source
+    # ===========================================================================
 
-    # Message contextuel pour organe non déterminé
+    # 1. Organe sélectionné (toujours affiché en premier)
     if is_dedicated:
-        organ_display = f"### Organe: **{organ}** (modèle dédié)"
-    elif result.organ_name == "Unknown" or result.organ_confidence < 0.1:
-        if result.n_nuclei < 20:
-            organ_display = "### Organe détecté (IA): *Non déterminable* (surface insuffisante)"
-        else:
-            organ_display = "### Organe détecté (IA): *Non déterminable* (contexte architectural limité)"
+        organ_display = f"### Organe: **{organ}** ★ (modèle dédié)"
+        model_info = f"*Famille: {family}*"
     else:
-        organ_display = f"### Organe détecté (IA): {result.organ_name} ({result.organ_confidence:.1%})"
+        organ_display = f"### Organe: **{organ}** (famille {family})"
+        model_info = ""
+
+    # 2. Validation OrganHead (cohérence IA)
+    if result.organ_confidence >= 0.5:
+        if result.organ_name == organ:
+            # Cohérent
+            ai_validation = f"*✓ Cohérence IA: {result.organ_name} ({result.organ_confidence:.0%})*"
+        else:
+            # Divergence - afficher l'avertissement
+            ai_validation = f"*⚠️ L'IA suggère: {result.organ_name} ({result.organ_confidence:.0%}) — vérifier le contexte*"
+    elif result.n_nuclei < 20:
+        ai_validation = "*ℹ️ Validation IA: surface insuffisante*"
+    else:
+        ai_validation = "*ℹ️ Validation IA: non déterminable*"
 
     lines = [
         organ_display,
-        model_info,
-        family_info,
+        model_info if model_info else None,
+        ai_validation,
         "",
         f"**Noyaux détectés:** {result.n_nuclei}",
         f"**Temps d'inférence:** {result.inference_time_ms:.0f} ms",
         "",
     ]
+    # Filtrer les None
+    lines = [l for l in lines if l is not None]
 
     if result.morphometry:
         m = result.morphometry
@@ -74,23 +83,18 @@ def format_metrics_rnd(
         else:
             ie_display = f"**{m.immuno_epithelial_ratio:.2f}**"
 
-        # Index mitotique: séparer Signal IA vs Index clinique
-        # Note: mitotic_index_per_10hpf = None si surface < 0.1 mm² (sanity check)
+        # Activité mitotique: Signal IA (pas un "index mitotique" clinique)
+        # Note: L'index mitotique clinique requiert comptage sur 10 HPF par pathologiste
         n_mitosis = result.n_mitosis_candidates if result.spatial_analysis else 0
-        index_valid = m.mitotic_index_per_10hpf is not None and m.hpf_extrapolation_valid
 
-        if not index_valid:
-            # Surface insuffisante pour extrapolation HPF
-            if n_mitosis == 0:
-                mitotic_display = "*N/A* — Aucun candidat (patch unique)"
-            elif n_mitosis > result.n_nuclei * 0.5:
-                mitotic_display = f"*N/A* — ⚠️ Signal IA: **activité élevée** ({n_mitosis} candidats)"
-            elif n_mitosis > 3:
-                mitotic_display = f"*N/A* — Signal IA: **activité modérée** ({n_mitosis} candidats)"
-            else:
-                mitotic_display = f"*N/A* — Signal IA: {n_mitosis} candidat(s) détecté(s)"
+        if n_mitosis == 0:
+            mitotic_display = "Aucune figure suspecte"
+        elif n_mitosis > result.n_nuclei * 0.5:
+            mitotic_display = f"⚠️ **{n_mitosis} figures suspectes** (activité élevée)"
+        elif n_mitosis > 3:
+            mitotic_display = f"**{n_mitosis} figures suspectes** (activité modérée)"
         else:
-            mitotic_display = f"**{m.mitotic_index_per_10hpf:.1f}**/10 HPF"
+            mitotic_display = f"{n_mitosis} figure(s) suspecte(s)"
 
         lines.extend([
             "---",
@@ -100,8 +104,8 @@ def format_metrics_rnd(
             f"- Circularité: **{m.mean_circularity:.2f}** ± {m.std_circularity:.2f}",
             f"- Hypercellularité: **{m.nuclear_density_percent:.1f}%**",
             "",
-            "### Index & Ratios",
-            f"- Index mitotique: {mitotic_display}",
+            "### Activité & Ratios",
+            f"- Activité mitotique: {mitotic_display}",
             f"- Ratio néoplasique: **{m.neoplastic_ratio:.1%}**",
             f"- Ratio I/E: {ie_display}",
             f"- TILs status: **{m.til_status}**",
@@ -121,7 +125,8 @@ def format_metrics_rnd(
 
     # Phase 3: Intelligence Spatiale
     if result.spatial_analysis:
-        score_labels = {1: "Faible", 2: "Modéré", 3: "Sévère"}
+        # Pléomorphisme = critère morphologique ISOLÉ (1/3 critères Nottingham)
+        score_labels = {1: "Faible — isolé", 2: "Modéré — isolé", 3: "Sévère — isolé"}
         score_emoji = {1: "🟢", 2: "🟡", 3: "🔴"}
 
         if result.n_nuclei < 20:
