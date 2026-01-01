@@ -512,47 +512,121 @@ def create_ui():
     """Crée l'interface Gradio unifiée - Design Clinical-Grade."""
 
     custom_css = """
-    /* Header sombre */
+    /* ============================================
+       LAYOUT PLEINE LARGEUR
+       ============================================ */
+    .gradio-container {
+        max-width: 100% !important;
+        padding: 0 20px !important;
+    }
+
+    /* Conteneur principal */
+    .main {
+        max-width: 100% !important;
+    }
+
+    /* ============================================
+       TYPOGRAPHIE PLUS GRANDE
+       ============================================ */
+    body, .gradio-container {
+        font-size: 16px !important;
+    }
+
+    /* Titres */
+    h1 { font-size: 2em !important; }
+    h2 { font-size: 1.6em !important; }
+    h3 { font-size: 1.3em !important; }
+
+    /* Labels et textes */
+    label, .label-wrap, span {
+        font-size: 1em !important;
+    }
+
+    /* Markdown */
+    .markdown-text, .prose {
+        font-size: 1em !important;
+        line-height: 1.5 !important;
+    }
+
+    /* Boutons */
+    button {
+        font-size: 1.1em !important;
+        padding: 12px 24px !important;
+    }
+
+    /* Dropdowns */
+    select, input, textarea {
+        font-size: 1em !important;
+    }
+
+    /* ============================================
+       HEADER SOMBRE
+       ============================================ */
     .header-dark {
         background: linear-gradient(90deg, #1a1a2e 0%, #16213e 100%);
-        padding: 12px 24px;
+        padding: 16px 30px;
         border-radius: 10px;
-        margin-bottom: 12px;
+        margin-bottom: 16px;
         color: white;
     }
     .header-dark h1 {
         color: white !important;
         margin: 0 !important;
-        font-size: 1.5em !important;
+        font-size: 1.8em !important;
     }
     .header-dark .version {
         color: #888;
-        font-size: 0.85em;
+        font-size: 0.9em;
     }
 
-    /* Barre d'actions */
+    /* ============================================
+       BARRE D'ACTIONS
+       ============================================ */
     .action-bar {
         background: #f8f9fa;
-        padding: 12px;
+        padding: 16px 20px;
         border-radius: 8px;
-        margin: 10px 0;
+        margin: 15px 0;
         border: 1px solid #dee2e6;
     }
 
-    /* Deep dive columns */
-    .deep-dive {
-        margin-top: 15px;
+    .action-bar button {
+        min-width: 180px;
+        font-weight: 600 !important;
     }
 
-    /* Disclaimer */
+    /* ============================================
+       DEEP DIVE - 3 COLONNES
+       ============================================ */
+    .deep-dive {
+        margin-top: 20px;
+        gap: 20px;
+    }
+
+    .deep-dive h3 {
+        border-bottom: 2px solid #007bff;
+        padding-bottom: 8px;
+        margin-bottom: 12px;
+    }
+
+    /* ============================================
+       DISCLAIMER
+       ============================================ */
     .disclaimer {
         background-color: #fff3cd;
         border: 1px solid #ffc107;
-        padding: 8px 16px;
+        padding: 12px 20px;
         border-radius: 5px;
-        margin-bottom: 12px;
+        margin-bottom: 16px;
         text-align: center;
-        font-size: 0.9em;
+        font-size: 1em;
+    }
+
+    /* ============================================
+       IMAGES PLUS GRANDES
+       ============================================ */
+    .image-container img {
+        max-height: none !important;
     }
     """
 
@@ -612,12 +686,12 @@ def create_ui():
             input_image = gr.Image(
                 label="Image H&E (224×224)",
                 type="numpy",
-                height=320,
+                height=400,
             )
             output_image = gr.Image(
                 label="Segmentation",
                 type="numpy",
-                height=320,
+                height=400,
                 interactive=True,
             )
 
@@ -673,12 +747,12 @@ def create_ui():
             with gr.Column(scale=1):
                 gr.Markdown("### 📊 Métriques")
                 metrics_md = gr.Markdown("*En attente d'analyse*")
-                chart_image = gr.Image(label="Distribution", height=150, show_label=False)
+                chart_image = gr.Image(label="Distribution", height=180, show_label=False)
 
             # Colonne 3: Loupe Interactive
             with gr.Column(scale=1):
                 gr.Markdown("### 🔍 Loupe ×3")
-                zoom_display = gr.Image(height=150, show_label=False)
+                zoom_display = gr.Image(height=180, show_label=False)
                 nucleus_info = gr.Markdown("*Cliquer sur un noyau*")
 
         # ==================================================================
