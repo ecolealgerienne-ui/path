@@ -155,13 +155,21 @@ def analyze_image(
 def on_image_click(evt: gr.SelectData) -> str:
     """Gère le clic sur l'image pour afficher les infos du noyau (simplifié)."""
     if state.current_result is None:
-        return "Aucune analyse"
+        return "⚠️ Aucune analyse active"
 
     try:
         x, y = evt.index
         nucleus = state.current_result.get_nucleus_at(y, x)
 
         if nucleus is None:
+            # Vérification de sécurité: récupérer l'ID brut sur la map
+            if state.current_result.instance_map is not None:
+                y_int, x_int = int(y), int(x)
+                if 0 <= y_int < state.current_result.instance_map.shape[0] and \
+                   0 <= x_int < state.current_result.instance_map.shape[1]:
+                    raw_id = state.current_result.instance_map[y_int, x_int]
+                    if raw_id > 0:
+                        return f"⚠️ Noyau ID:{raw_id} — exclu du rapport (filtrage qualité)"
             return "*Cliquer sur un noyau pour voir ses détails*"
 
         lines = [

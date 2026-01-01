@@ -157,13 +157,21 @@ def export_summary_csv_handler() -> Optional[str]:
 def on_image_click(evt: gr.SelectData) -> str:
     """Gère le clic sur l'image pour afficher les infos du noyau."""
     if state.current_result is None:
-        return "Aucune analyse"
+        return "⚠️ Aucune analyse active"
 
     try:
         x, y = evt.index
         nucleus = state.current_result.get_nucleus_at(y, x)
 
         if nucleus is None:
+            # Vérification de sécurité: récupérer l'ID brut sur la map
+            if state.current_result.instance_map is not None:
+                y_int, x_int = int(y), int(x)
+                if 0 <= y_int < state.current_result.instance_map.shape[0] and \
+                   0 <= x_int < state.current_result.instance_map.shape[1]:
+                    raw_id = state.current_result.instance_map[y_int, x_int]
+                    if raw_id > 0:
+                        return f"⚠️ Noyau identifié (ID:{raw_id}) mais exclu des métriques (filtrage Phase 2/3)"
             return "Clic sur le fond (pas de noyau)"
 
         # Détection petit noyau (pas de métriques complètes)
@@ -337,105 +345,55 @@ def create_ui():
     }
     """
 
-    # JavaScript pour l'effet loupe (compatible Gradio)
+    # JavaScript pour l'effet loupe (compatible Gradio 4.x avec overlay)
     loupe_script = """
     <script>
     (function() {
-        // Créer une seule lentille globale
         let lens = null;
-        let currentImg = null;
-        const zoomFactor = 3;
-        const lensSize = 180;
+        const zoomFactor = 2.5;
+        const lensSize = 150;
 
-        function createLens() {
-            if (lens) return;
-            lens = document.createElement('div');
-            lens.className = 'loupe-lens';
-            document.body.appendChild(lens);
-        }
-
-        function showLens(img, e) {
-            if (!lens || !img.complete || !img.src) return;
-
-            currentImg = img;
-            lens.classList.add('active');
-
-            // Utiliser l'image source
-            lens.style.backgroundImage = 'url(' + img.src + ')';
-            lens.style.backgroundSize = (img.naturalWidth * zoomFactor) + 'px ' + (img.naturalHeight * zoomFactor) + 'px';
-
-            updateLensPosition(e);
-        }
-
-        function hideLens() {
-            if (lens) {
-                lens.classList.remove('active');
+        function init() {
+            if (!lens) {
+                lens = document.createElement('div');
+                lens.style.cssText = "position:fixed; border:2px solid #007bff; border-radius:50%; width:150px; height:150px; pointer-events:none; display:none; z-index:10000; box-shadow:0 0 10px rgba(0,0,0,0.5); background-repeat:no-repeat; background-color:black;";
+                document.body.appendChild(lens);
             }
-            currentImg = null;
-        }
-
-        function updateLensPosition(e) {
-            if (!lens || !currentImg) return;
-
-            const rect = currentImg.getBoundingClientRect();
-
-            // Position relative dans l'image
-            const x = e.clientX - rect.left;
-            const y = e.clientY - rect.top;
-
-            // Vérifier qu'on est dans l'image
-            if (x < 0 || y < 0 || x > rect.width || y > rect.height) {
-                hideLens();
-                return;
-            }
-
-            // Ratio pour images redimensionnées
-            const ratioX = currentImg.naturalWidth / rect.width;
-            const ratioY = currentImg.naturalHeight / rect.height;
-
-            // Position de la lentille (fixe sur l'écran)
-            lens.style.left = (e.clientX - lensSize / 2) + 'px';
-            lens.style.top = (e.clientY - lensSize / 2) + 'px';
-
-            // Position du background (zoom sur la zone)
-            const bgX = -(x * ratioX * zoomFactor) + lensSize / 2;
-            const bgY = -(y * ratioY * zoomFactor) + lensSize / 2;
-            lens.style.backgroundPosition = bgX + 'px ' + bgY + 'px';
-        }
-
-        function initLoupe() {
-            createLens();
-
-            // Utiliser la délégation d'événements sur le document
-            document.addEventListener('mouseover', function(e) {
-                const img = e.target;
-                if (img.tagName === 'IMG' && img.closest('.gradio-image, .image-container, [class*="image"]')) {
-                    // Vérifier que c'est une vraie image (pas un placeholder)
-                    if (img.src && !img.src.includes('data:image/svg') && img.naturalWidth > 50) {
-                        showLens(img, e);
-                    }
-                }
-            });
-
-            document.addEventListener('mouseout', function(e) {
-                if (e.target.tagName === 'IMG') {
-                    hideLens();
-                }
-            });
 
             document.addEventListener('mousemove', function(e) {
-                if (currentImg) {
-                    updateLensPosition(e);
+                // Utiliser closest() pour contourner les overlays Gradio
+                const container = e.target.closest('.gradio-image, .image-container, [class*="image"]');
+                const img = container ? container.querySelector('img') : null;
+
+                if (img && img.src && img.naturalWidth > 0 && !img.src.includes('data:image/svg')) {
+                    const rect = img.getBoundingClientRect();
+                    const x = e.clientX - rect.left;
+                    const y = e.clientY - rect.top;
+
+                    // Vérifier qu'on est dans l'image
+                    if (x < 0 || y < 0 || x > rect.width || y > rect.height) {
+                        lens.style.display = 'none';
+                        return;
+                    }
+
+                    // Ratio pour images redimensionnées
+                    const ratioX = img.naturalWidth / rect.width;
+                    const ratioY = img.naturalHeight / rect.height;
+
+                    lens.style.display = 'block';
+                    lens.style.left = (e.clientX - lensSize / 2) + 'px';
+                    lens.style.top = (e.clientY - lensSize / 2) + 'px';
+                    lens.style.backgroundImage = 'url(' + img.src + ')';
+                    lens.style.backgroundSize = (img.naturalWidth * zoomFactor) + 'px ' + (img.naturalHeight * zoomFactor) + 'px';
+                    lens.style.backgroundPosition = '-' + (x * ratioX * zoomFactor - lensSize / 2) + 'px -' + (y * ratioY * zoomFactor - lensSize / 2) + 'px';
+                } else {
+                    lens.style.display = 'none';
                 }
             });
         }
 
-        // Initialiser au chargement
-        if (document.readyState === 'loading') {
-            document.addEventListener('DOMContentLoaded', initLoupe);
-        } else {
-            initLoupe();
-        }
+        // Délai pour laisser Gradio charger complètement
+        setTimeout(init, 1000);
     })();
     </script>
     """
