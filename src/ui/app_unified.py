@@ -99,6 +99,13 @@ def load_engine(organ: str):
     Returns:
         Tuple[str, gr.update]: (status_message, analyze_button_update)
     """
+    # Si aucun organe sélectionné, ne rien faire
+    if not organ:
+        return (
+            "⏳ Sélectionnez un organe pour charger le modèle",
+            gr.update(interactive=False, variant="secondary")
+        )
+
     # Si le moteur n'existe pas encore, chargement complet
     if state.engine is None:
         result = load_engine_core(organ)
@@ -482,16 +489,20 @@ def create_ui():
         # ======================================================================
         with gr.Row():
             with gr.Column(scale=2):
-                # Sélection organe
+                # Sélection organe (charge le modèle automatiquement)
                 with gr.Row():
                     organ_select = gr.Dropdown(
                         choices=ORGAN_CHOICES,
-                        value="Lung",
+                        value=None,
                         label="Organe (★ = modèle dédié)",
                         interactive=True,
                     )
-                    load_btn = gr.Button("Charger", variant="primary")
-                    status_text = gr.Textbox(label="Status", interactive=False, scale=2)
+                    status_text = gr.Textbox(
+                        label="Status",
+                        value="⏳ Sélectionnez un organe pour charger le modèle",
+                        interactive=False,
+                        scale=2,
+                    )
 
                 # Images
                 with gr.Row():
@@ -598,14 +609,7 @@ def create_ui():
             ],
         )
 
-        # Chargement moteur (bouton ou changement dropdown)
-        load_btn.click(
-            fn=load_engine,
-            inputs=[organ_select],
-            outputs=[status_text, analyze_btn],
-        )
-
-        # Auto-chargement quand on change l'organe
+        # Chargement moteur via dropdown
         organ_select.change(
             fn=load_engine,
             inputs=[organ_select],
