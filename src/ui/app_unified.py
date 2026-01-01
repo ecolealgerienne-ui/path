@@ -28,7 +28,8 @@ from src.ui.core import (
     export_json_core,
 )
 
-from src.ui.organ_config import ORGANS, ORGAN_CHOICES
+from src.ui.inference_engine import ORGAN_CHOICES
+from src.ui.organ_config import ORGANS, get_model_for_organ
 
 from src.ui.formatters import (
     # R&D formatters
