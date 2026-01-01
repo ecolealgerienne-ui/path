@@ -51,9 +51,60 @@ state = UIState()
 # OPÉRATIONS MOTEUR
 # ==============================================================================
 
+
+def preload_backbone_core(device: str = "cuda") -> Dict[str, Any]:
+    """
+    Précharge le backbone H-optimus-0 et OrganHead au démarrage.
+
+    Cette fonction charge les modèles partagés AVANT qu'un organe soit sélectionné.
+    Avantage: Réduit le temps d'attente lors du premier choix d'organe.
+
+    Returns:
+        Dict avec:
+            - success: bool
+            - backbone_loaded: bool
+            - organ_head_loaded: bool
+            - error: Optional[str]
+    """
+    try:
+        state.is_loading = True
+        logger.info("Preloading backbone models (H-optimus-0 + OrganHead)...")
+
+        # Créer le moteur sans organe (backbone + OrganHead seulement)
+        state.engine = CellVitEngine(
+            device=device,
+            organ=None,  # Pas d'organe → pas de HoVer-Net
+            load_backbone=True,
+            load_organ_head=True,
+        )
+
+        state.is_loading = False
+        logger.info("Backbone preload complete")
+
+        return {
+            "success": True,
+            "backbone_loaded": state.engine.backbone is not None,
+            "organ_head_loaded": state.engine.organ_head is not None,
+            "error": None,
+        }
+
+    except Exception as e:
+        state.is_loading = False
+        logger.error(f"Error preloading backbone: {e}")
+        return {
+            "success": False,
+            "backbone_loaded": False,
+            "organ_head_loaded": False,
+            "error": str(e),
+        }
+
+
 def load_engine_core(organ: str, device: str = "cuda") -> Dict[str, Any]:
     """
     Charge le moteur d'inférence.
+
+    Si le backbone est déjà préchargé (via preload_backbone_core),
+    seul le HoVer-Net est chargé (rapide).
 
     Returns:
         Dict avec:
@@ -66,14 +117,20 @@ def load_engine_core(organ: str, device: str = "cuda") -> Dict[str, Any]:
     try:
         state.is_loading = True
         organ_info = get_model_for_organ(organ)
-        logger.info(f"Loading engine for organ '{organ}' on {device}...")
 
-        state.engine = CellVitEngine(
-            device=device,
-            organ=organ,
-            load_backbone=True,
-            load_organ_head=True,
-        )
+        # Si le moteur existe déjà avec backbone préchargé
+        if state.engine is not None and state.engine.backbone is not None:
+            logger.info(f"Backbone already loaded, switching to organ '{organ}'...")
+            state.engine.change_organ(organ)
+        else:
+            # Chargement complet (backbone + OrganHead + HoVer-Net)
+            logger.info(f"Loading full engine for organ '{organ}' on {device}...")
+            state.engine = CellVitEngine(
+                device=device,
+                organ=organ,
+                load_backbone=True,
+                load_organ_head=True,
+            )
 
         state.is_loading = False
         model_type = "dédié" if organ_info["is_dedicated"] else f"famille {organ_info['family']}"

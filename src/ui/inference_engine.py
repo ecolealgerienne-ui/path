@@ -321,7 +321,7 @@ class CellVitEngine:
     def __init__(
         self,
         device: str = "cuda",
-        organ: str = "Lung",
+        organ: Optional[str] = None,
         load_backbone: bool = True,
         load_organ_head: bool = True,
     ):
@@ -330,7 +330,8 @@ class CellVitEngine:
 
         Args:
             device: "cuda" ou "cpu"
-            organ: Nom de l'organe (ex: "Lung", "Breast", "Colon")
+            organ: Nom de l'organe (ex: "Lung", "Breast", "Colon").
+                   Si None, seuls backbone + OrganHead sont chargés (preload).
             load_backbone: Charger H-optimus-0 (4.5GB, ~5s)
             load_organ_head: Charger OrganHead
         """
@@ -350,16 +351,18 @@ class CellVitEngine:
         # Organe courant et ses infos
         self._current_organ = None
         self._organ_info = None
+        self.watershed_params = {}
 
-        # Initialiser avec l'organe demandé
-        self._set_organ(organ)
+        # Initialiser avec l'organe demandé (si fourni)
+        if organ is not None:
+            self._set_organ(organ)
 
         # Analyseur morphométrique
         self.morphometry_analyzer = MorphometryAnalyzer(pixel_size_um=0.5)
 
         # Charger les modèles
         if load_backbone or load_organ_head:
-            self._load_models(load_backbone, load_organ_head)
+            self._load_models(load_backbone, load_organ_head, load_hovernet=(organ is not None))
 
     def _set_organ(self, organ_name: str):
         """
@@ -395,9 +398,19 @@ class CellVitEngine:
         """Retourne True si le modèle actuel est dédié à l'organe."""
         return self._organ_info["is_dedicated"] if self._organ_info else False
 
-    def _load_models(self, load_backbone: bool, load_organ_head: bool):
-        """Charge les modèles depuis les checkpoints."""
-        logger.info(f"Loading models for organ '{self._current_organ}' on {self.device}...")
+    def _load_models(self, load_backbone: bool, load_organ_head: bool, load_hovernet: bool = True):
+        """
+        Charge les modèles depuis les checkpoints.
+
+        Args:
+            load_backbone: Charger H-optimus-0
+            load_organ_head: Charger OrganHead
+            load_hovernet: Charger HoVer-Net (nécessite organ configuré)
+        """
+        if self._current_organ:
+            logger.info(f"Loading models for organ '{self._current_organ}' on {self.device}...")
+        else:
+            logger.info(f"Loading backbone models on {self.device} (preload mode)...")
 
         # 1. Backbone H-optimus-0
         if load_backbone:
@@ -414,18 +427,19 @@ class CellVitEngine:
             )
             logger.info("  OrganHead loaded")
 
-        # 3. HoVer-Net pour cet organe
-        checkpoint_path = self._organ_info["checkpoint_path"]
-        if checkpoint_path and Path(checkpoint_path).exists():
-            model_type = "dedicated" if self._organ_info["is_dedicated"] else "family"
-            logger.info(f"Loading HoVer-Net ({self._current_organ}, {model_type})...")
-            self._load_hovernet(checkpoint_path)
-            logger.info(f"  HoVer-Net loaded")
-        else:
-            logger.warning(f"HoVer-Net checkpoint not found: {checkpoint_path}")
+        # 3. HoVer-Net pour cet organe (si demandé et organe configuré)
+        if load_hovernet and self._organ_info:
+            checkpoint_path = self._organ_info["checkpoint_path"]
+            if checkpoint_path and Path(checkpoint_path).exists():
+                model_type = "dedicated" if self._organ_info["is_dedicated"] else "family"
+                logger.info(f"Loading HoVer-Net ({self._current_organ}, {model_type})...")
+                self._load_hovernet(checkpoint_path)
+                logger.info(f"  HoVer-Net loaded")
+            else:
+                logger.warning(f"HoVer-Net checkpoint not found: {checkpoint_path}")
 
         self._models_loaded = True
-        logger.info("All models loaded successfully")
+        logger.info("Models loaded successfully")
 
     def _load_hovernet(self, checkpoint_path: str):
         """

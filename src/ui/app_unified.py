@@ -19,6 +19,7 @@ from typing import Optional, Tuple, List
 
 from src.ui.core import (
     state,
+    preload_backbone_core,
     load_engine_core,
     analyze_image_core,
     change_organ_core,
@@ -93,8 +94,9 @@ def load_engine(organ: str):
     """
     Charge ou change l'organe du moteur.
 
-    - Premier appel: charge H-optimus-0 + OrganHead + HoVer-Net
-    - Appels suivants: ne recharge que HoVer-Net (changement rapide)
+    - Si backbone préchargé: ne charge que HoVer-Net (rapide ~1s)
+    - Sinon: chargement complet (backbone + OrganHead + HoVer-Net ~5s)
+    - Changement d'organe: ne recharge que HoVer-Net
 
     Returns:
         Tuple[str, gr.update]: (status_message, analyze_button_update)
@@ -106,32 +108,18 @@ def load_engine(organ: str):
             gr.update(interactive=False, variant="secondary")
         )
 
-    # Si le moteur n'existe pas encore, chargement complet
-    if state.engine is None:
-        result = load_engine_core(organ)
-        if result["success"]:
-            return (
-                f"✅ {result['organ']} ({result['model_type']}) chargé",
-                gr.update(interactive=True, variant="primary")
-            )
-        else:
-            return (
-                f"❌ Erreur: {result.get('error', 'Inconnue')}",
-                gr.update(interactive=False, variant="secondary")
-            )
-
-    # Si même organe, rien à faire
-    if state.engine.organ == organ:
+    # Si même organe déjà chargé, rien à faire
+    if state.engine is not None and state.engine.organ == organ and state.engine.hovernet is not None:
         return (
             f"✅ {organ} déjà chargé",
             gr.update(interactive=True, variant="primary")
         )
 
-    # Changement d'organe: ne recharge que HoVer-Net
-    result = change_organ_core(organ)
+    # Charger le modèle (load_engine_core gère le cas backbone préchargé)
+    result = load_engine_core(organ)
     if result["success"]:
         return (
-            f"✅ {result['organ']} ({result['model_type']}) — modèle changé",
+            f"✅ {result['organ']} ({result['model_type']}) chargé",
             gr.update(interactive=True, variant="primary")
         )
     else:
@@ -578,7 +566,7 @@ def create_ui():
                     )
                     status_text = gr.Textbox(
                         label="Status",
-                        value="⏳ Sélectionnez un organe pour charger le modèle",
+                        value="✅ Backbone chargé — Sélectionnez un organe",
                         interactive=False,
                         scale=2,
                     )
@@ -752,13 +740,24 @@ def main():
     parser = argparse.ArgumentParser(description="CellViT-Optimus Interface Unifiée")
     parser.add_argument("--organ", default=None, help="Organe à précharger (optionnel)")
     parser.add_argument("--port", type=int, default=7860, help="Port Gradio")
+    parser.add_argument("--no-preload", action="store_true", help="Ne pas précharger le backbone au démarrage")
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO)
 
-    # Préchargement seulement si --organ est spécifié
+    # Préchargement du backbone (H-optimus-0 + OrganHead) au démarrage
+    # Cela réduit le temps d'attente lors du premier choix d'organe
+    if not args.no_preload:
+        logger.info("Préchargement du backbone H-optimus-0 + OrganHead...")
+        result = preload_backbone_core()
+        if result["success"]:
+            logger.info("✅ Backbone préchargé avec succès")
+        else:
+            logger.warning(f"⚠️ Erreur préchargement backbone: {result['error']}")
+
+    # Si --organ est spécifié, charger aussi le HoVer-Net pour cet organe
     if args.organ:
-        logger.info(f"Préchargement du moteur pour {args.organ}...")
+        logger.info(f"Chargement du modèle HoVer-Net pour {args.organ}...")
         load_engine(args.organ)
 
     app = create_ui()
