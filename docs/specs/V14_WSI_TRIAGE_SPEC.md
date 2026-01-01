@@ -272,113 +272,211 @@ Les patches extraits sont envoyés en batch au moteur HoVerNet v13:
 - Décodeur: FPN Chimique avec injection H-Channel Ruifrok
 - Configuration: Production 2026 (voir CLAUDE.md)
 
-### 4.4 Motifs de Sélection (Post-Analyse)
+### 4.4 Motifs de Sélection (Fusion Asynchrone en 2 Temps)
 
-> **Décision:** Les motifs sont générés APRÈS passage par v13 (Option B).
-> L'affichage se fait uniquement après traitement complet.
+> **Décision:** Les motifs sont générés en 2 phases distinctes puis fusionnés.
+> Le triage (5×) ne peut pas deviner une mitose — seule l'analyse v13 (40×) le peut.
 
-#### Principe
-
-Le "Motif de Sélection" explique **pourquoi** un patch a été sélectionné et **ce qui a été trouvé**.
-Ces badges dynamiques lient CleaningNet v14 (sélection) aux métriques v13 (analyse).
+#### Principe de Fusion
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│  AFFICHAGE POST-TRAITEMENT                                  │
-│  ─────────────────────────────────────────────────────────  │
-│  Patch #42: 🔴 Haute densité | 🔍 Atypie chromatinienne     │
-│  Source: Métriques v13 HoVerNet                             │
-└─────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  STRATÉGIE DE FUSION ASYNCHRONE                                             │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│  PHASE 5× (Triage)              PHASE 40× (Analyse v13)                    │
+│  ─────────────────              ────────────────────────                    │
+│  motifs_triage = [              motifs_detail = [                          │
+│    "🔴 Haute densité",            "⚡ Activité mitotique",                  │
+│    "🎨 Hétérogénéité"             "🎯 Cellules néoplasiques"               │
+│  ]                              ]                                           │
+│         │                              │                                    │
+│         └──────────────┬───────────────┘                                    │
+│                        ▼                                                    │
+│              motifs.extend(motifs_detail)                                   │
+│                        │                                                    │
+│                        ▼                                                    │
+│  ┌─────────────────────────────────────────────────────────────┐           │
+│  │  AFFICHAGE IHM FINAL                                        │           │
+│  │  Patch #42: 🔴 Haute densité | 🎨 Hétérogénéité |           │           │
+│  │             ⚡ Mitoses | 🎯 Néoplasiques                     │           │
+│  └─────────────────────────────────────────────────────────────┘           │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
 ```
 
 #### Implémentation
 
 ```python
-def generate_selection_motifs(
+def generate_motifs_triage(
     h_entropy: float,
-    v13_result: Dict[str, Any],
+    cleaningnet_score: float,
 ) -> List[str]:
     """
-    Génère les motifs de sélection après analyse v13.
-
-    Args:
-        h_entropy: Entropie H calculée en Phase 2
-        v13_result: Résultats de l'inférence HoVerNet v13
-
-    Returns:
-        Liste de badges emoji + texte
+    Phase 5× : Motifs basés sur texture globale et intensité H.
+    Exécuté pendant le triage CleaningNet.
     """
     motifs = []
 
-    # === Motifs basés sur H-channel (Phase 2) ===
-    if h_entropy > 5.0:
+    # Score de cellularité CleaningNet
+    if cleaningnet_score > 0.7:
         motifs.append("🔴 Haute densité nucléaire")
 
-    # === Motifs basés sur v13 (Phase 3) ===
-    if v13_result.get("nuclei_count", 0) > 100:
-        motifs.append("🔬 Amas cellulaires")
+    # Entropie du canal H (calculée au triage)
+    if h_entropy > 5.0:
+        motifs.append("🎨 Hétérogénéité chromatinienne")
 
-    if v13_result.get("pleomorphism_score", 0) > 0.7:
-        motifs.append("🔍 Atypie chromatinienne")
+    return motifs
 
+
+def generate_motifs_detail(v13_result: Dict[str, Any]) -> List[str]:
+    """
+    Phase 40× : Motifs basés sur l'inférence précise HoVerNet v13.
+    Exécuté APRÈS segmentation complète.
+    """
+    motifs = []
+
+    # Détecteur de mitoses v13
     if v13_result.get("mitosis_count", 0) > 0:
         motifs.append("⚡ Activité mitotique")
 
+    # Segmentation nucléaire précise
     if v13_result.get("nc_ratio", 0) > 0.6:
         motifs.append("🧬 Ratio N/C élevé")
 
-    if v13_result.get("anomaly_score", 0) > 0.8:
-        motifs.append("⚠️ Zone suspecte")
-
-    # === Motifs structurels ===
+    # Classification NC Optimus
     dominant_type = v13_result.get("dominant_cell_type")
     if dominant_type == "Neoplastic":
         motifs.append("🎯 Cellules néoplasiques")
     elif dominant_type == "Inflammatory":
         motifs.append("🔥 Infiltrat inflammatoire")
 
+    # Pléomorphisme (Nottingham Grade)
+    pleomorphism = v13_result.get("pleomorphism_grade", 1)
+    if pleomorphism >= 3:
+        motifs.append("🔍 Atypie sévère (Grade 3)")
+    elif pleomorphism == 2:
+        motifs.append("🔍 Atypie modérée (Grade 2)")
+
+    # Anomalie détectée
+    if v13_result.get("anomaly_score", 0) > 0.8:
+        motifs.append("⚠️ Zone suspecte")
+
     return motifs
+
+
+def fuse_motifs(
+    motifs_triage: List[str],
+    motifs_detail: List[str],
+) -> List[str]:
+    """
+    Fusion finale des motifs pour affichage IHM.
+    """
+    return motifs_triage + motifs_detail
 ```
 
-#### Vocabulaire Standardisé
+#### Vocabulaire Standardisé (v14.0b)
+
+**Motifs Triage (Phase 5×)**
 
 | Emoji | Motif | Critère | Source |
 |-------|-------|---------|--------|
-| 🔴 | Haute densité nucléaire | H-entropy > 5.0 | Phase 2 |
-| 🎨 | Hétérogénéité chromatinienne | H-variance > 0.15 | Phase 2 |
-| 🔬 | Amas cellulaires | nuclei_count > 100 | v13 |
-| 🔍 | Atypie chromatinienne | pleomorphism > 0.7 | v13 |
-| ⚡ | Activité mitotique | mitosis_count > 0 | v13 |
-| 🧬 | Ratio N/C élevé | nc_ratio > 0.6 | v13 |
-| ⚠️ | Zone suspecte | anomaly_score > 0.8 | v13 |
-| 🎯 | Cellules néoplasiques | dominant_type = Neoplastic | v13 |
-| 🔥 | Infiltrat inflammatoire | dominant_type = Inflammatory | v13 |
-| 📐 | Structure glandulaire | gland_pattern detected | v13 |
+| 🔴 | Haute densité nucléaire | CleaningNet score > 0.7 | Signal H-Channel (Ruifrok) |
+| 🎨 | Hétérogénéité chromatinienne | H-entropy > 5.0 | Entropie du canal H |
 
-#### Intégration JSON
+**Motifs Détail (Phase 40× - v13)**
 
-Les motifs sont inclus dans le schéma de sortie:
+| Emoji | Motif | Critère | Source |
+|-------|-------|---------|--------|
+| ⚡ | Activité mitotique | mitosis_count > 0 | Détecteur de mitoses v13 |
+| 🧬 | Ratio N/C élevé | nc_ratio > 0.6 | Segmentation HoVer-Net |
+| 🎯 | Cellules néoplasiques | dominant_type = Neoplastic | Branche NC (Classification) |
+| 🔥 | Infiltrat inflammatoire | dominant_type = Inflammatory | Branche NC (Classification) |
+| 🔍 | Atypie chromatinienne | pleomorphism_grade ≥ 2 | Analyse morphologique v13 |
+| ⚠️ | Zone suspecte | anomaly_score > 0.8 | Score d'anomalie v13 |
+| 📐 | Structure glandulaire | gland_pattern detected | Analyse structurelle v13 |
 
-```json
-{
-  "patches": [
-    {
-      "id": "x1024_y2048",
-      "coords_40x": [1024, 2048],
-      "roi_score": 0.82,
-      "h_entropy": 5.2,
-      "motifs": [
-        "🔴 Haute densité nucléaire",
-        "🔍 Atypie chromatinienne"
-      ],
-      "v13_metrics": {
-        "nuclei_count": 127,
-        "pleomorphism_score": 0.78,
-        "dominant_cell_type": "Neoplastic"
-      }
-    }
-  ]
-}
+#### Échelle de Pléomorphisme (Nottingham Grade)
+
+> **Standard clinique adopté:** Échelle de Nottingham (1-3) pour compatibilité pathologiste.
+
+| Grade | Description | Critères Morphologiques |
+|-------|-------------|------------------------|
+| **1** | Faible | Noyaux uniformes, taille proche des lymphocytes |
+| **2** | Modéré | Augmentation de taille, nucléoles visibles |
+| **3** | Sévère | Variation extrême, formes bizarres, gros nucléoles |
+
+---
+
+### 4.5 Interface IHM : Mini-map GPS
+
+> **Objectif:** Permettre au pathologiste de localiser instantanément le patch dans la WSI.
+
+#### Spécifications Techniques
+
+| Paramètre | Valeur |
+|-----------|--------|
+| **Source** | `OpenSlide.get_thumbnail()` |
+| **Taille** | 256×256 pixels (fixe, format carré) |
+| **Format** | JPEG (qualité 85%) |
+| **Marqueur** | Rectangle rouge 2×2 pixels |
+
+#### Calcul des Coordonnées du Marqueur
+
+```python
+def compute_marker_coords(
+    wsi_coords: Tuple[int, int],
+    wsi_dimensions: Tuple[int, int],
+    thumbnail_size: int = 256,
+) -> Tuple[int, int]:
+    """
+    Convertit les coordonnées WSI en coordonnées thumbnail.
+
+    Args:
+        wsi_coords: (X, Y) position du patch dans la WSI (niveau 40×)
+        wsi_dimensions: (largeur, hauteur) de la WSI complète
+        thumbnail_size: Taille du thumbnail (256×256)
+
+    Returns:
+        (x_thumb, y_thumb) coordonnées du marqueur
+    """
+    wsi_width, wsi_height = wsi_dimensions
+    x_wsi, y_wsi = wsi_coords
+
+    # Ratio d'échelle (utiliser la plus grande dimension)
+    ratio = max(wsi_width, wsi_height) / thumbnail_size
+
+    # Coordonnées thumbnail
+    x_thumb = int(x_wsi / ratio)
+    y_thumb = int(y_wsi / ratio)
+
+    return (x_thumb, y_thumb)
+
+
+def draw_marker_on_thumbnail(
+    thumbnail: np.ndarray,
+    marker_coords: Tuple[int, int],
+    color: Tuple[int, int, int] = (255, 0, 0),  # Rouge
+    size: int = 4,
+) -> np.ndarray:
+    """
+    Dessine un marqueur rectangulaire sur le thumbnail.
+    """
+    x, y = marker_coords
+    cv2.rectangle(
+        thumbnail,
+        (x - size // 2, y - size // 2),
+        (x + size // 2, y + size // 2),
+        color,
+        thickness=2,
+    )
+    return thumbnail
+```
+
+#### Interactivité
+
+- **Mise à jour dynamique:** Le marqueur se déplace lors du changement de patch dans la liste "Top Priorités"
+- **Clic sur mini-map:** Navigation directe vers le patch correspondant (optionnel v14.1)
 
 ---
 
@@ -442,13 +540,15 @@ def safety_check_rejected_patches(
 
 ---
 
-## 6. Schéma de Sortie (JSON de Transfert)
+## 6. Schéma de Sortie JSON (v14.0b)
 
-Le module v14 génère un fichier de métadonnées pour le moteur v13:
+Le module v14 génère un fichier de métadonnées structuré en sections distinctes.
+
+### 6.1 Structure Globale WSI
 
 ```json
 {
-  "wsi_id": "string",
+  "wsi_id": "341012D0",
   "organ": "Liver",
   "roi_threshold_used": 0.40,
   "processing_stats": {
@@ -463,32 +563,97 @@ Le module v14 génère un fichier de métadonnées pour le moteur v13:
     "low_entropy_rejected_count": 5,
     "safety_check_alerts": []
   },
-  "patches": [
-    {
-      "id": "x1024_y2048",
-      "coords_40x": [1024, 2048],
-      "roi_score": 0.82,
-      "h_entropy": 4.5,
-      "blur_score": 245.3,
-      "motifs": [
-        "🔴 Haute densité nucléaire",
-        "🔍 Atypie chromatinienne"
-      ],
-      "v13_metrics": {
-        "nuclei_count": 127,
-        "pleomorphism_score": 0.78,
-        "mitosis_count": 2,
-        "dominant_cell_type": "Neoplastic",
-        "anomaly_score": 0.45
-      }
-    }
-  ]
+  "wsi_map": {
+    "thumbnail_url": "cache/341012D0_thumb.jpg",
+    "dimensions": [256, 256],
+    "wsi_dimensions": [98304, 65536]
+  },
+  "patches": []
 }
+```
+
+### 6.2 Structure Patch (Fusion Motifs v14.0b)
+
+> **Changements v14.0b:**
+> - Séparation `triage` / `analyse_v13`
+> - `motifs_triage` (Phase 5×) vs `motifs_detail` (Phase 40×)
+> - `pleomorphism_grade` (Nottingham 1-3) remplace `pleomorphism_score`
+> - Ajout `wsi_map.marker_coords` pour GPS
+
+```json
+{
+  "patch_id": "341012D0_x1024_y2048",
+  "triage": {
+    "confiance_selection": 0.89,
+    "h_entropy": 5.2,
+    "blur_score": 245.3,
+    "motifs_triage": [
+      "🔴 Haute densité nucléaire",
+      "🎨 Hétérogénéité chromatinienne"
+    ],
+    "coords_5x": [128, 256],
+    "is_hotspot": true
+  },
+  "analyse_v13": {
+    "confiance_segmentation": "Élevée",
+    "nuclei_count": 127,
+    "pleomorphism_grade": 3,
+    "mitosis_count": 2,
+    "nc_ratio": 0.72,
+    "dominant_cell_type": "Neoplastic",
+    "neoplastic_ratio": 0.85,
+    "anomaly_score": 0.45,
+    "motifs_detail": [
+      "⚡ Activité mitotique",
+      "🎯 Cellules néoplasiques",
+      "🔍 Atypie sévère (Grade 3)"
+    ]
+  },
+  "wsi_map": {
+    "marker_coords": [128, 45]
+  },
+  "coords_40x": [1024, 2048],
+  "priority_rank": 3,
+  "priority_label": "Élevé (Top 5%)"
+}
+```
+
+### 6.3 Niveaux de Confiance
+
+| Valeur | Description | Critère |
+|--------|-------------|---------|
+| **Élevée** | Segmentation fiable | OrganHead > 0.90 |
+| **Modérée** | Vérification recommandée | OrganHead 0.70-0.90 |
+| **Faible** | Révision manuelle requise | OrganHead < 0.70 |
+
+### 6.4 Badge de Priorité
+
+Le `priority_label` est calculé selon le rang du patch dans la liste triée par score d'intérêt:
+
+| Rang | Label | Couleur IHM |
+|------|-------|-------------|
+| Top 5% | "Élevé (Top 5%)" | Rouge |
+| Top 20% | "Modéré (Top 20%)" | Orange |
+| Reste | "Standard" | Gris |
+
+```python
+def compute_priority_label(rank: int, total: int) -> str:
+    percentile = rank / total
+    if percentile <= 0.05:
+        return "Élevé (Top 5%)"
+    elif percentile <= 0.20:
+        return "Modéré (Top 20%)"
+    else:
+        return "Standard"
 ```
 
 ---
 
 ## 7. Contraintes de Performance (KPIs)
+
+> **KPIs Cibles v14.0:** Temps total < 2 min | Triage < 5s | **Sensibilité > 95%**
+
+### 7.1 Temps d'Exécution
 
 | Étape | Temps Cible | Tolérance | Notes |
 |-------|-------------|-----------|-------|
@@ -496,6 +661,25 @@ Le module v14 génère un fichier de métadonnées pour le moteur v13:
 | CleaningNet 5× | 3.5 s | ± 1.0 s | GPU batch inference |
 | Sélection & I/O | 0.5 s | ± 0.2 s | Mapping + validation |
 | **Total v14 Pre-moteur** | **≤ 5.0 s** | **Stricte** | Avant envoi à v13 |
+
+### 7.2 Contrainte de Charge
+
+> **Règle:** Pour rester sous les 2 minutes totales, le CleaningNet doit sélectionner
+> **maximum 30-40 ROIs à 5×** par lame.
+
+| Paramètre | Valeur | Calcul |
+|-----------|--------|--------|
+| ROIs max à 5× | 30-40 | Contrainte de temps |
+| Patches 40× par ROI | 64 | 8×8 (mapping 1:64) |
+| **Patches 40× max** | **1,920 - 2,560** | 30×64 à 40×64 |
+
+### 7.3 Qualité de Sélection
+
+| Métrique | Cible | Méthode de Validation |
+|----------|-------|----------------------|
+| **Sensibilité (Recall)** | **> 95%** | Test Anti-Miss sur patches rejetés |
+| Spécificité | > 70% | Ratio patches informatifs/sélectionnés |
+| Cohérence H-entropy | 100% | Même canal H que décodeur v13 |
 
 ---
 
