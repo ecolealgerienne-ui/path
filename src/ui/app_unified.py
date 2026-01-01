@@ -295,8 +295,12 @@ def create_zoom_crop(x: int, y: int, zoom: int = 3) -> Optional[np.ndarray]:
     zoomed_overlay[:, cx-1:cx+2] = [255, 0, 0]
     zoomed_overlay[cy-1:cy+2, cx-1:cx+2] = [255, 255, 255]
 
-    # Concatenation horizontale: Original | Segmentation
-    combined = np.concatenate([zoomed_original, zoomed_overlay], axis=1)
+    # Séparateur vertical (bande grise de 4 pixels)
+    separator_width = 4
+    separator = np.ones((zh, separator_width, 3), dtype=np.uint8) * 180  # Gris clair
+
+    # Concatenation horizontale: Original | Séparateur | Segmentation
+    combined = np.concatenate([zoomed_original, separator, zoomed_overlay], axis=1)
 
     return combined
 
