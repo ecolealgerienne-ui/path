@@ -96,6 +96,7 @@ def compute_confidence_level(result: AnalysisResult) -> Tuple[str, str, Optional
     - La confiance MORPHOLOGIQUE (segmentation) domine le badge
     - L'incertitude ORGANE est un modulateur léger, pas un verrou
     - Un pathologiste valide la morphologie même si l'organe est incertain
+    - Des signaux morphologiques FORTS garantissent un plancher de confiance
 
     Returns:
         (niveau, couleur, mention_organe) - ex: ("Élevée", "green", "Bile-duct 70%")
@@ -123,6 +124,34 @@ def compute_confidence_level(result: AnalysisResult) -> Tuple[str, str, Optional
 
     # Score final
     final_conf = morpho_conf - organ_penalty
+
+    # ==========================================================================
+    # PLANCHER DE CONFIANCE: Signaux morphologiques forts
+    # ==========================================================================
+    # Si des signaux morphologiques forts et convergents sont détectés,
+    # la confiance ne peut PAS être "Faible" — c'est cliniquement incorrect.
+    # Un pathologiste serait très confiant dans la morphologie même si
+    # le contexte organe est incertain.
+    # ==========================================================================
+    has_strong_signal = False
+
+    # Signal 1: Pléomorphisme modéré ou sévère (≥2/3)
+    if result.pleomorphism_score >= 2:
+        has_strong_signal = True
+
+    # Signal 2: Activité mitotique significative (≥5 candidates)
+    if result.n_mitosis_candidates >= 5:
+        has_strong_signal = True
+
+    # Signal 3: Anisocaryose marquée (CV ≥ 0.5)
+    if result.spatial_analysis and hasattr(result.spatial_analysis, 'pleomorphism'):
+        pleo = result.spatial_analysis.pleomorphism
+        if pleo and hasattr(pleo, 'area_cv') and pleo.area_cv >= 0.5:
+            has_strong_signal = True
+
+    # Appliquer le plancher si signaux forts détectés
+    if has_strong_signal and final_conf < 0.55:
+        final_conf = 0.55  # Force "Modérée" minimum
 
     # Seuils révisés (alignés pratique pathologique)
     if final_conf > 0.75:
