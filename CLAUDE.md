@@ -652,6 +652,7 @@ python scripts/training/train_hovernet_family_v13_smart_crops.py \
 | [docs/sessions/2025-12-29_respiratory_v13_smart_crops_results.md](./docs/sessions/2025-12-29_respiratory_v13_smart_crops_results.md) | Résultats Respiratory |
 | [docs/UI_COCKPIT.md](./docs/UI_COCKPIT.md) | **R&D Cockpit (IHM Gradio)** — Architecture, API, Phases |
 | [docs/specs/V14_WSI_TRIAGE_SPEC.md](./docs/specs/V14_WSI_TRIAGE_SPEC.md) | **Spec v14.0** — Triage WSI pyramidal (< 2 min/lame) |
+| [docs/V14_CYTOLOGY_BRANCH.md](./docs/V14_CYTOLOGY_BRANCH.md) | **Spec v14.0 Cytologie** — Architecture en Y, CellPose, Morphométrie |
 
 ---
 
@@ -659,7 +660,31 @@ python scripts/training/train_hovernet_family_v13_smart_crops.py \
 
 > **Stratégie:** Toujours utiliser les modèles par **famille** (pas de modèles organ-specific).
 
-### Priorités d'Amélioration
+### 🚧 V14 Cytologie Branch (En Spécification)
+
+**Objectif:** Fusionner pipeline Histologie V13 avec nouveau pipeline Cytologie (Dubai Edition)
+
+**Architecture:** Système en "Y" avec backbone H-Optimus-0 partagé
+- **Histologie:** Pipeline V13 existant (FPN Chimique, AJI ≥ 0.68)
+- **Cytologie:** CellPose + Morphométrie + Virtual Marker (NOUVEAU)
+
+**Statut:** 🚧 Spécifications initiales créées (2026-01-18)
+
+**Documentation:** [docs/V14_CYTOLOGY_BRANCH.md](./docs/V14_CYTOLOGY_BRANCH.md)
+
+**Alertes critiques:**
+- ⚠️ Macenko = Régression -4.3% AJI sur V13 → Approche router-dependent recommandée
+- ✅ Non-régression V13 obligatoire (AJI Respiratory ≥ 0.6872)
+
+**Questions en attente:**
+1. Validation approche Macenko router-dependent (Cyto uniquement)
+2. Confirmation hard requirement AJI V13
+3. Stratégie segmentation cytoplasme (N/C ratio)
+4. Priorité organes cytologie (Thyroïde/Col/Urine)
+
+---
+
+### Priorités d'Amélioration V13 (Histologie)
 
 | Famille | AJI Actuel | Gap vs 0.68 | Priorité |
 |---------|------------|-------------|----------|
