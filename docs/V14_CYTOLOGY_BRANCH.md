@@ -17,6 +17,129 @@ Le système V14 introduit une **architecture en "Y"** permettant de traiter auto
 
 ---
 
+## ✅ Specs Techniques Validées (Expert — 2026-01-19)
+
+> **Source:** Validation Expert Architecture V14
+> **Statut:** ✅ Conforme et Prêt pour Implémentation
+
+### Pipeline de Traitement (Data Flow)
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│  PIPELINE V14 CYTOLOGIE (Séquentiel → Parallèle → Fusionné)         │
+└─────────────────────────────────────────────────────────────────────┘
+
+ÉTAPE 1 — Détection & Segmentation des Noyaux (CellPose)
+    • Type: Séquentiel
+    • Modèle: CellPose v2 pré-entraîné (nuclei)
+    • Output: N bounding boxes + N masques
+    • ⚠️ Aucun entraînement de CellPose dans V14
+
+ÉTAPE 2 — Génération des Patchs 224×224 (Preprocessing)
+    • Type: Séquentiel
+    • Actions: Crop + Padding blanc + Normalisation Macenko ✅
+    • Output: N patches 224×224 + masques alignés
+
+ÉTAPE 3 — Analyse en deux branches (PARALLÈLE)
+    ┌─────────────────────────────────┬──────────────────────────────┐
+    │ Branche A: H-Optimus            │ Branche B: Morphométrie      │
+    │ • Statut: Figé (non entraîné)   │ • Source: Masques CellPose   │
+    │ • Input: Patch 224×224          │ • Calcul: 20 features        │
+    │ • Output: Embedding 1536D       │ • Output: Vecteur 20D        │
+    └─────────────────────────────────┴──────────────────────────────┘
+
+ÉTAPE 4 — Fusion Multimodale (Concatenation)
+    • combined[i] = concat(embedding[i], morpho_features[i])
+    • Vecteur final: 1556D (1536 + 20)
+
+ÉTAPE 5 — Classification Finale (MLP)
+    • Architecture: 1556 → 512 → 256 → 7 classes
+    • BatchNorm sur morpho features (CRITIQUE)
+    • Focal Loss (déséquilibre classes)
+    • Output: Probabilités par classe + Confiance
+```
+
+### Modules Entraînés vs Non-Entraînés
+
+| Module | Statut | Justification |
+|--------|--------|---------------|
+| **CellPose** | ✅ Pré-entraîné, figé | Détection généraliste robuste |
+| **H-Optimus-0** | ✅ Pré-entraîné, figé | Feature extractor 1.1B params |
+| **MLP Morphométrique** | ⚠️ Facultatif | Normalisation features (si requis) |
+| **MLP Classification** | 🔵 **ENTRAÎNÉ** | Fusion multimodale → Diagnostic |
+
+### 20 Features Morphométriques (SINGLE SOURCE OF TRUTH)
+
+**⚠️ CRITIQUE:** Features calculées sur masques CellPose, JAMAIS lues depuis CSV/Excel externe.
+
+| # | Feature | Source | Importance Clinique |
+|---|---------|--------|---------------------|
+| 1 | area_nucleus | regionprops | Criterion 1 (Size of Nuclei) |
+| 2-10 | Géométrie | regionprops | Forme, circularité, solidité |
+| 11-13 | Intensité + H-channel | Ruifrok | Criterion 3 (Chromatin Density) |
+| 14-16 | Haralick texture | GLCM | Granularité chromatine |
+| 17-18 | **N/C ratio** | regionprops | **Paris System (> 0.7 = High Grade)** |
+| 19-20 | Feret, roundness | regionprops | Dimensions max |
+
+**Implémentation:** `src/cytology/morphometry.py` (complète avec 20 features)
+
+### Architecture MLP avec BatchNorm (Fusion Multimodale)
+
+```python
+# ═════════════════════════════════════════════════════════════════════════════
+#  ARCHITECTURE VALIDÉE EXPERT
+# ═════════════════════════════════════════════════════════════════════════════
+
+input_embedding = Input(shape=(1536,))    # H-Optimus
+input_morpho = Input(shape=(20,))         # Morphométrie
+
+# 1. NORMALISATION MORPHO (VITAL pour équilibrage gradients)
+norm_morpho = BatchNormalization()(input_morpho)
+
+# 2. FUSION
+merged = Concatenate()([input_embedding, norm_morpho])
+
+# 3. CLASSIFICATION HEAD
+x = Dense(512, activation='relu')(merged)
+x = Dropout(0.3)(x)
+x = Dense(256, activation='relu')(x)
+x = Dropout(0.2)(x)
+output = Dense(num_classes, activation='softmax')(x)
+```
+
+**Pourquoi BatchNorm est CRITIQUE:**
+- Embedding: 1536 dims, valeurs normalisées ~[-1, +1]
+- Morpho: 20 dims, valeurs brutes (area=500, nc_ratio=0.7)
+- Sans BatchNorm → Gradient écrase features morpho (1536 >> 20)
+- Avec BatchNorm → Fusion réellement multimodale
+
+**Implémentation:** `src/models/cytology_classifier.py` (complète avec Focal Loss)
+
+### Macenko Normalization: Router-Dependent ✅
+
+| Branche | Macenko | Justification |
+|---------|---------|---------------|
+| **Cytologie** | ✅ **ON** | Scanners multiples Dubai + Pas de FPN Chimique |
+| **Histologie** | ❌ **OFF** | Régression -4.3% AJI (conflit Ruifrok/FPN) |
+
+**Documentation complète:** [V14_MACENKO_STRATEGY.md](./V14_MACENKO_STRATEGY.md)
+
+### Avantages Architecture V14 (Validation Expert)
+
+1. ✅ **Pas d'annotation manuelle** — CellPose détection automatique
+2. ✅ **Intelligence visuelle** — H-Optimus 1.1B params
+3. ✅ **Explicabilité** — 20 features quantifiables (médecins comprennent)
+4. ✅ **Localisation robuste** — CellPose élimine erreurs
+5. ✅ **Performance avec peu de données** — Transfer learning (SIPaKMeD 4,049 + augmentation)
+6. ✅ **Maintenabilité** — Modules découplés (CellPose v3 → swap sans toucher reste)
+7. ✅ **Production** — Pipeline rapide (~0.5s/cellule)
+
+### Résumé One-Liner
+
+> **V14 = CellPose localise + Optimus comprend + Morphométrie quantifie + MLP décide**
+
+---
+
 ## 🚨 ALERTES CRITIQUES — Conflits avec V13 Production
 
 ### ⚠️ Alerte 1: Macenko Normalization = Régression -4.3% AJI
