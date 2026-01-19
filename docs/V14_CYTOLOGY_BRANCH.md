@@ -62,7 +62,14 @@ def test_v13_histo_unchanged():
 
 ## 🏗️ Architecture Globale
 
-### Architecture en "Y" (Shared Backbone)
+> **⚠️ CLARIFICATION CRITIQUE (2026-01-19):**
+> Le pipeline Cytologie est **Séquentiel PUIS Parallèle**, pas "parallèle pur".
+> Voir [V14_PIPELINE_EXECUTION_ORDER.md](./V14_PIPELINE_EXECUTION_ORDER.md) pour détails complets.
+
+### Architecture en "Y" (High-Level)
+
+**Note:** Ce diagramme montre l'architecture globale (Router Histo/Cyto).
+Pour l'ordre d'exécution AU SEIN de la branche Cytologie, voir section "Pipeline Cytologie Détaillé" ci-dessous.
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
@@ -139,6 +146,107 @@ ROUTER_THRESHOLDS = {
 - Images mal préparées (artéfacts)
 - Biopsies liquides (mixte tissu + cellules)
 - Coupes fines ressemblant à frottis
+
+---
+
+## 🔄 Pipeline Cytologie Détaillé (Ordre d'Exécution)
+
+> **CLARIFICATION CRITIQUE (2026-01-19):**
+> Le pipeline Cytologie n'est PAS "parallèle pur". C'est **Séquentiel PUIS Parallèle**.
+
+### Pourquoi Séquentiel d'Abord?
+
+**Problème:** H-Optimus ne peut PAS analyser directement une image 1024×1024 avec N cellules.
+- H-Optimus attend **224×224 centrées sur UNE cellule**
+- Il ne fait pas de détection d'objets (pas de bounding boxes)
+- Il est un **encodeur** (image → vecteur), pas un **détecteur**
+
+**Solution:** CellPose DOIT venir en premier pour localiser les cellules.
+
+### Les 5 Étapes (Ordre Strict)
+
+```
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ PHASE SÉQUENTIELLE (Obligatoire)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+INPUT: Image WSI 1024×1024 (après Router → branch="cytology")
+
+ÉTAPE 1: CellPose Master (nuclei)
+    ↓
+    Détecte N cellules → N bounding boxes + N masques noyaux
+    Ex: 50 cellules détectées
+
+ÉTAPE 1.5: CellPose Slave (cyto3) — CONDITIONNEL
+    ↓
+    Si organe requiert N/C ratio (Thyroid, Bladder) → Segmente cytoplasme
+    Sinon (Cervix) → Skip
+
+ÉTAPE 2: Crop + Padding
+    ↓
+    Pour chaque bbox → Crop 224×224 + Padding blanc (PadIfNeeded)
+    Résultat: 50 patches 224×224 prêts
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ PHASE PARALLÈLE (Optimisée — Batch Processing)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Pour CHAQUE patch (50 itérations parallélisées):
+
+ÉTAPE 3A: H-Optimus               ÉTAPE 3B: Morphométrie
+(GPU Batch)                        (CPU Multi-thread)
+    ↓                                  ↓
+Embedding 1536D                    14 Features + Canal H
+(Texture, couleur)                 (Forme, taille, N/C)
+    │                                  │
+    └──────────────┬───────────────────┘
+                   ↓
+
+ÉTAPE 4: Fusion (Concatenation)
+    ↓
+    Vecteur 1550D = [1536 + 14]
+
+ÉTAPE 5: MLP Classification Head
+    ↓
+    Softmax → Classe (ex: "Carcinoma in situ") + Confiance
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+OUTPUT: Rapport pour les 50 cellules
+        "5 cellules suspectes sur 50 analysées"
+```
+
+### Rôles des Composants
+
+| Composant | Rôle | Input | Output | Timing |
+|-----------|------|-------|--------|--------|
+| **CellPose Master** | Localisation | Image 1024×1024 | N bounding boxes | Séquentiel |
+| **CellPose Slave** | Contexte (N/C) | Image 1024×1024 | N masques cyto | Séquentiel |
+| **Crop + Pad** | Préparation | Bboxes | N patches 224×224 | Séquentiel |
+| **H-Optimus** | Encodage | Patch 224×224 | Embedding 1536D | **Parallèle** |
+| **Morphométrie** | Mesure | Masques | 14 features | **Parallèle** |
+| **MLP Head** | Décision | Vecteur 1550D | Classe + Confiance | Séquentiel |
+
+**Principe Clé:** CellPose et H-Optimus ne sont PAS parallèles. H-Optimus et Morphométrie le sont.
+
+### Optimisation Batch (Implémentation)
+
+```python
+# Une fois les patches générés (après CellPose):
+patches_tensor = torch.stack(patches)  # (50, 3, 224, 224)
+
+# ✅ PARALLÈLE: Batch inference GPU
+with torch.no_grad():
+    embeddings = h_optimus(patches_tensor)  # (50, 1536) — ~0.1s
+
+# ✅ PARALLÈLE: Multi-thread CPU
+with concurrent.futures.ThreadPoolExecutor() as executor:
+    morpho_features = list(executor.map(compute_morphometry, masks))  # ~0.05s
+
+# Total: ~0.15s pour 50 cellules (vs 50 × 0.02s = 1s si séquentiel)
+```
+
+**Documentation complète:** [V14_PIPELINE_EXECUTION_ORDER.md](./V14_PIPELINE_EXECUTION_ORDER.md)
 
 ---
 

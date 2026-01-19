@@ -1,9 +1,14 @@
 # V14 Master/Slave Architecture — CellPose Dual-Model Orchestration
 
 > **Version:** 14.0b (Architecture Pivot)
-> **Date:** 2026-01-18
+> **Date:** 2026-01-18 (Mis à jour: 2026-01-19)
 > **Statut:** 🎯 Architecture validée
 > **Principe:** "Nuclei First" — Orchestration intelligente de 2 modèles spécialisés
+
+> **⚠️ SCOPE DE CE DOCUMENT:**
+> Ce document couvre UNIQUEMENT la phase de **Segmentation/Détection** (CellPose Maître/Esclave).
+> Pour le pipeline COMPLET incluant **Classification** (H-Optimus + Morphométrie + MLP),
+> voir: [V14_PIPELINE_EXECUTION_ORDER.md](./V14_PIPELINE_EXECUTION_ORDER.md)
 
 ---
 
@@ -61,7 +66,11 @@
 
 ---
 
-## 🏗️ Pipeline Séquentiel (4 Étapes)
+## 🏗️ Pipeline Séquentiel — Phase Segmentation (Étapes 1-4)
+
+> **Note:** Ces 4 étapes couvrent la **détection et segmentation** des cellules.
+> Les étapes suivantes (Crop → H-Optimus → MLP Classification) sont documentées
+> dans [V14_PIPELINE_EXECUTION_ORDER.md](./V14_PIPELINE_EXECUTION_ORDER.md)
 
 ### Vue d'Ensemble
 
@@ -1683,7 +1692,90 @@ assert sensitivity_malin > 0.98, "⚠️ SAFETY CRITICAL: Sensibilité trop bass
 
 ---
 
+## 🔗 Intégration avec Pipeline Classification
+
+> **Important:** Les 4 étapes documentées ci-dessus couvrent **UNIQUEMENT la segmentation**.
+> Le pipeline V14 complet continue avec 3 étapes supplémentaires pour la classification.
+
+### Étapes Suivantes (Après Segmentation)
+
+Une fois CellPose Maître/Esclave terminé (bounding boxes + masques disponibles):
+
+```
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ PHASE CLASSIFICATION (Étapes 5-7)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+ÉTAPE 5: Crop + Padding (Préparation)
+    ↓
+    Pour chaque bbox CellPose → Crop 224×224 + Padding blanc
+    Résultat: N patches prêts pour analyse
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ PHASE PARALLÈLE (Extraction Features)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+ÉTAPE 6A: H-Optimus-0              ÉTAPE 6B: Morphométrie
+(GPU Batch)                         (CPU Multi-thread)
+    ↓                                   ↓
+Embedding 1536D                     14 Features + Canal H
+    │                                   │
+    └───────────────┬───────────────────┘
+                    ↓
+
+ÉTAPE 7: MLP Classification Head
+    ↓
+    Softmax → Classe finale (ex: "Carcinoma in situ")
+```
+
+### Rôles Complémentaires
+
+| Composant | Phase | Rôle | Output |
+|-----------|-------|------|--------|
+| **CellPose Master** | Segmentation | Localisation noyaux | Bounding boxes |
+| **CellPose Slave** | Segmentation | Contexte cytoplasme | Masques cyto |
+| **H-Optimus-0** | Classification | Encodage texture | Embedding 1536D |
+| **Morphométrie** | Classification | Mesures géométriques | 14 features |
+| **MLP Head** | Classification | Décision diagnostique | Classe + Confiance |
+
+**Principe Clé:**
+- CellPose Maître/Esclave = **"Où sont les cellules?"** (Détection)
+- H-Optimus + Morpho = **"Quelles features?"** (Extraction)
+- MLP Head = **"Quel diagnostic?"** (Décision)
+
+### Ordre d'Exécution Global
+
+```
+1. CellPose Master (nuclei)          ← SÉQUENTIEL (Obligatoire)
+2. CellPose Slave (cyto3)            ← SÉQUENTIEL (Conditionnel)
+3. Fusion géométrique (matching)     ← SÉQUENTIEL
+4. Crop + Padding patches            ← SÉQUENTIEL
+5. H-Optimus + Morphométrie          ← PARALLÈLE (Batch)
+6. MLP Classification                ← SÉQUENTIEL
+```
+
+**⚠️ CRITIQUE:** H-Optimus ne peut PAS tourner avant CellPose car:
+- H-Optimus attend une image 224×224 **centrée sur UNE cellule**
+- Il ne fait pas de détection d'objets (pas de bounding boxes)
+- Sans CellPose d'abord, H-Optimus ne sait pas "où regarder"
+
+**Documentation complète:** [V14_PIPELINE_EXECUTION_ORDER.md](./V14_PIPELINE_EXECUTION_ORDER.md)
+
+---
+
 ## 📝 Changelog
+
+### Version 14.0c — 2026-01-19 (Clarification Ordre d'Exécution)
+
+**Clarifications Critiques:**
+- ✅ Ajout section "Intégration avec Pipeline Classification"
+- ✅ Clarification: CellPose AVANT H-Optimus (pas parallèle pur)
+- ✅ Documentation scope: Segmentation uniquement (ce doc)
+- ✅ Référence: [V14_PIPELINE_EXECUTION_ORDER.md](./V14_PIPELINE_EXECUTION_ORDER.md) pour pipeline complet
+
+**Correction Conceptuelle:**
+- ❌ **Avant:** Impression que CellPose et H-Optimus sont parallèles
+- ✅ **Après:** Clair que CellPose est séquentiel d'abord, H-Optimus ensuite
 
 ### Version 14.0b — 2026-01-18 (Architecture Pivot)
 

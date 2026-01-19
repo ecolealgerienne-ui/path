@@ -654,6 +654,7 @@ python scripts/training/train_hovernet_family_v13_smart_crops.py \
 | [docs/specs/V14_WSI_TRIAGE_SPEC.md](./docs/specs/V14_WSI_TRIAGE_SPEC.md) | **Spec v14.0** — Triage WSI pyramidal (< 2 min/lame) |
 | [docs/V14_CYTOLOGY_BRANCH.md](./docs/V14_CYTOLOGY_BRANCH.md) | **Spec v14.0 Cytologie** — Architecture en Y, Router, Métriques |
 | **[docs/V14_MASTER_SLAVE_ARCHITECTURE.md](./docs/V14_MASTER_SLAVE_ARCHITECTURE.md)** | **Architecture Maître/Esclave** — CellPose dual-model, KPIs, Business model |
+| **[docs/V14_PIPELINE_EXECUTION_ORDER.md](./docs/V14_PIPELINE_EXECUTION_ORDER.md)** | **🔥 Pipeline V14 Ordre d'Exécution** — Clarification CRITIQUE: Séquentiel PUIS Parallèle |
 
 ---
 
