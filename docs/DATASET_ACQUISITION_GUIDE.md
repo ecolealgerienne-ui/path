@@ -52,48 +52,92 @@ python scripts/datasets/preprocess_cytology.py
 
 ---
 
-## Dataset 1: TB-PANDA (Thyroid FNA) — ~10,000 images ⭐ PRIORITY
+## Dataset 1: Thyroid Cytology Datasets — ⚠️ LIMITED AVAILABILITY
 
 **Organ:** Thyroid
 **Classification:** Bethesda System I-VI
-**Format:** Whole Slide Images (WSI) + Annotations
-**License:** Open Source (CC BY 4.0)
+**Format:** FNA (Fine Needle Aspiration) Cytology
+**Status:** ⚠️ **Public datasets are SCARCE**
 
-### Download Instructions
+### ⚠️ CRITICAL: TB-PANDA Does Not Exist at Public URL
 
-**Method 1: Git Clone (Recommended)**
+**Initial Reference (INCORRECT):**
+- ❌ `https://github.com/ncbi/TB-PANDA` → **DOES NOT EXIST**
+- ❌ No public Git repository available
+
+**Reality:**
+The thyroid cytology dataset landscape is challenging. Unlike cervical cytology (SIPaKMeD, Herlev),
+there are **NO large-scale public thyroid FNA datasets** with Bethesda classifications.
+
+### Alternative Thyroid Datasets (Known Sources)
+
+#### Option 1: Kaggle Search (Best Bet)
+
 ```bash
-cd /home/user/path
-git clone https://github.com/ncbi/TB-PANDA.git data/raw/tb_panda
+# Search Kaggle for thyroid cytology datasets
+kaggle datasets list -s "thyroid cytology"
+kaggle datasets list -s "thyroid FNA"
+kaggle datasets list -s "bethesda thyroid"
 ```
 
-**Method 2: Direct Download**
-1. Visit: https://github.com/ncbi/TB-PANDA
-2. Click "Code" → "Download ZIP"
-3. Extract to: `data/raw/tb_panda/`
+**Known Kaggle datasets:**
+- Search "thyroid nodule ultrasound" (imaging, not cytology)
+- Search "thyroid fine needle aspiration"
+- Check individual user uploads (may be small, <1,000 images)
 
-### Expected Structure
+#### Option 2: Academic Collaborations
+
+**Contact institutions:**
+1. **Mayo Clinic** (Rochester, MN) - Thyroid cytology expertise
+2. **Johns Hopkins** (Baltimore, MD) - Bethesda System creators
+3. **Memorial Sloan Kettering** (New York, NY) - Large cancer database
+4. **MD Anderson** (Houston, TX) - Endocrine pathology
+
+**Request research collaboration for dataset access.**
+
+#### Option 3: Create Synthetic/Augmented Dataset
+
+**If no public data available:**
+- Use GAN-based augmentation on small datasets
+- Combine multiple small sources (Kaggle + academic)
+- Focus on Cervix first (SIPaKMeD 4k images available)
+
+### Expected Structure (If Dataset Found)
+
 ```
-data/raw/tb_panda/
+data/raw/thyroid_cytology/
 ├── images/
-│   ├── Bethesda_I/
-│   ├── Bethesda_II/
-│   ├── Bethesda_III/
-│   ├── Bethesda_IV/
-│   ├── Bethesda_V/
-│   └── Bethesda_VI/
-└── annotations/
+│   ├── Bethesda_I_Nondiagnostic/
+│   ├── Bethesda_II_Benign/
+│   ├── Bethesda_III_AUS_FLUS/
+│   ├── Bethesda_IV_FN_SFN/
+│   ├── Bethesda_V_Suspicious/
+│   └── Bethesda_VI_Malignant/
+└── annotations.csv
 ```
 
-### Key Metrics for Validation
+### Key Metrics for Validation (When Dataset Available)
 - **Target Sensitivity:** >98% for Bethesda V-VI (malignant)
 - **FROC:** <2 FP/WSI @ 98% sensitivity
 - **N/C Ratio:** Required (Cyto3 auto-activation)
 
-### References
-- Paper: Sanyal et al. (2018) - "TB-PANDA: A Large-Scale Benchmark for Thyroid Cytopathology"
-- GitHub: https://github.com/ncbi/TB-PANDA
-- PubMed: https://www.ncbi.nlm.nih.gov/pmc/articles/PMC6345475/
+### Recommendation: Focus on Cervix First
+
+**Pragmatic Approach:**
+1. ✅ **Start with SIPaKMeD** (4,049 cervical images — AVAILABLE NOW)
+2. ✅ **Add Herlev** (917 cervical images for validation)
+3. ✅ **Validate with ISBI 2014** (breast histology — 6 criteria)
+4. ⚠️ **Thyroid:** Search Kaggle, contact institutions, or postpone
+
+**Why this works:**
+- CellPose models trained on cervical cells can transfer to thyroid
+- The 6 Universal Criteria (ISBI 2014) apply to all organs
+- Better to have 5k cervical images than wait for non-existent thyroid data
+
+### References (General Thyroid Cytology)
+- **Bethesda System:** Cibas & Ali (2017) - "The 2017 Bethesda System for Reporting Thyroid Cytopathology"
+- **Paper:** Ali & Cibas (2010) - Thyroid (journal)
+- **No public dataset URL available as of 2026-01-19**
 
 ---
 

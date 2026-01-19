@@ -11,7 +11,7 @@
 |---------|------|---------|--------|---------------|
 | **SIPaKMeD** | Cytology (Cervix) | 4,049 | ✅ Downloaded | [📖 sipakmed/](./sipakmed/) |
 | **Herlev** | Cytology (Cervix) | 917 | ⚠️ Pending | [📖 herlev/](./herlev/) |
-| **TB-PANDA** | Cytology (Thyroid) | ~10,000 | ⚠️ Pending | [📖 See DATASET_ACQUISITION_GUIDE.md](../DATASET_ACQUISITION_GUIDE.md#dataset-1-tb-panda-thyroid-fna--10000-images--priority) |
+| **Thyroid Cytology** | Cytology (Thyroid) | TBD | ❌ **NOT AVAILABLE** | [📖 See DATASET_ACQUISITION_GUIDE.md](../DATASET_ACQUISITION_GUIDE.md#dataset-1-thyroid-cytology-datasets--limited-availability) |
 | **ISBI 2014 MITOS-ATYPIA** | Histology (Breast) | ~1,200 | ⚠️ Pending | [📖 isbi_2014_mitoses/](./isbi_2014_mitoses/) |
 
 ---
@@ -26,7 +26,7 @@
 |---------|-------|--------|---------|----------|-------------------|
 | **SIPaKMeD** | Cervix | 4,049 | 7 | High | ✅ YES |
 | **Herlev** | Cervix | 917 | 7 | Medium | ✅ YES (validation) |
-| **TB-PANDA** | Thyroid | ~10,000 | 6 (Bethesda) | High | ✅ YES |
+| **Thyroid (TBD)** | Thyroid | TBD | 6 (Bethesda) | Medium | ⚠️ Dataset search needed |
 
 **Usage:**
 - Train CellPose `nuclei` model (Master)
@@ -74,12 +74,12 @@ Status: Manual download required
 Action: Register and download Herlev_dataset.zip
 ```
 
-**TB-PANDA**
+**Thyroid Cytology**
 ```
-Source: https://github.com/ncbi/TB-PANDA
-Size: ~15 GB
-Status: Git clone or manual download
-Action: git clone https://github.com/ncbi/TB-PANDA.git data/raw/tb_panda
+Source: ❌ NO PUBLIC DATASET AVAILABLE
+Size: N/A
+Status: Needs sourcing (Kaggle search or academic collaboration)
+Action: See DATASET_ACQUISITION_GUIDE.md for alternatives
 ```
 
 **ISBI 2014 MITOS-ATYPIA**
@@ -104,10 +104,10 @@ python scripts/datasets/verify_datasets.py
 ```
 ✅ SIPaKMeD: 4,049 images found
 ⚠️ Herlev: Not found
-⚠️ TB-PANDA: Not found
+❌ Thyroid: No public dataset available
 ⚠️ ISBI 2014: Not found
 
-📊 Total: 4,049 images (1/4 datasets ready)
+📊 Total: 4,049 images (1/3 available datasets ready)
 ```
 
 ### Step 2: Preprocess Cytology Datasets
@@ -119,7 +119,6 @@ python scripts/datasets/preprocess_cytology.py --all
 # Or individually
 python scripts/datasets/preprocess_cytology.py --dataset sipakmed
 python scripts/datasets/preprocess_cytology.py --dataset herlev
-python scripts/datasets/preprocess_cytology.py --dataset tb_panda
 ```
 
 **Output:**
@@ -128,13 +127,12 @@ data/processed/
 ├── sipakmed/
 │   ├── train/ (3,239 images)
 │   └── val/ (810 images)
-├── herlev/
-│   ├── train/ (733 images)
-│   └── val/ (184 images)
-└── tb_panda/
-    ├── train/ (~8,000 images)
-    └── val/ (~2,000 images)
+└── herlev/
+    ├── train/ (733 images)
+    └── val/ (184 images)
 ```
+
+**Note:** Thyroid cytology dataset not yet available - focus on cervical datasets first.
 
 ### Step 3: Prepare ISBI 2014 for Validation
 
@@ -152,12 +150,15 @@ python scripts/validation/prepare_isbi_2014.py \
 
 | Dataset | Train Images | Val Images | Total | Percentage |
 |---------|--------------|------------|-------|------------|
-| **SIPaKMeD** | 3,239 | 810 | 4,049 | 28.8% |
-| **Herlev** | 733 | 184 | 917 | 6.5% |
-| **TB-PANDA** | ~8,000 | ~2,000 | ~10,000 | 64.7% |
-| **TOTAL** | ~12,000 | ~3,000 | ~15,000 | 100% |
+| **SIPaKMeD** | 3,239 | 810 | 4,049 | 81.5% |
+| **Herlev** | 733 | 184 | 917 | 18.5% |
+| **Thyroid** | ❌ N/A | ❌ N/A | ❌ N/A | 0% |
+| **TOTAL** | ~4,000 | ~1,000 | ~5,000 | 100% |
 
-**ISBI 2014:** Not included in training (validation only)
+**Notes:**
+- **ISBI 2014:** Not included in training (validation only)
+- **Thyroid:** No public dataset available - focus on cervical cytology first
+- **Combined cervical:** 4,966 images (sufficient for CellPose training)
 
 ### Class Distribution (Cervix - SIPaKMeD + Herlev)
 
@@ -193,7 +194,7 @@ python scripts/validation/prepare_isbi_2014.py \
 - ❌ Skip Cyto3 (Slave model)
 - ✅ Use SIPaKMeD (4,049) as primary, Herlev (917) for validation
 
-### Thyroid (TB-PANDA)
+### Thyroid (Dataset TBD)
 
 ```json
 {
@@ -203,13 +204,17 @@ python scripts/validation/prepare_isbi_2014.py \
   "nc_ratio_required": true,
   "nuclei_diameter": 30,
   "cyto_diameter": 60,
-  "target_sensitivity": 0.98
+  "target_sensitivity": 0.98,
+  "status": "dataset_not_available"
 }
 ```
 
-**CellPose Training:**
-- ✅ Nuclei (Master model)
-- ✅ Cyto3 (Slave model) — N/C ratio critical for Bethesda V-VI
+**Status:** ❌ No public dataset available
+
+**Approach:**
+- ⚠️ Train on cervical cytology first (SIPaKMeD + Herlev)
+- ⚠️ Transfer learning to thyroid if small dataset found
+- ⚠️ CellPose models generalize well across cytology types
 
 ### Breast (ISBI 2014) — Validation Only
 
@@ -234,13 +239,14 @@ python scripts/validation/prepare_isbi_2014.py \
 
 ### Histology vs Cytology
 
-| Aspect | Histology (ISBI 2014) | Cytology (SIPaKMeD, Herlev, TB-PANDA) |
-|--------|----------------------|---------------------------------------|
+| Aspect | Histology (ISBI 2014) | Cytology (SIPaKMeD, Herlev) |
+|--------|----------------------|-----------------------------|
 | **Cell Arrangement** | Cells stuck together in tissue | Isolated cells floating in liquid |
 | **Goal** | Separate stuck nuclei | Find rare abnormal cells |
 | **CellPose Training** | ❌ NO (wrong morphology) | ✅ YES |
 | **Validation** | ✅ YES (6 criteria) | ✅ YES |
-| **Example** | Breast biopsy | Pap smear, Thyroid FNA, Urine |
+| **Example** | Breast biopsy | Pap smear, Cervical cytology |
+| **Available Datasets** | ISBI 2014 (1,200 images) | SIPaKMeD (4,049) + Herlev (917) |
 
 **Key Takeaway:** Never mix histology and cytology for CellPose training!
 
@@ -272,15 +278,15 @@ python scripts/validation/prepare_isbi_2014.py \
 
 1. **SIPaKMeD:** Plissiti et al. (2018) - IEEE ICIP
 2. **Herlev:** Jantzen et al. (2005) - NiSIS
-3. **TB-PANDA:** Sanyal et al. (2018) - PubMed PMC6345475
-4. **ISBI 2014:** Veta et al. (2015) - Medical Image Analysis
+3. **ISBI 2014:** Veta et al. (2015) - Medical Image Analysis
+4. **Thyroid:** No public dataset available (as of 2026-01-19)
 
 ### Links
 
 - **SIPaKMeD:** https://www.cs.uoi.gr/~marina/sipakmed.html
 - **Herlev:** http://mde-lab.aegean.gr/index.php/downloads
-- **TB-PANDA:** https://github.com/ncbi/TB-PANDA
 - **ISBI 2014:** https://mitos-atypia-14.grand-challenge.org/
+- **Thyroid:** ❌ No public repository available - check Kaggle or academic sources
 
 ---
 
@@ -289,15 +295,18 @@ python scripts/validation/prepare_isbi_2014.py \
 ### Phase 1: Complete Downloads ⚠️
 
 ```bash
-# Priority 1: TB-PANDA (largest, most important)
-git clone https://github.com/ncbi/TB-PANDA.git data/raw/tb_panda
-
-# Priority 2: Herlev (validation for Cervix)
+# Priority 1: Herlev (validation for Cervix)
 # Manual download from http://mde-lab.aegean.gr/
 
-# Priority 3: ISBI 2014 (validation only)
+# Priority 2: ISBI 2014 (validation only)
 # Register at https://mitos-atypia-14.grand-challenge.org/
+
+# Thyroid: Search alternatives
+kaggle datasets list -s "thyroid cytology"
+# Check academic institutions for collaboration
 ```
+
+**Note:** TB-PANDA does not exist at public URL - focus on cervical datasets first.
 
 ### Phase 2: Preprocess All Datasets
 
@@ -308,14 +317,16 @@ python scripts/datasets/preprocess_cytology.py --all
 ### Phase 3: Train CellPose Master/Slave
 
 ```bash
-# Master (Nuclei)
+# Master (Nuclei) - Cervical cytology
 python scripts/training/train_cellpose_nuclei.py \
-    --datasets sipakmed,herlev,tb_panda
+    --datasets sipakmed,herlev
 
-# Slave (Cyto3) - Thyroid only
-python scripts/training/train_cellpose_cyto3.py \
-    --datasets tb_panda
+# Slave (Cyto3) - Skip for now (cervical cytology doesn't require N/C ratio)
+# Will train on thyroid dataset when/if available
 ```
+
+**Note:** Cervical cytology (SIPaKMeD + Herlev) uses nuclei-only approach.
+N/C ratio (Cyto3) would be needed for thyroid (Bethesda V-VI), but dataset not available.
 
 ### Phase 4: Validate with ISBI 2014
 
@@ -366,4 +377,7 @@ python scripts/datasets/compute_class_weights.py --dataset sipakmed
 
 **Last Updated:** 2026-01-19
 **Maintainer:** CellViT-Optimus V14 Team
-**Status:** 1/4 datasets ready (SIPaKMeD ✅)
+**Status:** 1/3 available datasets ready (SIPaKMeD ✅)
+
+**Important:** TB-PANDA thyroid dataset does not exist at initially referenced URL.
+Focus on cervical cytology (SIPaKMeD + Herlev) for V14 development.
