@@ -28,6 +28,21 @@ import torch
 import numpy as np
 from typing import Dict, Tuple
 
+# Import stain separation functions (V13/V14)
+from .stain_separation import (
+    ruifrok_extract_h_channel,
+    ruifrok_extract_e_channel,
+    ruifrok_deconvolution,
+    macenko_normalize,
+    rgb_to_od,
+    od_to_rgb,
+    visualize_h_channel,
+    compare_ruifrok_vs_macenko,
+    RUIFROK_H_VECTOR,
+    RUIFROK_E_VECTOR,
+    RUIFROK_DAB_VECTOR
+)
+
 __all__ = [
     'HOPTIMUS_MEAN',
     'HOPTIMUS_STD',
@@ -35,6 +50,18 @@ __all__ = [
     'create_hoptimus_transform',
     'preprocess_image',
     'validate_features',
+    # Stain separation (V13/V14)
+    'ruifrok_extract_h_channel',
+    'ruifrok_extract_e_channel',
+    'ruifrok_deconvolution',
+    'macenko_normalize',
+    'rgb_to_od',
+    'od_to_rgb',
+    'visualize_h_channel',
+    'compare_ruifrok_vs_macenko',
+    'RUIFROK_H_VECTOR',
+    'RUIFROK_E_VECTOR',
+    'RUIFROK_DAB_VECTOR',
 ]
 
 # ============================================================================
