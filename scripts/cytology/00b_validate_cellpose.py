@@ -100,7 +100,8 @@ def validate_cellpose_on_dataset(
     diameter: float = 35,
     flow_threshold: float = 0.4,
     cellprob_threshold: float = 0.0,
-    n_samples: int = None
+    n_samples: int = None,
+    model_name: str = 'nuclei'
 ) -> Dict:
     """
     Valide CellPose sur dataset preprocessed
@@ -112,6 +113,7 @@ def validate_cellpose_on_dataset(
         flow_threshold: Flow threshold
         cellprob_threshold: Cell probability threshold
         n_samples: Nombre samples à tester (None = tous)
+        model_name: CellPose pretrained model ('nuclei', 'cyto', 'cyto2', 'cyto3')
 
     Returns:
         results: Dict with metrics
@@ -127,13 +129,17 @@ def validate_cellpose_on_dataset(
         metadata = metadata[:n_samples]
 
     print(f"\n🔬 Validating CellPose on {len(metadata)} samples ({split} split)")
-    print(f"   Model: nuclei (pré-entraîné)")
+    print(f"   Model: {model_name} (pré-entraîné)")
     print(f"   Diameter: {diameter}")
     print(f"   Flow threshold: {flow_threshold}")
     print(f"   Cellprob threshold: {cellprob_threshold}")
 
-    # Load CellPose model
-    model = models.Cellpose(model_type='nuclei')
+    # Load CellPose model (API v4.x)
+    # In CellPose 4.x, default model is 'cpsam' (CellPose-SAM)
+    # Old models (nuclei, cyto, cyto2, cyto3) are deprecated
+    if model_name in ['nuclei', 'cyto', 'cyto2', 'cyto3']:
+        print(f"   ⚠️  Note: '{model_name}' deprecated in CellPose 4.x, using 'cpsam'")
+    model = models.CellposeModel(gpu=True)  # Always use default cpsam in v4.x
 
     # Metrics storage
     ious = []
@@ -153,14 +159,13 @@ def validate_cellpose_on_dataset(
         mask_gt = np.array(Image.open(mask_path))
         mask_gt_binary = (mask_gt > 0).astype(np.uint8)
 
-        # CellPose prediction
+        # CellPose prediction (API v4.x: returns 3 values)
         try:
             masks_pred, flows, styles = model.eval(
                 image,
                 diameter=diameter,
                 flow_threshold=flow_threshold,
-                cellprob_threshold=cellprob_threshold,
-                channels=[0, 0]  # Grayscale
+                cellprob_threshold=cellprob_threshold
             )
 
             # Convert to binary
@@ -376,6 +381,13 @@ def main():
         help='Cell probability threshold (default: 0.0)'
     )
     parser.add_argument(
+        '--model',
+        type=str,
+        default='nuclei',
+        choices=['nuclei', 'cyto', 'cyto2', 'cyto3'],
+        help='CellPose pretrained model (default: nuclei)'
+    )
+    parser.add_argument(
         '--n_samples',
         type=int,
         default=None,
@@ -408,7 +420,8 @@ def main():
         diameter=args.diameter,
         flow_threshold=args.flow_threshold,
         cellprob_threshold=args.cellprob_threshold,
-        n_samples=args.n_samples
+        n_samples=args.n_samples,
+        model_name=args.model
     )
 
     # Print report

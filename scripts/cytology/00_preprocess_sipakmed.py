@@ -160,8 +160,9 @@ def load_sipakmed_dataset(
             mask_pil = Image.open(mask_file)
             mask_indexed = np.array(mask_pil)
 
-            # Extraire classe noyau (valeur 1 dans masque indexé)
-            mask_nucleus = (mask_indexed == 1).astype(np.uint8)
+            # Extraire classe noyau (valeur 2 dans masque SIPaKMeD)
+            # SIPaKMeD mask values: 0=artefact, 1=artefact, 2=NUCLEUS, 3=cytoplasm, 4=background
+            mask_nucleus = (mask_indexed == 2).astype(np.uint8)
 
             # Macenko normalization (optionnel)
             if use_macenko:
