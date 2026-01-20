@@ -134,8 +134,12 @@ def validate_cellpose_on_dataset(
     print(f"   Flow threshold: {flow_threshold}")
     print(f"   Cellprob threshold: {cellprob_threshold}")
 
-    # Load CellPose model (API v4.x: pretrained_model, not model_type)
-    model = models.CellposeModel(pretrained_model=model_name, gpu=True)
+    # Load CellPose model (API v4.x)
+    # In CellPose 4.x, default model is 'cpsam' (CellPose-SAM)
+    # Old models (nuclei, cyto, cyto2, cyto3) are deprecated
+    if model_name in ['nuclei', 'cyto', 'cyto2', 'cyto3']:
+        print(f"   ⚠️  Note: '{model_name}' deprecated in CellPose 4.x, using 'cpsam'")
+    model = models.CellposeModel(gpu=True)  # Always use default cpsam in v4.x
 
     # Metrics storage
     ious = []
