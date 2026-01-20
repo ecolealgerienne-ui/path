@@ -132,8 +132,8 @@ def validate_cellpose_on_dataset(
     print(f"   Flow threshold: {flow_threshold}")
     print(f"   Cellprob threshold: {cellprob_threshold}")
 
-    # Load CellPose model
-    model = models.Cellpose(model_type='nuclei')
+    # Load CellPose model (API v4.x: CellposeModel)
+    model = models.CellposeModel(model_type='nuclei', gpu=True)
 
     # Metrics storage
     ious = []
@@ -153,14 +153,13 @@ def validate_cellpose_on_dataset(
         mask_gt = np.array(Image.open(mask_path))
         mask_gt_binary = (mask_gt > 0).astype(np.uint8)
 
-        # CellPose prediction
+        # CellPose prediction (API v4.x: returns 4 values, channels deprecated)
         try:
-            masks_pred, flows, styles = model.eval(
+            masks_pred, flows, styles, diams = model.eval(
                 image,
                 diameter=diameter,
                 flow_threshold=flow_threshold,
-                cellprob_threshold=cellprob_threshold,
-                channels=[0, 0]  # Grayscale
+                cellprob_threshold=cellprob_threshold
             )
 
             # Convert to binary
