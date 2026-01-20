@@ -667,10 +667,33 @@ python scripts/training/train_hovernet_family_v13_smart_crops.py \
 
 **Objectif:** Fusionner pipeline Histologie V13 avec nouveau pipeline Cytologie (Dubai Edition)
 
-**Statut:** 🎯 Architecture validée (2026-01-18)
+**Statut:** 🎯 Architecture validée (2026-01-18) | **Phase 1 en cours** (2026-01-20)
 
 **Changement Architectural Majeur:**
 > Suite à analyse approfondie, remplacement de l'approche CellPose `cyto2` unique par **orchestration intelligente de 2 modèles spécialisés** (Maître/Esclave).
+
+#### 🎯 Décision Stratégique Critique (2026-01-20)
+
+> **CellPose inadapté pour SIPaKMeD** — Stratégie duale Phase 1/Phase 2
+
+**Validation Expérimentale:**
+```
+CellPose sur SIPaKMeD (cellule isolée 168×156):
+  Diameter=50: 4 objets détectés au lieu de 1 → Sur-segmentation
+  Cause: CellPose optimisé pour tissus (groupes cellulaires), pas cellules isolées
+```
+
+**Stratégie Adoptée:**
+
+| Phase | Dataset | Segmentation | But |
+|-------|---------|--------------|-----|
+| **Phase 1 (Dev)** | SIPaKMeD (cellules isolées) | **Masques GT** | Valider architecture |
+| **Phase 2 (Prod)** | Lames réelles (groupes) | **CellPose** | Déploiement clinique |
+
+**Justification:**
+- SIPaKMeD ≠ domaine cible (1 cellule isolée vs 100+ cellules/patch)
+- H-Optimus = extracteur de features → fonctionne sur tout patch propre
+- CellPose sera utilisé en production sur lames réelles (urinaires, thyroïdiennes)
 
 #### Architecture en "Y"
 
