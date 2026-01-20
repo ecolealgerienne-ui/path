@@ -1,0 +1,271 @@
+{
+  "_comment": "Organ-specific configuration for Cytology Master/Slave Architecture",
+  "_version": "V14 Cytology Standalone",
+  "_last_updated": "2026-01-18",
+
+  "organs": {
+    "Thyroid": {
+      "organ_id": "thyroid",
+      "classification_system": "Bethesda",
+      "classes": [
+        "Bethesda_I_Nondiagnostic",
+        "Bethesda_II_Benign",
+        "Bethesda_III_AUS_FLUS",
+        "Bethesda_IV_FN_SFN",
+        "Bethesda_V_Suspicious",
+        "Bethesda_VI_Malignant"
+      ],
+      "cyto3_trigger": "auto",
+      "nc_ratio_required": true,
+      "nc_ratio_thresholds": {
+        "benign_max": 0.20,
+        "suspicious_min": 0.35,
+        "malignant_min": 0.50
+      },
+      "nuclei_params": {
+        "diameter": 30,
+        "flow_threshold": 0.4,
+        "cellprob_threshold": 0.0
+      },
+      "cyto3_params": {
+        "diameter": 60,
+        "flow_threshold": 0.4,
+        "cellprob_threshold": 0.0
+      },
+      "morphometric_features": [
+        "area",
+        "perimeter",
+        "circularity",
+        "eccentricity",
+        "mean_od",
+        "integrated_od",
+        "nc_ratio",
+        "nucleoli_count",
+        "chromatin_coarseness"
+      ],
+      "priority": 1,
+      "validation_metrics": {
+        "target_sensitivity": 0.98,
+        "target_froc": 2.0,
+        "target_kappa": 0.80
+      }
+    },
+
+    "Cervix": {
+      "organ_id": "cervix",
+      "classification_system": "Bethesda_Gyn",
+      "classes": [
+        "NILM_Normal",
+        "ASC_US",
+        "LSIL",
+        "ASC_H",
+        "HSIL",
+        "SCC"
+      ],
+      "cyto3_trigger": "skip",
+      "nc_ratio_required": false,
+      "nc_ratio_thresholds": null,
+      "nuclei_params": {
+        "diameter": 35,
+        "flow_threshold": 0.4,
+        "cellprob_threshold": 0.0
+      },
+      "cyto3_params": null,
+      "morphometric_features": [
+        "area",
+        "perimeter",
+        "circularity",
+        "eccentricity",
+        "mean_od",
+        "integrated_od",
+        "chromatin_coarseness",
+        "nuclear_irregularity"
+      ],
+      "priority": 2,
+      "validation_metrics": {
+        "target_sensitivity": 0.98,
+        "target_froc": 2.0,
+        "target_kappa": 0.80
+      }
+    },
+
+    "Bladder": {
+      "organ_id": "bladder",
+      "classification_system": "Paris",
+      "classes": [
+        "Negative",
+        "Atypical_Urothelial_Cells",
+        "Suspicious_HGUC",
+        "HGUC_High_Grade",
+        "LGUC_Low_Grade"
+      ],
+      "cyto3_trigger": "auto",
+      "nc_ratio_required": true,
+      "nc_ratio_thresholds": {
+        "benign_max": 0.30,
+        "atypical_min": 0.40,
+        "hguc_min": 0.70
+      },
+      "nuclei_params": {
+        "diameter": 32,
+        "flow_threshold": 0.4,
+        "cellprob_threshold": 0.0
+      },
+      "cyto3_params": {
+        "diameter": 65,
+        "flow_threshold": 0.4,
+        "cellprob_threshold": 0.0
+      },
+      "morphometric_features": [
+        "area",
+        "perimeter",
+        "circularity",
+        "eccentricity",
+        "mean_od",
+        "integrated_od",
+        "nc_ratio",
+        "chromatin_coarseness",
+        "nuclear_irregularity",
+        "contour_irregularity"
+      ],
+      "priority": 3,
+      "validation_metrics": {
+        "target_sensitivity": 0.98,
+        "target_froc": 2.0,
+        "target_kappa": 0.80
+      }
+    },
+
+    "Breast": {
+      "organ_id": "breast",
+      "classification_system": "CNB5",
+      "classes": [
+        "C1_Inadequate",
+        "C2_Benign",
+        "C3_Atypia",
+        "C4_Suspicious",
+        "C5_Malignant"
+      ],
+      "cyto3_trigger": "manual",
+      "nc_ratio_required": false,
+      "nc_ratio_thresholds": null,
+      "nuclei_params": {
+        "diameter": 28,
+        "flow_threshold": 0.4,
+        "cellprob_threshold": 0.0
+      },
+      "cyto3_params": {
+        "diameter": 55,
+        "flow_threshold": 0.4,
+        "cellprob_threshold": 0.0
+      },
+      "morphometric_features": [
+        "area",
+        "perimeter",
+        "circularity",
+        "eccentricity",
+        "mean_od",
+        "integrated_od",
+        "chromatin_coarseness",
+        "nucleoli_count",
+        "mitotic_index"
+      ],
+      "priority": 4,
+      "validation_metrics": {
+        "target_sensitivity": 0.98,
+        "target_froc": 3.0,
+        "target_kappa": 0.75
+      }
+    }
+  },
+
+  "global_defaults": {
+    "image_size": 512,
+    "target_image_size": 224,
+    "normalization": {
+      "method": "macenko",
+      "reference_image": null,
+      "apply_to_cytology": true,
+      "apply_to_histology": false
+    },
+    "performance": {
+      "gpu_enabled": true,
+      "batch_size": 8,
+      "num_workers": 4
+    },
+    "quality_control": {
+      "min_nucleus_area": 100,
+      "max_nucleus_area": 5000,
+      "min_cytoplasm_area": 200,
+      "max_cytoplasm_area": 15000,
+      "min_image_quality_score": 0.3
+    }
+  },
+
+  "business_model": {
+    "packages": {
+      "essential": {
+        "name": "Essential - Nuclei Only",
+        "price_per_month": 5000,
+        "organs": ["Cervix"],
+        "features": ["nuclei_detection", "basic_morphometry", "binary_classification"]
+      },
+      "expert_urology": {
+        "name": "Expert Urology",
+        "price_per_month": 8000,
+        "organs": ["Bladder"],
+        "features": ["nuclei_detection", "cytoplasm_segmentation", "nc_ratio", "paris_classification", "advanced_morphometry"]
+      },
+      "expert_endocrinology": {
+        "name": "Expert Endocrinology",
+        "price_per_month": 8000,
+        "organs": ["Thyroid"],
+        "features": ["nuclei_detection", "cytoplasm_segmentation", "nc_ratio", "bethesda_classification", "advanced_morphometry"]
+      },
+      "premium": {
+        "name": "Premium Multi-Organ",
+        "price_per_month": 12000,
+        "organs": ["Thyroid", "Cervix", "Bladder", "Breast"],
+        "features": ["nuclei_detection", "cytoplasm_segmentation", "nc_ratio", "all_classifications", "advanced_morphometry", "custom_models"]
+      }
+    }
+  },
+
+  "validation_datasets": {
+    "tb_panda": {
+      "organ": "Thyroid",
+      "source": "https://github.com/ncbi/TB-PANDA",
+      "expected_samples": 10000,
+      "split": {"train": 0.8, "val": 0.2},
+      "status": "available"
+    },
+    "herlev": {
+      "organ": "Cervix",
+      "source": "http://mde-lab.aegean.gr",
+      "expected_samples": 917,
+      "split": {"train": 0.8, "val": 0.2},
+      "status": "available"
+    },
+    "sipakmed": {
+      "organ": "Cervix",
+      "source": "https://www.cs.uoi.gr/~marina/sipakmed.html",
+      "expected_samples": 4049,
+      "split": {"train": 0.8, "val": 0.2},
+      "status": "registration_required"
+    },
+    "isbi_2014": {
+      "organ": "Breast",
+      "source": "https://mitos-atypia-14.grand-challenge.org/",
+      "expected_samples": 1200,
+      "split": {"train": 0.8, "val": 0.2},
+      "status": "registration_required"
+    },
+    "paris_bladder": {
+      "organ": "Bladder",
+      "source": "TBD",
+      "expected_samples": 0,
+      "split": {"train": 0.8, "val": 0.2},
+      "status": "needs_sourcing"
+    }
+  }
+}

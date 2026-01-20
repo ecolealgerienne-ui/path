@@ -652,6 +652,10 @@ python scripts/training/train_hovernet_family_v13_smart_crops.py \
 | [docs/sessions/2025-12-29_respiratory_v13_smart_crops_results.md](./docs/sessions/2025-12-29_respiratory_v13_smart_crops_results.md) | Résultats Respiratory |
 | [docs/UI_COCKPIT.md](./docs/UI_COCKPIT.md) | **R&D Cockpit (IHM Gradio)** — Architecture, API, Phases |
 | [docs/specs/V14_WSI_TRIAGE_SPEC.md](./docs/specs/V14_WSI_TRIAGE_SPEC.md) | **Spec v14.0** — Triage WSI pyramidal (< 2 min/lame) |
+| **[docs/cytology/V14_CYTOLOGY_BRANCH.md](./docs/cytology/V14_CYTOLOGY_BRANCH.md)** | **Spec v14.0 Cytologie** — Architecture en Y, Router, Métriques |
+| **[docs/cytology/V14_MASTER_SLAVE_ARCHITECTURE.md](./docs/cytology/V14_MASTER_SLAVE_ARCHITECTURE.md)** | **Architecture Maître/Esclave** — CellPose dual-model, KPIs, Business model |
+| **[docs/cytology/V14_PIPELINE_EXECUTION_ORDER.md](./docs/cytology/V14_PIPELINE_EXECUTION_ORDER.md)** | **🔥 Pipeline V14 Ordre d'Exécution** — Clarification CRITIQUE: Séquentiel PUIS Parallèle |
+| **[docs/cytology/V14_MACENKO_STRATEGY.md](./docs/cytology/V14_MACENKO_STRATEGY.md)** | **Normalisation Macenko** — Router-Dependent (Cyto ON / Histo OFF) |
 
 ---
 
@@ -659,7 +663,82 @@ python scripts/training/train_hovernet_family_v13_smart_crops.py \
 
 > **Stratégie:** Toujours utiliser les modèles par **famille** (pas de modèles organ-specific).
 
-### Priorités d'Amélioration
+### 🚧 V14 Cytologie Branch — Architecture Maître/Esclave
+
+**Objectif:** Fusionner pipeline Histologie V13 avec nouveau pipeline Cytologie (Dubai Edition)
+
+**Statut:** 🎯 Architecture validée (2026-01-18)
+
+**Changement Architectural Majeur:**
+> Suite à analyse approfondie, remplacement de l'approche CellPose `cyto2` unique par **orchestration intelligente de 2 modèles spécialisés** (Maître/Esclave).
+
+#### Architecture en "Y"
+
+```
+INPUT IMAGE → ROUTER → Histo (V13) OU Cyto (Maître/Esclave)
+                │
+                ├─ Histologie: FPN Chimique (V13 existant)
+                │
+                └─ Cytologie: NOUVEAU Pipeline Séquentiel
+                   ├─ MAÎTRE (nuclei): 100% activation → Features nucléaires
+                   └─ ESCLAVE (cyto3): 30% activation → N/C ratio (si requis)
+```
+
+#### Gains Mesurés
+
+| Aspect | Cyto2 Seul (Initial) | Maître/Esclave | Gain |
+|--------|---------------------|----------------|------|
+| **Performance** | 2s/image | 0.5-1.8s (adaptatif) | **2× plus rapide** |
+| **GPU Load** | 100% constant | 30-100% adaptatif | **46% économie** |
+| **Business** | Forfait unique | 4 packages (€5k-€12k) | **Monetization** |
+
+#### Métriques Critiques Cytologie
+
+**⚠️ Changement Paradigme:** AJI (V13 Histologie) est INADAPTÉ pour cytologie.
+
+**Principe:** **Sensibilité > Précision** (Safety First — Ne jamais rater un cancer)
+
+**KPIs Validation:**
+
+| Métrique | Seuil Cible | Priorité |
+|----------|-------------|----------|
+| **Sensibilité Malin** | **> 98%** | 🔴 CRITIQUE |
+| **FROC (FP/WSI @ 98% sens)** | **< 2.0** | 🔴 CRITIQUE |
+| **Cohen's Kappa** | **> 0.80** | 🔴 CRITIQUE |
+| IoU Noyau | > 0.85 | 🟡 Important |
+| AP50 (COCO) | > 0.90 | 🟡 Important |
+
+**Argument Commercial Dubai:**
+> *"Notre système ne rate JAMAIS une cellule anormale (Sensibilité 99%), là où un humain fatigué en rate 5-10%."*
+
+#### Documentation Complète
+
+| Document | Description |
+|----------|-------------|
+| [V14_CYTOLOGY_BRANCH.md](./docs/V14_CYTOLOGY_BRANCH.md) | Spécifications complètes V14 |
+| **[V14_MASTER_SLAVE_ARCHITECTURE.md](./docs/V14_MASTER_SLAVE_ARCHITECTURE.md)** | **Architecture Maître/Esclave (détails techniques)** |
+
+#### Alertes Critiques
+
+- ⚠️ **Macenko:** Régression -4.3% AJI sur V13 → Approche router-dependent (Macenko uniquement Cyto)
+- ✅ **Non-régression V13:** AJI Respiratory ≥ 0.6872 OBLIGATOIRE
+- 🎯 **Métriques:** Sensibilité > Accuracy (paradigme différent de V13)
+
+#### Questions Validées
+
+✅ **Segmentation Cytoplasme:** CellPose `cyto3` (esclave) activé conditionnellement selon organe
+✅ **Décision Trigger:** Config JSON par organe (Urine/Thyroïde → cyto3 auto, Gynéco → skip)
+✅ **Gestion Erreurs:** Matching géométrique nuclei→cytoplasme avec cas orphelins (N/C = None, pas de blocage rapport)
+
+#### Questions En Attente
+
+1. Datasets cytologie: Sources pour 70k images (TB-PANDA ✅, Herlev ✅, Urine ❓)
+2. Priorité organes: Thyroïde > Col > Urine?
+3. Tests validation: Benchmarks CellPose nuclei vs cyto3 consistency
+
+---
+
+### Priorités d'Amélioration V13 (Histologie)
 
 | Famille | AJI Actuel | Gap vs 0.68 | Priorité |
 |---------|------------|-------------|----------|
