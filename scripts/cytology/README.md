@@ -201,9 +201,9 @@ embedding = h_optimus(patch_normalized)
 
 | Document | Description |
 |----------|-------------|
-| [V14_PIPELINE_EXECUTION_ORDER.md](../../docs/V14_PIPELINE_EXECUTION_ORDER.md) | Ordre d'exécution complet |
-| [V14_MACENKO_STRATEGY.md](../../docs/V14_MACENKO_STRATEGY.md) | Normalisation router-dependent |
-| [V14_CYTOLOGY_BRANCH.md](../../docs/V14_CYTOLOGY_BRANCH.md) | Specs complètes V14 |
+| [V14_PIPELINE_EXECUTION_ORDER.md](../../docs/cytology/V14_PIPELINE_EXECUTION_ORDER.md) | Ordre d'exécution complet |
+| [V14_MACENKO_STRATEGY.md](../../docs/cytology/V14_MACENKO_STRATEGY.md) | Normalisation router-dependent |
+| [V14_CYTOLOGY_BRANCH.md](../../docs/cytology/V14_CYTOLOGY_BRANCH.md) | Specs complètes V14 |
 
 ## 🐛 Troubleshooting
 

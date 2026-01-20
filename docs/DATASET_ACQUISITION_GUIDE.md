@@ -595,8 +595,8 @@ For dataset-specific issues:
 - **ISBI 2014:** https://mitos-atypia-14.grand-challenge.org/
 
 For V14 Cytology implementation:
-- See: `docs/V14_MASTER_SLAVE_ARCHITECTURE.md`
-- See: `docs/V14_CYTOLOGY_STANDALONE_STRATEGY.md`
+- See: `docs/cytology/V14_MASTER_SLAVE_ARCHITECTURE.md`
+- See: `docs/cytology/V14_CYTOLOGY_STANDALONE_STRATEGY.md`
 
 ---
 
