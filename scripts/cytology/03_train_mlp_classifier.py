@@ -87,7 +87,7 @@ class FeaturesDataset(Dataset):
     """Dataset for fused features"""
 
     def __init__(self, features_path: str):
-        data = torch.load(features_path)
+        data = torch.load(features_path, weights_only=False)
         self.features = data['fused_features'].float()  # (N, 1556)
         self.labels = data['labels'].long()  # (N,)
         self.class_names = data['class_names']
@@ -517,7 +517,7 @@ def train_model(
     print(f"Best val loss: {best_val_loss:.4f}")
 
     # Load best model for final evaluation
-    checkpoint = torch.load(os.path.join(output_dir, 'best_model.pth'))
+    checkpoint = torch.load(os.path.join(output_dir, 'best_model.pth'), weights_only=False)
     model.load_state_dict(checkpoint['model_state_dict'])
 
     # Final metrics
