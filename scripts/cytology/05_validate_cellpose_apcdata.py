@@ -550,6 +550,17 @@ def validate_cellpose_on_apcdata(
             'p99': int(np.percentile(all_areas, 99))
         }
 
+    # Compute ABNORMAL detection rate (critical for screening)
+    # Abnormal classes: ASCUS, ASCH, LSIL, HSIL, SCC (everything except NILM)
+    abnormal_tp = 0
+    abnormal_fn = 0
+    for cls_name, stats in per_class_stats.items():
+        if cls_name in ABNORMAL_CLASSES:
+            abnormal_tp += stats['tp']
+            abnormal_fn += stats['fn']
+    abnormal_total = abnormal_tp + abnormal_fn
+    abnormal_detection_rate = abnormal_tp / abnormal_total if abnormal_total > 0 else 0.0
+
     results = {
         'n_images': len(image_files),
         'total_gt_cells': total_gt,
@@ -562,6 +573,10 @@ def validate_cellpose_on_apcdata(
         'detection_rate': detection_rate,
         'precision': precision,
         'f1_score': f1_score,
+        # CRITICAL: Abnormal detection rate (Safety First - never miss cancer)
+        'abnormal_detection_rate': abnormal_detection_rate,
+        'abnormal_tp': abnormal_tp,
+        'abnormal_total': abnormal_total,
         'mean_match_distance': np.mean(match_distances) if match_distances else 0.0,
         'std_match_distance': np.std(match_distances) if match_distances else 0.0,
         'area_statistics': area_stats,
@@ -753,9 +768,22 @@ def print_validation_report(results: Dict):
     pr_status = "PASS" if results['precision'] >= 0.85 else "FAIL"
     f1_status = "PASS" if results['f1_score'] >= 0.87 else "FAIL"
 
-    print(f"  {'Detection Rate (Recall)':<25} {results['detection_rate']*100:>6.1f}%        {dr_status}")
+    # CRITICAL: Abnormal detection rate (Safety First)
+    abnormal_dr = results.get('abnormal_detection_rate', 0)
+    abnormal_status = "PASS" if abnormal_dr >= 0.98 else ("WARN" if abnormal_dr >= 0.90 else "FAIL")
+
+    print(f"  {'Detection Rate (All)':<25} {results['detection_rate']*100:>6.1f}%        {dr_status}")
     print(f"  {'Precision':<25} {results['precision']*100:>6.1f}%        {pr_status}")
     print(f"  {'F1 Score':<25} {results['f1_score']*100:>6.1f}%        {f1_status}")
+
+    # Highlight abnormal detection rate (the critical metric)
+    print("\n" + "-" * 80)
+    print("  🔴 CRITICAL METRIC — Abnormal Cell Detection (Safety First)")
+    print("-" * 80)
+    print(f"  {'Abnormal Detection Rate':<25} {abnormal_dr*100:>6.1f}%        {abnormal_status}")
+    print(f"  Abnormal cells: {results.get('abnormal_tp', 0)}/{results.get('abnormal_total', 0)} detected")
+    print(f"  Target: ≥98% (never miss cancer)")
+    print("-" * 80)
 
     print(f"\n  {'True Positives (TP)':<25} {results['total_tp']:>6}")
     print(f"  {'False Positives (FP)':<25} {results['total_fp']:>6}")
@@ -793,19 +821,37 @@ def print_validation_report(results: Dict):
 
     print("\n" + "=" * 80)
 
-    # Overall verdict
-    if results['detection_rate'] >= 0.90:
-        print("  VALIDATION PASSED - CellPose detection is sufficient")
-        print("  Next step: Run end-to-end pipeline validation")
+    # Overall verdict - prioritize abnormal detection rate
+    abnormal_dr = results.get('abnormal_detection_rate', 0)
+
+    if abnormal_dr >= 0.98:
+        print("  ✅ VALIDATION PASSED — Abnormal detection ≥98% (Safety First)")
+        print("  CellPose successfully detects abnormal cells for screening")
+        print("  Next step: Run end-to-end pipeline validation (06_end_to_end_apcdata.py)")
+    elif abnormal_dr >= 0.90:
+        print("  ⚠️  VALIDATION ACCEPTABLE — Abnormal detection ≥90%")
+        print(f"  Abnormal Detection Rate: {abnormal_dr*100:.1f}%")
+        print("  Consider optimizing parameters to reach 98% target")
+        print("  Can proceed to end-to-end validation with caution")
+    elif abnormal_dr >= 0.80:
+        print("  ⚠️  VALIDATION WARNING — Abnormal detection 80-90%")
+        print(f"  Abnormal Detection Rate: {abnormal_dr*100:.1f}%")
+        print("  Some abnormal cells are being missed!")
+        print("  Recommendations:")
+        print("    - Lower flow_threshold (try 0.2)")
+        print("    - Adjust diameter to match cell size")
+        print("    - Reduce min_area filter")
     else:
-        print("  VALIDATION FAILED - CellPose detection needs improvement")
-        print(f"  Detection Rate {results['detection_rate']*100:.1f}% < 90% target")
-        print("  Consider:")
-        print("    - Adjusting diameter parameter")
-        print("    - Lowering flow_threshold")
-        print("    - Using cellprob_threshold=-1.0")
-        if results.get('area_statistics'):
-            print(f"    - Using --min_area {results['area_statistics']['p50']} to filter small debris")
+        print("  ❌ VALIDATION FAILED — Abnormal detection <80%")
+        print(f"  Abnormal Detection Rate: {abnormal_dr*100:.1f}%")
+        print("  Too many abnormal cells are being missed!")
+        print("  Critical issue for screening - needs investigation")
+
+    # Note about precision
+    print("\n  Note: Low precision is EXPECTED for this validation because:")
+    print("    - APCData only annotates cells of interest (not all cells)")
+    print("    - CellPose correctly detects many unannotated normal cells")
+    print("    - The classifier (H-Optimus MLP) will filter normal cells")
 
     print("=" * 80)
 
