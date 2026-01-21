@@ -338,7 +338,9 @@ def validate_cellpose_on_apcdata(
     max_distance: float = 50.0,
     n_samples: Optional[int] = None,
     save_visualizations: bool = False,
-    output_dir: Optional[str] = None
+    output_dir: Optional[str] = None,
+    min_area: int = 0,
+    max_area: int = 100000
 ) -> Dict:
     """
     Validate CellPose detection on APCData.
@@ -417,6 +419,7 @@ def validate_cellpose_on_apcdata(
     # Metrics accumulators
     total_gt = 0
     total_detected = 0
+    total_detected_raw = 0  # Before area filtering
     total_tp = 0
     total_fp = 0
     total_fn = 0
@@ -425,6 +428,7 @@ def validate_cellpose_on_apcdata(
     per_class_stats = {cls: {'tp': 0, 'fn': 0} for cls in CLASS_MAPPING.values()}
 
     match_distances = []  # For distance distribution analysis
+    all_areas = []  # For area distribution analysis
 
     # Process each image
     for image_file in tqdm(image_files, desc="  Processing"):
@@ -437,9 +441,20 @@ def validate_cellpose_on_apcdata(
         gt_classes = [c['class'] for c in gt_cells]
 
         # Run CellPose
-        masks, detections = run_cellpose_detection(
+        masks, detections_raw = run_cellpose_detection(
             model, image, diameter, flow_threshold, cellprob_threshold
         )
+
+        # Collect area statistics from raw detections
+        for d in detections_raw:
+            all_areas.append(d['area'])
+
+        # Filter detections by area (remove debris and artifacts)
+        n_before_filter = len(detections_raw)
+        detections = [d for d in detections_raw if min_area <= d['area'] <= max_area]
+        n_after_filter = len(detections)
+
+        total_detected_raw += n_before_filter
 
         # Get detected centroids
         if len(detections) > 0:
@@ -518,10 +533,29 @@ def validate_cellpose_on_apcdata(
                 'detection_rate': stats['tp'] / total
             }
 
+    # Compute area statistics
+    area_stats = {}
+    if all_areas:
+        area_stats = {
+            'min': int(np.min(all_areas)),
+            'max': int(np.max(all_areas)),
+            'mean': float(np.mean(all_areas)),
+            'std': float(np.std(all_areas)),
+            'p10': int(np.percentile(all_areas, 10)),
+            'p25': int(np.percentile(all_areas, 25)),
+            'p50': int(np.percentile(all_areas, 50)),
+            'p75': int(np.percentile(all_areas, 75)),
+            'p90': int(np.percentile(all_areas, 90)),
+            'p95': int(np.percentile(all_areas, 95)),
+            'p99': int(np.percentile(all_areas, 99))
+        }
+
     results = {
         'n_images': len(image_files),
         'total_gt_cells': total_gt,
         'total_detections': total_detected,
+        'total_detections_raw': total_detected_raw,
+        'detections_filtered': total_detected_raw - total_detected,
         'total_tp': total_tp,
         'total_fp': total_fp,
         'total_fn': total_fn,
@@ -530,13 +564,16 @@ def validate_cellpose_on_apcdata(
         'f1_score': f1_score,
         'mean_match_distance': np.mean(match_distances) if match_distances else 0.0,
         'std_match_distance': np.std(match_distances) if match_distances else 0.0,
+        'area_statistics': area_stats,
         'per_class_stats': per_class_detection_rate,
         'per_image_results': per_image_results,
         'parameters': {
             'diameter': diameter,
             'flow_threshold': flow_threshold,
             'cellprob_threshold': cellprob_threshold,
-            'max_distance': max_distance
+            'max_distance': max_distance,
+            'min_area': min_area,
+            'max_area': max_area
         }
     }
 
@@ -703,6 +740,12 @@ def print_validation_report(results: Dict):
     print(f"  GT Cells:     {results['total_gt_cells']}")
     print(f"  Detections:   {results['total_detections']}")
 
+    # Area filtering info
+    if 'total_detections_raw' in results:
+        filtered = results.get('detections_filtered', 0)
+        if filtered > 0:
+            print(f"  Raw detections: {results['total_detections_raw']} → {results['total_detections']} ({filtered} filtered by area)")
+
     print(f"\n  {'Metric':<25} {'Value':<15} {'Status':<10}")
     print("-" * 80)
 
@@ -733,6 +776,23 @@ def print_validation_report(results: Dict):
 
     print("\n" + "=" * 80)
 
+    # Area statistics (for tuning min_area/max_area)
+    if results.get('area_statistics'):
+        stats = results['area_statistics']
+        print("\n" + "-" * 80)
+        print("  Detection Area Distribution (px²):")
+        print("-" * 80)
+        print(f"  Min: {stats['min']:>6}   P10: {stats['p10']:>6}   P25: {stats['p25']:>6}")
+        print(f"  P50: {stats['p50']:>6}   P75: {stats['p75']:>6}   P90: {stats['p90']:>6}")
+        print(f"  P95: {stats['p95']:>6}   P99: {stats['p99']:>6}   Max: {stats['max']:>6}")
+        print(f"  Mean: {stats['mean']:.0f} ± {stats['std']:.0f}")
+        print("\n  Suggested area filters:")
+        print(f"    --min_area {stats['p25']}   (filter bottom 25%)")
+        print(f"    --min_area {stats['p50']}   (filter bottom 50%)")
+        print(f"    --min_area {stats['p75']}   (filter bottom 75%)")
+
+    print("\n" + "=" * 80)
+
     # Overall verdict
     if results['detection_rate'] >= 0.90:
         print("  VALIDATION PASSED - CellPose detection is sufficient")
@@ -744,6 +804,8 @@ def print_validation_report(results: Dict):
         print("    - Adjusting diameter parameter")
         print("    - Lowering flow_threshold")
         print("    - Using cellprob_threshold=-1.0")
+        if results.get('area_statistics'):
+            print(f"    - Using --min_area {results['area_statistics']['p50']} to filter small debris")
 
     print("=" * 80)
 
@@ -871,6 +933,18 @@ def main():
         action='store_true',
         help='Save detection visualizations for first 10 images'
     )
+    parser.add_argument(
+        '--min_area',
+        type=int,
+        default=0,
+        help='Minimum nucleus area in pixels (filter small debris). LBC cells ~500-5000 px²'
+    )
+    parser.add_argument(
+        '--max_area',
+        type=int,
+        default=100000,
+        help='Maximum nucleus area in pixels (filter artifacts). Default: 100000'
+    )
 
     args = parser.parse_args()
 
@@ -880,7 +954,9 @@ def main():
     print(f"  Data directory: {args.data_dir}")
     print(f"  Diameter:       {args.diameter}")
     print(f"  Flow threshold: {args.flow_threshold}")
+    print(f"  Cell prob thr:  {args.cellprob_threshold}")
     print(f"  Max distance:   {args.max_distance} px")
+    print(f"  Area filter:    [{args.min_area}, {args.max_area}] px²")
     print("=" * 80)
 
     # Create output directory
@@ -895,7 +971,9 @@ def main():
         max_distance=args.max_distance,
         n_samples=args.n_samples,
         save_visualizations=args.save_visualizations,
-        output_dir=args.output_dir
+        output_dir=args.output_dir,
+        min_area=args.min_area,
+        max_area=args.max_area
     )
 
     # Print report
