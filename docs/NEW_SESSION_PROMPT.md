@@ -1,484 +1,288 @@
-# Prompt Nouvelle Session — CellViT-Optimus
+# Prompt Nouvelle Session — V14 Cytology Pipeline
 
-> **Instructions:** Copier-coller ce prompt au démarrage d'une nouvelle session Claude.
-
----
-
-## Contexte Projet
-
-Je continue le développement de **CellViT-Optimus**, un système de segmentation et classification de noyaux cellulaires pour l'histopathologie.
-
-### État Actuel (2026-01-18)
-
-**Branche Git:** `claude/review-project-context-JQPxq`
-- Status: À jour avec `origin/main` (commit 849bbda)
-- Dernière PR mergée: #37 (spec v14.0b + amélioration IHM)
-
-**V13 Production (Stable):**
-- Architecture: FPN Chimique + H-Channel Ruifrok (images RAW, **SANS Macenko**)
-- Résultats:
-  - ✅ **Respiratory:** AJI 0.6872 (101% objectif)
-  - 🟡 **Urologic:** AJI 0.6743 (99.2%)
-  - 🟡 **Glandular:** AJI 0.6566 (96.6%)
-  - 🟠 **Epidermal:** AJI 0.6203 (91.2%)
-  - 🟠 **Digestive:** AJI 0.6160 (90.6%)
-- **7 organes "Grade Clinique"** (AJI ≥ 0.68): Adrenal_gland (0.7236), Liver (0.7207), Bladder, Bile-duct, Kidney, Cervix, Stomach
-
-**IHM Gradio (Complète):**
-- R&D Cockpit (port 7860): Interface développeurs avec debug IA complet
-- Interface Pathologiste (port 7861): Interface clinique simplifiée
-- Features: Loupe ×3, métriques cliniques, export PDF/CSV/JSON, analyse spatiale Phase 3
-
-**Spec v14.0b WSI Triage (Prête pour développement):**
-- Pipeline pyramidal: 1.25× (masque tissu) → 5× (CleaningNet) → 40× (moteur v13)
-- Motifs de sélection en 2 temps: `motifs_triage` (Phase 5×) + `motifs_detail` (Phase 40×)
-- KPIs: < 2 min/lame, < 5s triage, Sensibilité > 95%, max 30-40 ROIs
-- Mini-map GPS 256×256 avec marqueur rouge
+> **Date:** 2026-01-21
+> **Branche:** `claude/retrieve-project-context-lbkVY`
+> **Statut:** Phase 2 APCData — CellPose validé (90.8%), Script E2E créé
 
 ---
 
-## ⚠️ RÈGLES CRITIQUES (À RESPECTER ABSOLUMENT)
+## 🚨 RÈGLES CRITIQUES (À RESPECTER ABSOLUMENT)
 
-### 1. Ne Pas Tester Localement
-
-> **🚫 INTERDICTION ABSOLUE D'EXÉCUTER DES COMMANDES DE TEST/ENTRAÎNEMENT**
-
-**Actions AUTORISÉES:**
-- ✅ Lire des fichiers (code, configs, documentation)
-- ✅ Créer/modifier du code Python
-- ✅ Créer des scripts que L'UTILISATEUR lancera
-- ✅ Faire de la review de code
-- ✅ Créer de la documentation
-
-**Actions INTERDITES:**
-- ❌ `python scripts/training/...` (pas d'env GPU)
-- ❌ `python scripts/evaluation/...` (pas de données PanNuke)
-- ❌ Toute commande nécessitant GPU/données
-
-### 2. Utiliser Toujours l'Existant
-
-> **"On ne touche pas l'existant"** — Les scripts existants fonctionnent. Toute modification requiert validation explicite.
-
-**Avant d'écrire du code:**
-1. ✅ Vérifier si un script similaire existe déjà
-2. ✅ S'inspirer des patterns des scripts existants
-3. ✅ Réutiliser les modules partagés (`src/`)
-4. ✅ Ne pas réinventer la roue
-
-**Exemples de scripts de référence:**
-- Preprocessing: `scripts/preprocessing/prepare_v13_smart_crops.py`
-- Training: `scripts/training/train_hovernet_family_v13_smart_crops.py`
-- Evaluation: `scripts/evaluation/test_v13_smart_crops_aji.py`
-- Optimisation: `scripts/evaluation/optimize_watershed_aji.py`
-
-### 3. Modules Partagés OBLIGATOIRES (Single Source of Truth)
-
-> **🚫 JAMAIS de duplication de code critique**
-
-**Modules partagés existants:**
-
-| Module | Fonction/Constante | Usage |
-|--------|-------------------|-------|
-| `src/postprocessing/watershed.py` | `hv_guided_watershed()` | Segmentation instances |
-| `src/metrics/ground_truth_metrics.py` | `compute_aji()` | Calcul AJI+ |
-| `src/evaluation/instance_evaluation.py` | `run_inference()`, `evaluate_sample()` | Évaluation complète |
-| `src/models/organ_head.py` | `PANNUKE_ORGANS`, `OrganPrediction`, `predict_with_ood()` | Prédiction organe |
-| `src/preprocessing/__init__.py` | `preprocess_image()`, `HOPTIMUS_MEAN`, `HOPTIMUS_STD` | Normalisation images |
-| `src/constants.py` | Toutes les constantes globales | Configuration |
-
-**🔍 Comment vérifier AVANT de coder:**
-
-```bash
-# Avant d'écrire une fonction
-grep -r "def ma_fonction" src/
-
-# Avant de définir une constante
-grep -r "MA_CONSTANTE" src/
-
-# Avant de définir une liste d'organes
-grep -r "ORGAN\|FAMILY\|PANNUKE" src/
+### 1. Utilise TOUJOURS l'existant
+```
+- NE JAMAIS créer un nouveau fichier si un existant peut être modifié
+- NE JAMAIS dupliquer du code — importer depuis src/ ou scripts existants
+- VÉRIFIER avec grep/glob si une fonction existe déjà avant de la coder
 ```
 
-### 4. FPN Chimique = use_hybrid + use_fpn_chimique
-
-**Pour training ET évaluation:**
-```bash
-# ✅ CORRECT
---use_hybrid --use_fpn_chimique
-
-# ❌ INCORRECT
---use_fpn_chimique  # Sans --use_hybrid → Erreur
+### 2. On ne réinvente pas la roue
+```
+- Les scripts dans scripts/cytology/ sont la référence
+- Les constantes sont dans src/constants.py et src/preprocessing/
+- Les algorithmes critiques sont dans src/postprocessing/, src/metrics/, etc.
 ```
 
-**Nommage checkpoints:**
+### 3. Pas d'initiatives sans raison
 ```
-hovernet_{family}_v13_smart_crops_hybrid_fpn_best.pth
-```
-
-### 5. Ruifrok > Macenko (Découverte Stratégique)
-
-> **CRITIQUE:** Macenko normalization cause **-4.3% AJI** (conflit avec extraction Ruifrok du FPN Chimique).
-
-**Production V13:**
-```bash
-# ✅ CORRECT (Images brutes)
-python scripts/preprocessing/prepare_v13_smart_crops.py \
-    --family respiratory \
-    --pannuke_dir /chemin/vers/PanNuke
-
-# ❌ DÉCONSEILLÉ (Macenko)
-# --use_normalized  # Régression -4.3% AJI
+- NE PAS ajouter de features non demandées
+- NE PAS refactorer du code qui fonctionne
+- NE PAS changer les paramètres validés sans demande explicite
 ```
 
-### 6. Mettre à Jour CLAUDE.md
-
-> **OBLIGATOIRE:** Toute information importante doit être documentée dans `CLAUDE.md`.
-
-**Quand mettre à jour:**
-- ✅ Nouvelle découverte technique (ex: Ruifrok vs Macenko)
-- ✅ Changement d'architecture
-- ✅ Nouveau résultat AJI validé
-- ✅ Bug critique résolu
-- ✅ Nouvelle règle de développement
-
-**Format:**
-- Concis et structuré
-- Inclure les chiffres (métriques, temps, tailles)
-- Citer les fichiers et lignes concernés
-
----
-
-## 📚 Documentation Clé (À Lire en Priorité)
-
-### Fichiers Essentiels
-
-```bash
-# 1. Contexte projet et règles (SOURCE DE VÉRITÉ)
-/home/user/path/CLAUDE.md
-
-# 2. Historique complet (bugs, décisions, journal)
-/home/user/path/claude_history.md
-
-# 3. Stratégie V13 Smart Crops (architecture validée)
-/home/user/path/docs/V13_SMART_CROPS_STRATEGY.md
-
-# 4. IHM Gradio (architecture, API, phases)
-/home/user/path/docs/UI_COCKPIT.md
-
-# 5. Spec v14.0b WSI Triage (prête pour implémentation)
-/home/user/path/docs/specs/V14_WSI_TRIAGE_SPEC.md
+### 4. S'inspirer des scripts existants
+```
+scripts/cytology/
+├── 00_preprocess_sipakmed.py      # Preprocessing référence
+├── 01_extract_embeddings_gt.py    # H-Optimus extraction référence
+├── 02_compute_morphometry.py      # Morphometry 20 features référence
+├── 03_train_mlp_classifier.py     # MLP architecture référence
+├── 04_evaluate_cytology.py        # Évaluation Safety First référence
+├── 05_validate_cellpose_apcdata.py # CellPose validation ✅ VALIDÉ
+└── 06_end_to_end_apcdata.py       # Pipeline E2E ✅ CRÉÉ (à tester)
 ```
 
-### Commandes de Vérification Git
-
-```bash
-# Vérifier branche actuelle
-git branch
-
-# Vérifier status
-git status
-
-# Voir derniers commits
-git log --oneline -10
-
-# Comparer avec main
-git diff origin/main..HEAD --stat
+### 5. Mettre à jour CLAUDE.md
+```
+Toute décision importante, paramètre validé, ou résultat doit être documenté
+dans CLAUDE.md pour les futures sessions.
 ```
 
 ---
 
-## 🎯 Prochaines Étapes Possibles
+## 📊 CONTEXTE ACTUEL — V14 Cytology
 
-### Option 1: Amélioration AJI Epidermal/Digestive (91-90%)
+### État du Projet
 
-**Pistes documentées (CLAUDE.md):**
-- Watershed organ-level (Skin vs HeadNeck, Colon problématique)
-- Transfer learning depuis Respiratory (AJI 0.6872)
-- Investigation outliers (AJI < 0.50)
-- NC-based Beta-Switch (Auto-Tuner)
+| Phase | Status | Description |
+|-------|--------|-------------|
+| **Phase 1: SIPaKMeD (POC)** | ✅ DONE | Sensibilité 99.26%, Kappa 0.7205 |
+| **Phase 2: APCData** | 🔄 EN COURS | CellPose validé, E2E script créé, **À TESTER** |
 
-**Scripts existants:**
-```bash
-# Optimisation watershed par organe
-scripts/evaluation/optimize_watershed_aji.py \
-    --checkpoint models/.../hovernet_epidermal_...best.pth \
-    --family epidermal \
-    --organ Skin \
-    --n_samples 20
+### Résultats Validation CellPose (APCData) ✅
 
-# Transfer learning inter-famille
-scripts/training/train_hovernet_family_v13_smart_crops.py \
-    --family epidermal \
-    --pretrained_checkpoint models/.../hovernet_respiratory_...best.pth \
-    --finetune_lr 1e-5 \
-    --epochs 30
+**Dataset:** 425 images, 3619 cellules annotées (Bethesda: NILM, ASCUS, ASCH, LSIL, HSIL, SCC)
+
+**Configuration Optimale Validée:**
+```python
+CELLPOSE_CONFIG = {
+    'diameter': 60,
+    'flow_threshold': 0.4,
+    'cellprob_threshold': 0.0,
+    'min_area': 400,      # Filtre débris/lymphocytes
+    'max_area': 100000,
+    'max_distance': 120   # Tolérance matching GT
+}
 ```
 
-### Option 2: Implémentation v14.0 WSI Triage
+**Résultats (Full Dataset n=425):**
 
-**Phases (docs/specs/V14_WSI_TRIAGE_SPEC.md):**
-1. **Infrastructure** (Semaine 1-2): OpenSlide, cuCIM, TiledWSIReader
-2. **CleaningNet** (Semaine 3-4): Pseudo-labeling, training MobileNetV3
-3. **Intégration** (Semaine 5-6): Pipeline complet, QC
-4. **Production** (Semaine 7-8): Tests 100 WSI, optimisation
-
-**Architecture CleaningNet:**
-- Entrée: Patch RGB 224×224 + H-Channel (Ruifrok)
-- Backbone: MobileNetV3-Small ou EfficientNet-B0
-- Tâche: Classification binaire (Informative vs Non-informative)
-- Seuils dynamiques par organe (Liver 0.40, Lung 0.35, Os 0.20)
-
-### Option 3: Tests IHM Gradio
-
-**Validation workflow pathologiste:**
-- Interface clinique (`app_pathologist.py`)
-- Overlays simplifiés (4 checkboxes)
-- Badge Confiance IA (Élevée/Modérée/Faible)
-- Export PDF rapport clinique
-
-**Lancement:**
-```bash
-# R&D Cockpit
-./scripts/run_cockpit.sh --preload --organ Lung
-
-# Interface Pathologiste
-./scripts/run_pathologist.sh --preload --organ Breast
-```
-
-### Option 4: Review/Documentation
-
-- Audit code (duplication, SSOT)
-- Mise à jour diagrammes architecture
-- Documentation API export Phase 4
-- Tests unitaires critiques
+| Métrique | Valeur | Cible | Status |
+|----------|--------|-------|--------|
+| **Abnormal Detection Rate** | **90.8%** | ≥98% | ⚠️ ACCEPTABLE |
+| Detection Rate (All) | 85.5% | ≥90% | - |
+| ASCUS | 94.0% | - | ✅ |
+| ASCH | 94.5% | - | ✅ |
+| LSIL | 91.0% | - | ✅ |
+| HSIL | 87.6% | - | ⚠️ |
+| SCC | 87.2% | - | ⚠️ |
 
 ---
 
-## 🔍 Vérifications Avant de Commencer
+## 🎯 PROCHAINE ÉTAPE IMMÉDIATE
+
+### Exécuter le Pipeline End-to-End
 
 ```bash
-# 1. Vérifier branche
-git branch
-# Attendu: * claude/review-project-context-JQPxq
+python scripts/cytology/06_end_to_end_apcdata.py \
+    --data_dir data/raw/apcdata/APCData_YOLO \
+    --mlp_checkpoint models/cytology/mlp_classifier_best.pth \
+    --n_samples 50 \
+    --output_dir reports/end_to_end_apcdata
+```
 
-# 2. Vérifier status
-git status
-# Attendu: On branch claude/review-project-context-JQPxq, nothing to commit
+### Prérequis
+- ✅ APCData_YOLO téléchargé (`data/raw/apcdata/APCData_YOLO/`)
+- ⚠️ MLP checkpoint entraîné sur SIPaKMeD (`models/cytology/mlp_classifier_best.pth`)
+- ⚠️ H-Optimus-0 accessible (HuggingFace login)
 
-# 3. Vérifier à jour avec main
-git log origin/main..HEAD --oneline
-# Attendu: vide (déjà à jour)
+### Si le MLP checkpoint n'existe pas
 
-# 4. Lister fichiers clés
-ls -la CLAUDE.md claude_history.md docs/specs/V14_WSI_TRIAGE_SPEC.md
+Le MLP doit être entraîné sur SIPaKMeD (Phase 1) avant de lancer le E2E:
+
+```bash
+# 1. Préprocessing SIPaKMeD
+python scripts/cytology/00_preprocess_sipakmed.py \
+    --raw_dir data/raw/sipakmed/pictures \
+    --output_dir data/processed/sipakmed
+
+# 2. Extraction embeddings H-Optimus
+python scripts/cytology/01_extract_embeddings_gt.py \
+    --data_dir data/processed/sipakmed \
+    --output_dir data/embeddings/sipakmed
+
+# 3. Morphometry
+python scripts/cytology/02_compute_morphometry.py \
+    --data_dir data/processed/sipakmed \
+    --embeddings_dir data/embeddings/sipakmed \
+    --output_dir data/features/sipakmed
+
+# 4. Train MLP
+python scripts/cytology/03_train_mlp_classifier.py \
+    --features_dir data/features/sipakmed \
+    --output_dir models/cytology \
+    --epochs 100 \
+    --use_focal_loss
+```
+
+### Métriques Attendues (E2E)
+
+| Métrique | Cible | Priorité |
+|----------|-------|----------|
+| **Sensibilité (Abnormal)** | ≥98% | 🔴 CRITIQUE |
+| **Cohen's Kappa** | ≥0.80 | 🔴 CRITIQUE |
+| Spécificité | ≥60% | 🟢 Secondaire |
+
+---
+
+## 📁 STRUCTURE DONNÉES
+
+```
+data/raw/apcdata/
+├── APCData_YOLO/          # ✅ UTILISER CELUI-CI
+│   ├── images/            # 425 images JPG (2048×1532)
+│   ├── labels/            # Annotations YOLO (.txt)
+│   └── classes.txt        # NILM, ASCUS, ASCH, LSIL, HSIL, SCC
+│
+└── APCData_points/        # ❌ NE PAS UTILISER (noms hashés)
+
+models/cytology/
+└── mlp_classifier_best.pth  # MLP entraîné sur SIPaKMeD (Phase 1)
+
+reports/
+├── cellpose_apcdata_validation/  # ✅ Résultats CellPose (complet)
+└── end_to_end_apcdata/           # 📝 À générer (E2E)
 ```
 
 ---
 
-## 📊 Constantes Importantes
+## 🔧 CONSTANTES IMPORTANTES
 
-### Normalisation H-optimus-0
-
+### H-Optimus-0
 ```python
 HOPTIMUS_MEAN = (0.707223, 0.578729, 0.703617)
 HOPTIMUS_STD = (0.211883, 0.230117, 0.177517)
 HOPTIMUS_INPUT_SIZE = 224
+# Output: CLS token (1536) + 256 patches (ignorés pour cytologie)
 ```
 
-### Structure Features
-
+### MLP Architecture
 ```python
-features (B, 261, 1536):
-├── features[:, 0, :]       # CLS token → OrganHead
-├── features[:, 1:5, :]     # 4 Register tokens (IGNORER)
-└── features[:, 5:261, :]   # 256 Patch tokens → HoVer-Net
+# Input: 1556 dims (1536 CLS + 20 morphometry)
+# Hidden: [512, 256, 128]
+# Output: 7 classes SIPaKMeD
+# Dropout: 0.3, BatchNorm: True
 ```
 
-### 5 Familles HoVer-Net
+### Mapping Classes
 
-| Famille | Organes | Samples | AJI Actuel | Gap vs 0.68 |
-|---------|---------|---------|------------|-------------|
-| **Glandular** | Breast, Prostate, Thyroid, Pancreatic, Adrenal_gland | 3391 | **0.6566** | -3.4% |
-| **Digestive** | Colon, Stomach, Esophagus, Bile-duct | 2430 | 0.6160 | -9.4% |
-| **Urologic** | Kidney, Bladder, Testis, Ovarian, Uterus, Cervix | 1101 | **0.6743** | -0.8% |
-| **Respiratory** | Lung, Liver | 408 | **0.6872** ✅ | +1.1% |
-| **Epidermal** | Skin, HeadNeck | 574 | 0.6203 | -8.8% |
-
-### Paramètres Watershed Optimisés (V13 Production)
-
-| Famille | np_threshold | min_size | beta | min_distance | AJI |
-|---------|--------------|----------|------|--------------|-----|
-| **Respiratory** | 0.40 | 30 | 0.50 | 5 | **0.6872** ✅ |
-| **Urologic** | 0.45 | 30 | 0.50 | 2 | **0.6743** |
-| **Glandular** | 0.40 | 50 | 0.50 | 3 | **0.6566** |
-| Epidermal | 0.45 | 20 | 1.00 | 3 | 0.6203 |
-| Digestive | 0.45 | 60 | 2.00 | 5 | 0.6160 |
-
-**Override Organ-Specific (exemples):**
-- **Breast:** `{"np_threshold": 0.50, "min_size": 30, "beta": 0.50, "min_distance": 2}`
-- **Kidney:** `{"min_distance": 1}` (le plus agressif, grâce à H-channel)
-- **Adrenal_gland:** `{"min_size": 50, "min_distance": 4}` (record AJI 0.7236)
-
----
-
-## 🚀 Commandes Rapides
-
-### Pipeline Complet V13 (Exemple Respiratory)
-
-```bash
-# 1. Générer Smart Crops (Raw Images - RECOMMANDÉ)
-python scripts/preprocessing/prepare_v13_smart_crops.py \
-    --family respiratory \
-    --pannuke_dir /chemin/vers/PanNuke \
-    --max_samples 5000
-
-# 2. Vérifier données
-python scripts/validation/verify_v13_smart_crops_data.py --family respiratory --split train
-
-# 3. Extraire features H-optimus-0
-python scripts/preprocessing/extract_features_v13_smart_crops.py --family respiratory --split train
-python scripts/preprocessing/extract_features_v13_smart_crops.py --family respiratory --split val
-
-# 4. Entraînement FPN Chimique
-python scripts/training/train_hovernet_family_v13_smart_crops.py \
-    --family respiratory \
-    --epochs 60 \
-    --use_hybrid \
-    --use_fpn_chimique \
-    --use_h_alpha
-
-# 5. Évaluation AJI
-python scripts/evaluation/test_v13_smart_crops_aji.py \
-    --checkpoint models/checkpoints_v13_smart_crops/hovernet_respiratory_v13_smart_crops_hybrid_fpn_best.pth \
-    --family respiratory \
-    --n_samples 50 \
-    --use_hybrid \
-    --use_fpn_chimique \
-    --np_threshold 0.40 \
-    --min_size 30 \
-    --min_distance 5
+**SIPaKMeD (MLP output):**
+```python
+SIPAKMED_CLASSES = [
+    'normal_columnar',      # 0 → Normal
+    'normal_intermediate',  # 1 → Normal
+    'normal_superficiel',   # 2 → Normal
+    'light_dysplastic',     # 3 → Abnormal
+    'moderate_dysplastic',  # 4 → Abnormal
+    'severe_dysplastic',    # 5 → Abnormal
+    'carcinoma_in_situ'     # 6 → Abnormal
+]
 ```
 
-### Optimisation Watershed (Organ-Level)
-
-```bash
-# Phase 1: Exploration rapide (20 samples, 400 configs)
-python scripts/evaluation/optimize_watershed_aji.py \
-    --checkpoint models/checkpoints_v13_smart_crops/hovernet_respiratory_v13_smart_crops_hybrid_fpn_best.pth \
-    --family respiratory \
-    --organ Liver \
-    --n_samples 20
-
-# Phase 2: Copier-coller la commande générée automatiquement (100 samples, ~81 configs)
-# La commande optimale est affichée à la fin de Phase 1
-```
-
-### Lancement IHM
-
-```bash
-# R&D Cockpit (développeurs)
-./scripts/run_cockpit.sh --preload --organ Lung
-
-# Interface Pathologiste (cliniciens)
-./scripts/run_pathologist.sh --preload --organ Breast
+**Bethesda (APCData GT):**
+```python
+BETHESDA_CLASSES = ['NILM', 'ASCUS', 'ASCH', 'LSIL', 'HSIL', 'SCC']
+# NILM → Normal
+# Tous les autres → Abnormal
 ```
 
 ---
 
-## 💡 Insights Techniques Critiques
+## 📚 DOCUMENTATION CLÉ
 
-### 1. Le Paradoxe du Beta (Liver vs Lung)
-
-- **Liver (β=2.0):** Noyaux vésiculeux (clairs) → Beta élevé (ignore micro-variations NP, se focalise sur HV)
-- **Lung (β=0.5):** Noyaux denses, débris inflammatoires → Beta bas (pondère plus NP)
-
-**Principe:** Plus un noyau est "vésiculeux", plus β doit être élevé.
-
-### 2. Efficacité Injection H-Channel
-
-- **Ruifrok:** Vecteurs fixes (Beer-Lambert physique) → Préserve texture chromatinienne
-- **Permet:** `min_distance=2` sans sur-fusion (impossible sans H-channel)
-- **Vs Macenko:** Macenko adaptatif déplace Éosine vers H → "fantômes" cytoplasme → **-4.3% AJI**
-
-### 3. Stratégie Smart Crops (Split-First-Then-Rotate)
-
-- **5 crops par image 256×256:** Centre + 4 coins avec rotations déterministes
-- **CRITIQUE:** Split train/val par `source_image_ids` AVANT rotations → ZERO data leakage
-- **HV Maps:** Rotation spatiale ≠ Rotation vectorielle → Correction component swapping obligatoire
-
-### 4. Pistes R&D Prioritaires
-
-| Piste | Faisabilité | Impact | Statut |
-|-------|-------------|--------|--------|
-| **Watershed adaptatif par incertitude** | Haute | Haut | ⭐ Prioritaire |
-| **NC-based Beta-Switch (Auto-Tuner)** | Haute | Haut | ⭐⭐ Prioritaire |
-| **Watershed itératif par densité** | Haute | Haut | ⭐ Prioritaire |
-| **Attention spatiale via Patch Tokens** | Moyenne-Haute | Haut | ⭐ Exploratoire |
+| Document | Description |
+|----------|-------------|
+| `CLAUDE.md` | **LIRE EN PREMIER** — Contexte projet complet |
+| `docs/cytology/V14_PRODUCTION_PIPELINE.md` | Pipeline production avec params validés |
+| `docs/cytology/V14_CYTOLOGY_BRANCH.md` | Specs complètes V14 |
+| `scripts/cytology/README.md` | Guide scripts avec commandes |
 
 ---
 
-## ✅ Checklist Avant Commits
+## ⚠️ POINTS D'ATTENTION CRITIQUES
 
-```bash
-# 1. Vérifier que le code utilise les modules partagés
-grep -r "from src\." mon_script.py
+### 1. APCData_YOLO vs APCData_points
+```
+APCData_YOLO: Images avec noms descriptifs → UTILISER
+APCData_points: Images avec noms hashés → NE PAS UTILISER
+```
 
-# 2. Pas de duplication de constantes
-grep -r "0.707223\|HOPTIMUS" mon_script.py
+### 2. Précision basse = NORMAL
+```
+La précision CellPose (~7%) est ATTENDUE car:
+- APCData annote seulement un sous-ensemble de cellules
+- CellPose détecte TOUTES les cellules (correctement)
+- Le classifieur MLP filtrera les cellules normales
 
-# 3. Pas de duplication de listes d'organes
-grep -r "Adrenal_gland.*Bile-duct" mon_script.py
+Métrique importante: ABNORMAL DETECTION RATE (90.8%)
+```
 
-# 4. Flags FPN Chimique corrects
-grep -r "use_hybrid.*use_fpn_chimique" mon_script.py
+### 3. Safety First
+```
+JAMAIS rater un cancer > Éviter faux positifs
+Sensibilité > Précision
+Target: Sensibilité ≥98%
+```
 
-# 5. Documentation à jour
-git diff CLAUDE.md
-
-# 6. Commit messages descriptifs
-git log -1 --pretty=%B
+### 4. CellPose sur cellules isolées
+```
+CellPose = optimisé pour GROUPES cellulaires (tissus)
+Sur cellules isolées (SIPaKMeD) → sur-segmentation
+Solution Phase 1: Masques GT
+Solution Phase 2: CellPose sur lames réelles ✅
 ```
 
 ---
 
-## 🎯 Objectif Immédiat
+## 🔄 COMMITS RÉCENTS (Session 2026-01-21)
 
-**Question à l'utilisateur:** Que souhaitez-vous faire maintenant?
-
-1. **Amélioration AJI** des familles Epidermal/Digestive (pistes R&D documentées)
-2. **Implémentation v14.0** (CleaningNet, triage WSI)
-3. **Tests IHM** (validation workflow pathologiste)
-4. **Review/Documentation** (audit code, mise à jour diagrammes)
-5. **Autre tâche spécifique**
-
----
-
-## 📞 Environnement
-
-| Composant | Version |
-|-----------|---------|
-| OS | WSL2 Ubuntu 24.04.2 LTS |
-| GPU | RTX 4070 SUPER (12.9 GB VRAM) |
-| Python | 3.10 (Miniconda) |
-| PyTorch | 2.6.0+cu124 |
-| Conda env | `cellvit` |
-
-**Working directory:** `/home/user/path`
-
-**Git repo:** `ecolealgerienne-ui/path`
+```
+e207425 docs(v14-cyto): Update README with validated CellPose params and e2e script
+77440c6 feat(v14-cyto): Add end-to-end pipeline validation script for APCData
+344ccbd docs(v14-cyto): Update CellPose config with validated parameters
+d316cc5 feat(v14-cyto): Add abnormal detection rate metric (Safety First)
+c25c046 feat(v14-cyto): Add area-based filtering to CellPose validation
+```
 
 ---
 
-## 🔗 Références
+## 🎯 RÉSUMÉ POUR NOUVELLE SESSION
 
-- **H-optimus-0:** https://huggingface.co/bioptimus/H-optimus-0
-- **HoVer-Net:** Graham et al., Medical Image Analysis 2019
-- **PanNuke:** https://warwick.ac.uk/fac/cross_fac/tia/data/pannuke
-- **Ruifrok Deconvolution:** Ruifrok & Johnston, Analytical and Quantitative Cytology and Histology 2001
-- **Nottingham Grade:** Elston & Ellis, Histopathology 1991
+**Situation actuelle:**
+1. ✅ CellPose validé sur APCData (90.8% abnormal detection)
+2. ✅ Script `06_end_to_end_apcdata.py` créé
+3. ⏳ E2E pipeline **PAS ENCORE TESTÉ** (besoin checkpoint MLP)
+
+**Action immédiate:**
+- Vérifier si `models/cytology/mlp_classifier_best.pth` existe
+- Si oui → Lancer `06_end_to_end_apcdata.py`
+- Si non → Entraîner MLP sur SIPaKMeD d'abord (scripts 00-03)
+
+**Objectif final V14 Cytology:**
+- Sensibilité ≥98% sur cellules anormales
+- Cohen's Kappa ≥0.80
+- Pipeline production: Image → CellPose → H-Optimus → MLP → Rapport
 
 ---
 
-**Version:** 2026-01-18
-**Auteur:** Session précédente (claude/review-project-context-JQPxq)
-**Statut:** ✅ Prêt pour nouvelle session
+**Dernière mise à jour:** 2026-01-21
+**Session précédente:** Validation CellPose APCData complète, script E2E créé
