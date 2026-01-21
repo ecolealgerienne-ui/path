@@ -57,12 +57,14 @@ ABNORMAL_CLASSES = {"ASCUS", "ASCH", "LSIL", "HSIL", "SCC"}
 # ═════════════════════════════════════════════════════════════════════════════
 
 # YOLO class mapping (from classes.txt)
+# Order: NILM, ASCUS, ASCH, LSIL, HSIL, SCC
 YOLO_CLASS_MAPPING = {
-    0: "ASC-US",
-    1: "HSIL",
-    2: "LSIL",
-    3: "Negative",
-    4: "SCC"
+    0: "NILM",
+    1: "ASCUS",
+    2: "ASCH",
+    3: "LSIL",
+    4: "HSIL",
+    5: "SCC"
 }
 
 
