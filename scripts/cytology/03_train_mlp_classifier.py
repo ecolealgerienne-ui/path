@@ -51,6 +51,19 @@ SIPAKMED_CLASSES = [
 NORMAL_CLASSES = [0, 1, 2]  # normal_columnar, normal_intermediate, normal_superficiel
 ABNORMAL_CLASSES = [3, 4, 5, 6]  # dysplastic + carcinoma
 
+# Manual class weights to penalize critical False Negatives
+# Higher weight = stronger penalty for misclassification
+# Target: Eliminate Severe/Carcinoma → Normal errors ("Death Column")
+MANUAL_CLASS_WEIGHTS = {
+    'normal_columnar': 1.0,       # Index 0
+    'normal_intermediate': 1.0,   # Index 1
+    'normal_superficiel': 1.0,    # Index 2
+    'light_dysplastic': 2.5,      # Index 3 - boost (58% recall)
+    'moderate_dysplastic': 2.0,   # Index 4
+    'severe_dysplastic': 4.0,     # Index 5 - HIGH (7% → Normal FN)
+    'carcinoma_in_situ': 4.0,     # Index 6 - HIGH (3% → Normal FN)
+}
+
 
 # =============================================================================
 #  FOCAL LOSS
@@ -155,12 +168,29 @@ class CytologyMLP(nn.Module):
 #  TRAINING
 # =============================================================================
 
-def compute_class_weights(labels: torch.Tensor) -> torch.Tensor:
-    """Compute inverse frequency weights for balanced training"""
-    class_counts = torch.bincount(labels, minlength=len(SIPAKMED_CLASSES))
-    class_weights = 1.0 / (class_counts.float() + 1e-6)
-    class_weights = class_weights / class_weights.sum() * len(SIPAKMED_CLASSES)
-    return class_weights
+def compute_class_weights(labels: torch.Tensor, use_manual: bool = True) -> torch.Tensor:
+    """
+    Compute class weights for Focal Loss
+
+    Args:
+        labels: Training labels
+        use_manual: Use MANUAL_CLASS_WEIGHTS (recommended for Safety First)
+
+    Returns:
+        Tensor of class weights
+    """
+    if use_manual:
+        # Use manual weights to penalize critical FN (Severe/Carcinoma → Normal)
+        weights = torch.tensor([
+            MANUAL_CLASS_WEIGHTS[cls] for cls in SIPAKMED_CLASSES
+        ], dtype=torch.float32)
+        return weights
+    else:
+        # Compute inverse frequency weights (balanced)
+        class_counts = torch.bincount(labels, minlength=len(SIPAKMED_CLASSES))
+        class_weights = 1.0 / (class_counts.float() + 1e-6)
+        class_weights = class_weights / class_weights.sum() * len(SIPAKMED_CLASSES)
+        return class_weights
 
 
 def compute_sample_weights(labels: torch.Tensor) -> torch.Tensor:
@@ -408,10 +438,14 @@ def train_model(
     print(f"  Output: {len(SIPAKMED_CLASSES)}")
     print(f"  Params: {sum(p.numel() for p in model.parameters()):,}")
 
-    # Loss
+    # Loss with manual class weights (Safety First: penalize Severe/Carcinoma → Normal)
     if use_focal_loss:
-        class_weights = compute_class_weights(train_dataset.labels).to(device)
+        class_weights = compute_class_weights(train_dataset.labels, use_manual=True).to(device)
         criterion = FocalLoss(alpha=class_weights, gamma=gamma)
+        print(f"\nLoss: Focal Loss (gamma={gamma}) with MANUAL weights:")
+        for cls, w in zip(SIPAKMED_CLASSES, class_weights.cpu().numpy()):
+            marker = "🔴" if w >= 3.0 else ("🟡" if w >= 2.0 else "")
+            print(f"  {cls}: {w:.1f} {marker}")
         print(f"\nLoss: Focal Loss (gamma={gamma})")
     else:
         criterion = nn.CrossEntropyLoss()
