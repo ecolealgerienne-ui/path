@@ -285,8 +285,16 @@ def validate_cellpose_on_apcdata(
         print("  Loaded annotations from CSV format")
 
     # Filter to images that have annotations
-    image_files = [f for f in os.listdir(images_dir) if f.endswith(('.png', '.jpg', '.jpeg'))]
-    image_files = [f for f in image_files if f in annotations]
+    all_image_files = [f for f in os.listdir(images_dir) if f.endswith(('.png', '.jpg', '.jpeg'))]
+    image_files = [f for f in all_image_files if f in annotations]
+
+    # Debug info if no matches
+    if len(image_files) == 0 and len(all_image_files) > 0 and len(annotations) > 0:
+        print(f"\n  DEBUG: No matching images found!")
+        print(f"    Images in folder: {len(all_image_files)}")
+        print(f"    Sample image names: {all_image_files[:3]}")
+        print(f"    Annotations loaded: {len(annotations)}")
+        print(f"    Sample annotation keys: {list(annotations.keys())[:3]}")
 
     if n_samples is not None and n_samples < len(image_files):
         image_files = image_files[:n_samples]
@@ -505,6 +513,11 @@ def plot_validation_results(results: Dict, output_dir: str):
     """
     Generate summary visualization of validation results.
     """
+    # Skip plotting if no results
+    if results['n_images'] == 0:
+        print("\n  Skipping plots (no data)")
+        return
+
     fig, axes = plt.subplots(2, 2, figsize=(14, 10))
 
     # Plot 1: Summary metrics
@@ -634,6 +647,11 @@ def generate_markdown_report(results: Dict, output_dir: str):
     """
     Generate markdown validation report.
     """
+    # Skip if no results
+    if results['n_images'] == 0:
+        print("\n  Skipping markdown report (no data)")
+        return
+
     report_path = os.path.join(output_dir, 'cellpose_validation_report.md')
 
     dr_status = "PASS" if results['detection_rate'] >= 0.90 else "FAIL"
@@ -780,12 +798,23 @@ def main():
 
     # Save results JSON
     results_json = {k: v for k, v in results.items() if k != 'per_image_results'}
-    results_json['per_image_summary'] = {
-        'mean_detection_rate': np.mean([r['detection_rate'] for r in results['per_image_results']]),
-        'std_detection_rate': np.std([r['detection_rate'] for r in results['per_image_results']]),
-        'min_detection_rate': min([r['detection_rate'] for r in results['per_image_results']]),
-        'max_detection_rate': max([r['detection_rate'] for r in results['per_image_results']])
-    }
+
+    if results['per_image_results']:
+        results_json['per_image_summary'] = {
+            'mean_detection_rate': np.mean([r['detection_rate'] for r in results['per_image_results']]),
+            'std_detection_rate': np.std([r['detection_rate'] for r in results['per_image_results']]),
+            'min_detection_rate': min([r['detection_rate'] for r in results['per_image_results']]),
+            'max_detection_rate': max([r['detection_rate'] for r in results['per_image_results']])
+        }
+    else:
+        results_json['per_image_summary'] = {
+            'mean_detection_rate': 0.0,
+            'std_detection_rate': 0.0,
+            'min_detection_rate': 0.0,
+            'max_detection_rate': 0.0
+        }
+        print("\n  WARNING: No images found matching annotations!")
+        print("  Check that image filenames in annotations match files in images/ directory")
 
     results_path = os.path.join(args.output_dir, 'validation_results.json')
     with open(results_path, 'w') as f:
