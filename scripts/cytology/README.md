@@ -87,12 +87,20 @@ python scripts/cytology/03_train_mlp_classifier.py \
     --epochs 100 \
     --use_focal_loss
 
-# Étape 4: Évaluer (Safety First)
+# Étape 4: Évaluer (Safety First) — Validation formelle POC
 python scripts/cytology/04_evaluate_cytology.py \
     --checkpoint models/checkpoints_v14_cytology/best_model.pth \
     --features_dir data/features/sipakmed \
-    --sensitivity_threshold 0.98
+    --output_dir reports/v14_cytology_validation
 ```
+
+**Outputs générés:**
+- `validation_report.md` — Rapport complet avec KPIs
+- `confusion_matrix_detailed.png` — Matrice 7 classes
+- `confusion_matrix_binary.png` — Normal vs Abnormal
+- `per_class_recall.png` — Recall par classe
+- `kpi_summary.png` — Résumé KPIs vs targets
+- `validation_metrics.json` — Métriques brutes
 
 ---
 
