@@ -418,7 +418,7 @@ def plot_per_class_performance(
 
     ax.set_xlabel('Class', fontsize=12)
     ax.set_ylabel('Recall', fontsize=12)
-    ax.set_title('Per-Class Recall — V14 Cytology POC\n(🔴 Critical  🟠 Abnormal  🟢 Normal)', fontsize=14)
+    ax.set_title('Per-Class Recall — V14 Cytology POC\n(RED=Critical  ORANGE=Abnormal  GREEN=Normal)', fontsize=14)
     ax.set_xticks(x)
     ax.set_xticklabels([c.replace('_', '\n') for c in classes], rotation=0, fontsize=9)
     ax.set_ylim(0, 1.15)
@@ -821,7 +821,9 @@ def evaluate_model(
     with open(metrics_path, 'w') as f:
         # Convert numpy types to Python types for JSON
         def convert(obj):
-            if isinstance(obj, np.integer):
+            if isinstance(obj, (np.bool_, bool)):
+                return bool(obj)
+            elif isinstance(obj, np.integer):
                 return int(obj)
             elif isinstance(obj, np.floating):
                 return float(obj)
@@ -829,6 +831,8 @@ def evaluate_model(
                 return obj.tolist()
             elif isinstance(obj, dict):
                 return {k: convert(v) for k, v in obj.items()}
+            elif isinstance(obj, list):
+                return [convert(v) for v in obj]
             return obj
 
         json.dump(convert(metrics), f, indent=2)
