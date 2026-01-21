@@ -56,6 +56,90 @@ ABNORMAL_CLASSES = {"ASCUS", "ASCH", "LSIL", "HSIL", "SCC"}
 #  DATA LOADING
 # ═════════════════════════════════════════════════════════════════════════════
 
+# YOLO class mapping (from classes.txt)
+YOLO_CLASS_MAPPING = {
+    0: "ASC-US",
+    1: "HSIL",
+    2: "LSIL",
+    3: "Negative",
+    4: "SCC"
+}
+
+
+def load_yolo_annotations(data_dir: str, image_width: int = 2048, image_height: int = 1532) -> Dict[str, List[Dict]]:
+    """
+    Load APCData annotations from YOLO format.
+
+    YOLO format: class_id x_center y_center width height (normalized 0-1)
+
+    Args:
+        data_dir: Path to APCData_YOLO/ directory
+        image_width: Image width for denormalization
+        image_height: Image height for denormalization
+
+    Returns:
+        Dict mapping image_filename to list of cell annotations
+    """
+    labels_dir = os.path.join(data_dir, 'labels')
+    images_dir = os.path.join(data_dir, 'images')
+
+    if not os.path.exists(labels_dir):
+        raise FileNotFoundError(f"YOLO labels directory not found: {labels_dir}")
+
+    annotations = {}
+
+    # Get all label files
+    label_files = [f for f in os.listdir(labels_dir) if f.endswith('.txt') and not f.endswith(':Zone.Identifier')]
+
+    for label_file in label_files:
+        # Match label to image (same name, different extension)
+        base_name = label_file.replace('.txt', '')
+        image_file = base_name + '.jpg'
+
+        # Check if image exists
+        image_path = os.path.join(images_dir, image_file)
+        if not os.path.exists(image_path):
+            # Try png
+            image_file = base_name + '.png'
+            image_path = os.path.join(images_dir, image_file)
+            if not os.path.exists(image_path):
+                continue
+
+        # Read label file
+        label_path = os.path.join(labels_dir, label_file)
+        cells = []
+        cell_id = 0
+
+        with open(label_path, 'r') as f:
+            for line in f:
+                parts = line.strip().split()
+                if len(parts) >= 5:
+                    class_id = int(parts[0])
+                    x_center = float(parts[1])
+                    y_center = float(parts[2])
+                    # width = float(parts[3])  # Not needed for point matching
+                    # height = float(parts[4])
+
+                    # Denormalize to pixel coordinates
+                    nucleus_x = int(x_center * image_width)
+                    nucleus_y = int(y_center * image_height)
+
+                    bethesda_class = YOLO_CLASS_MAPPING.get(class_id, f"class_{class_id}")
+
+                    cells.append({
+                        'cell_id': cell_id,
+                        'class': bethesda_class,
+                        'nucleus_x': nucleus_x,
+                        'nucleus_y': nucleus_y
+                    })
+                    cell_id += 1
+
+        if cells:
+            annotations[image_file] = cells
+
+    return annotations
+
+
 def load_apcdata_annotations(labels_dir: str) -> Dict[str, List[Dict]]:
     """
     Load APCData annotations from CSV files.
@@ -276,16 +360,35 @@ def validate_cellpose_on_apcdata(
     if not os.path.exists(images_dir):
         raise FileNotFoundError(f"Images directory not found: {images_dir}")
 
-    # Try loading JSON annotations first, then CSV
-    try:
-        annotations = load_apcdata_annotations_json(labels_dir)
-        print("  Loaded annotations from JSON format")
-    except FileNotFoundError:
-        annotations = load_apcdata_annotations(labels_dir)
-        print("  Loaded annotations from CSV format")
+    # Try loading annotations in order: YOLO > JSON > CSV
+    annotations = None
 
-    # Filter to images that have annotations
-    all_image_files = [f for f in os.listdir(images_dir) if f.endswith(('.png', '.jpg', '.jpeg'))]
+    # Check if this is YOLO format (has labels/*.txt files)
+    yolo_labels_dir = os.path.join(data_dir, 'labels')
+    if os.path.exists(yolo_labels_dir):
+        txt_files = [f for f in os.listdir(yolo_labels_dir) if f.endswith('.txt') and not f.endswith(':Zone.Identifier')]
+        if txt_files:
+            # Get image dimensions from first image
+            sample_images = [f for f in os.listdir(images_dir) if f.endswith(('.jpg', '.png')) and not ':Zone' in f]
+            if sample_images:
+                from PIL import Image as PILImage
+                sample_img = PILImage.open(os.path.join(images_dir, sample_images[0]))
+                img_width, img_height = sample_img.size
+                annotations = load_yolo_annotations(data_dir, img_width, img_height)
+                print(f"  Loaded annotations from YOLO format (image size: {img_width}x{img_height})")
+
+    # Fall back to JSON/CSV
+    if annotations is None:
+        try:
+            annotations = load_apcdata_annotations_json(labels_dir)
+            print("  Loaded annotations from JSON format")
+        except FileNotFoundError:
+            annotations = load_apcdata_annotations(labels_dir)
+            print("  Loaded annotations from CSV format")
+
+    # Filter to images that have annotations (exclude Zone.Identifier files)
+    all_image_files = [f for f in os.listdir(images_dir)
+                       if f.endswith(('.png', '.jpg', '.jpeg')) and ':Zone' not in f]
     image_files = [f for f in all_image_files if f in annotations]
 
     # Debug info if no matches
