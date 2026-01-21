@@ -116,20 +116,42 @@ python scripts/cytology/04_evaluate_cytology.py \
 
 ```bash
 # Étape 5: Valider CellPose sur APCData (multi-cellules LBC)
+# Configuration optimale validée (2026-01-21): 90.8% Abnormal Detection
 python scripts/cytology/05_validate_cellpose_apcdata.py \
-    --data_dir data/raw/apcdata/APCData_points \
-    --diameter 30 \
+    --data_dir data/raw/apcdata/APCData_YOLO \
+    --diameter 60 \
     --flow_threshold 0.4 \
-    --max_distance 50 \
+    --min_area 400 \
+    --max_distance 120 \
     --output_dir reports/cellpose_apcdata_validation \
     --save_visualizations
 
-# Étape 6: Pipeline End-to-End (après validation CellPose)
+# Étape 6: Pipeline End-to-End (CellPose → H-Optimus → MLP → Évaluation)
 python scripts/cytology/06_end_to_end_apcdata.py \
-    --data_dir data/raw/apcdata/APCData_points \
-    --checkpoint models/checkpoints_v14_cytology/best_model.pth \
-    --output_dir reports/end_to_end_validation
+    --data_dir data/raw/apcdata/APCData_YOLO \
+    --mlp_checkpoint models/cytology/mlp_classifier_best.pth \
+    --output_dir reports/end_to_end_apcdata
 ```
+
+**Paramètres CellPose Validés (APCData - 2026-01-21):**
+
+| Paramètre | Valeur | Impact |
+|-----------|--------|--------|
+| `diameter` | **60** | Taille moyenne noyaux LBC |
+| `flow_threshold` | **0.4** | Balance détection/précision |
+| `min_area` | **400 px²** | Filtre lymphocytes/débris |
+| `max_distance` | **120 px** | Tolérance matching GT |
+
+**Résultats Validation CellPose (n=425 images, 3619 cellules):**
+
+| Métrique | Valeur | Status |
+|----------|--------|--------|
+| **Abnormal Detection Rate** | **90.8%** | ⚠️ ACCEPTABLE |
+| ASCUS | 94.0% | ✅ |
+| ASCH | 94.5% | ✅ |
+| LSIL | 91.0% | ✅ |
+| HSIL | 87.6% | ⚠️ |
+| SCC | 87.2% | ⚠️ |
 
 **Outputs générés (Phase 2):**
 - `cellpose_validation_report.md` — Rapport détection CellPose
