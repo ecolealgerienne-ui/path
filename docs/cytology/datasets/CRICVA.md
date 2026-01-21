@@ -1,9 +1,10 @@
 # CRICVA Dataset — Documentation
 
-> **Version:** 1.0
+> **Version:** 1.1
 > **Date:** 2026-01-21
 > **Source:** CRIC Cervix Database (Visual Attention subset)
-> **URL:** https://database.cric.com.br/
+> **URL Officiel:** https://sites.google.com/view/cricvadataset
+> **Mendeley:** https://data.mendeley.com/datasets/bk45c9yxb9/1
 
 ---
 
@@ -17,24 +18,35 @@
 | **Résolution** | 1280 × 960 px (variable ~956-960) |
 | **Format** | PNG RGB |
 | **Classes** | 5 Bethesda (Negative, ASC-US, ASC-H, LSIL, ca) |
-| **Annotations** | Labels par image (pas de coordonnées cellule) |
+| **Annotations** | Labels image-level + heatmaps eye-tracking |
+| **Équipement** | Eye Link 1000 (SR Research), 1000 Hz, œil droit |
 
 ---
 
-## ⚠️ Limitation Critique
+## ⚠️ Limitation Critique pour V14
 
 > **CRICVA ≠ Dataset de segmentation cellulaire**
 >
-> Ce dataset contient des **données d'eye-tracking** (où les observateurs regardent),
-> PAS des annotations de localisation des cellules.
->
-> **Utilisation possible:**
-> - Validation classification (image-level labels)
-> - Recherche sur l'attention visuelle des pathologistes
->
-> **NON utilisable pour:**
-> - Validation CellPose (pas de coordonnées GT)
-> - Entraînement segmentation
+> Ce dataset contient des **données d'eye-tracking** (où les pathologistes regardent),
+> **PAS** des annotations de localisation des cellules.
+
+### Verdict Définitif (Analyse 2026-01-21)
+
+| Contenu | Type | Usage CellPose |
+|---------|------|----------------|
+| `fixLocs` (.mat) | Heatmap 960×1280 (eye-tracking) | ❌ **Non** |
+| `fixation_maps/` | PNG grayscale des mêmes heatmaps | ❌ **Non** |
+| `labels_*.txt` | Classes image-level uniquement | ❌ **Non** (pas de coordonnées) |
+
+**Utilisation possible:**
+- Validation classification image-level (232 images)
+- Recherche sur l'attention visuelle des pathologistes
+- Entraînement modèles attention-guided (R&D avancé)
+
+**NON utilisable pour:**
+- ❌ Validation CellPose (pas de coordonnées GT cellules)
+- ❌ Entraînement segmentation
+- ❌ Matching détections vs GT
 
 ---
 
@@ -106,33 +118,114 @@ id,hash,class
 
 ---
 
-## Données Eye-Tracking
+## Données Eye-Tracking — Structure Détaillée
 
-### fixation_locs/
+### fixation_locs/ (Fichiers MATLAB .mat)
 
-Coordonnées des points de fixation oculaire des observateurs humains.
+**Format:** MATLAB v5 mat-file (little endian)
 
-### fixation_maps/
+**Structure du fichier .mat:**
 
-Heatmaps de densité d'attention visuelle (où les pathologistes regardent le plus).
+```python
+import scipy.io as sio
 
-**Usage potentiel (R&D avancé):**
-- Entraîner un modèle d'attention guidée par l'expert
-- Pondérer les régions "importantes" dans les images
+data = sio.loadmat('fixation_locs/011fda505d7e4af4b8cc57545343624d.mat')
+
+# Clés disponibles:
+# - '__header__': Métadonnées MATLAB
+# - '__version__': Version du format
+# - '__globals__': Variables globales
+# - 'fixLocs': DONNÉES PRINCIPALES
+
+# Structure de fixLocs:
+data['fixLocs'].shape  # → (960, 1280) = dimensions image
+data['fixLocs'].dtype  # → uint8
+```
+
+**Interprétation de `fixLocs`:**
+
+```
+fixLocs[y, x] = 0  →  Pas de fixation oculaire à ce pixel
+fixLocs[y, x] > 0  →  Fixation oculaire détectée (intensité = durée/fréquence)
+```
+
+> **Important:** C'est une matrice 2D de la même taille que l'image (960×1280),
+> pas une liste de coordonnées. Chaque pixel indique si le pathologiste a regardé
+> cette zone de l'image.
+
+### fixation_maps/ (PNG Grayscale)
+
+Visualisation des mêmes données sous forme d'images:
+
+| Propriété | Valeur |
+|-----------|--------|
+| Format | PNG 8-bit grayscale |
+| Dimensions | 1280 × 960 (même que images source) |
+| Valeurs | 0-255 (intensité de fixation) |
+
+**Exemple de lecture:**
+
+```python
+from PIL import Image
+import numpy as np
+
+# Charger la heatmap
+heatmap = np.array(Image.open('fixation_maps/011fda505d7e4af4b8cc57545343624d.png'))
+# → shape: (960, 1280), dtype: uint8
+
+# Les zones blanches = forte attention
+# Les zones noires = pas d'attention
+```
+
+### Protocole Expérimental (Source: Publication)
+
+| Aspect | Détail |
+|--------|--------|
+| **Équipement** | Eye Link 1000 (SR Research Ltd., Canada) |
+| **Fréquence** | 1000 Hz |
+| **Œil enregistré** | Droit uniquement |
+| **Participants** | 3 cytopathologistes certifiés |
+| **Tâche** | Interpréter l'image + cliquer sur cellules anormales |
+| **Temps** | Libre (pas de limite) |
+
+### Usage Potentiel (R&D Avancé)
+
+1. **Attention-Guided Training:**
+   - Pondérer les régions "importantes" dans la loss function
+   - Les zones à haute fixation = régions diagnostiques critiques
+
+2. **Validation de Saillance:**
+   - Comparer où le modèle "regarde" vs où l'expert regarde
+   - Grad-CAM vs fixation_maps
+
+3. **Augmentation Guidée:**
+   - Cropper autour des zones à haute attention
+   - Générer des données d'entraînement ciblées
 
 ---
 
-## Comparaison avec APCData
+## Comparaison avec Autres Datasets
 
-| Aspect | CRICVA | APCData |
-|--------|--------|---------|
-| **Images** | 232 | 425 |
-| **Cellules annotées** | ❌ Non | ✅ 3,619 |
-| **Coordonnées** | ❌ Non | ✅ (nucleus_x, nucleus_y) |
-| **Classes** | 5 | 6 |
-| **Résolution** | 1280×960 | 2048×1532 |
-| **Usage CellPose** | ❌ Non | ✅ Oui |
-| **Usage Classification** | ✅ Image-level | ✅ Cell-level |
+| Aspect | CRICVA | APCData | SIPaKMeD |
+|--------|--------|---------|----------|
+| **Images** | 232 | 425 | 4,049 |
+| **Cellules annotées** | ❌ Non | ✅ 3,619 | ✅ 1 par image |
+| **Type annotation** | Eye-tracking | Points (x, y) | Masques complets |
+| **Coordonnées cellules** | ❌ Non | ✅ Oui | ✅ Oui (masques) |
+| **Classes** | 5 | 6 | 7 |
+| **Résolution** | 1280×960 | 2048×1532 | ~150×150 (variable) |
+| **Méthode préparation** | Pap conventionnel | LBC | Pap conventionnel |
+| **Usage CellPose** | ❌ Non | ✅ **Recommandé** | ⚠️ Sur-segmente |
+| **Usage Classification** | Image-level | Cell-level | Cell-level |
+| **Multi-cellules/image** | ✅ Oui | ✅ Oui | ❌ Non (isolées) |
+
+### Recommandation V14 Pipeline
+
+| Phase | Dataset | Raison |
+|-------|---------|--------|
+| **POC (Phase 1)** | SIPaKMeD | Masques GT, cellules isolées |
+| **CellPose Validation (Phase 2)** | **APCData** | Coordonnées cellules, multi-cellules |
+| **R&D Attention** | CRICVA | Eye-tracking pathologistes |
 
 ---
 
@@ -175,9 +268,48 @@ python scripts/cytology/validate_image_classification.py \
 
 ## Références
 
-- CRIC Database: https://database.cric.com.br/
-- Publication: "CRIC Searchable Image Database for Cervical Cytopathology Research"
+### Sources Officielles
+
+- **Site officiel:** https://sites.google.com/view/cricvadataset
+- **Mendeley Data:** https://data.mendeley.com/datasets/bk45c9yxb9/1
+- **CRIC Database:** https://database.cric.com.br/
+
+### Publication Associée
+
+> **"Saliency-driven system models for cell analysis with deep learning"**
+> DOI: https://doi.org/10.1016/j.cmpb.2019.105053
+> Computer Methods and Programs in Biomedicine, 2019
+
+### Contact
+
+- Daniel Ferreira: daniels@ifce.edu.br
 
 ---
 
-*Documentation générée le 2026-01-21*
+## Résumé Exécutif
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  CRICVA — VERDICT FINAL                                                      │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│  ✅ CE QUE C'EST:                                                           │
+│     • Dataset d'eye-tracking (attention visuelle)                           │
+│     • 232 images avec labels Bethesda (image-level)                         │
+│     • Heatmaps de fixation oculaire (3 pathologistes)                       │
+│                                                                              │
+│  ❌ CE QUE CE N'EST PAS:                                                    │
+│     • PAS de coordonnées de cellules                                        │
+│     • PAS de masques de segmentation                                        │
+│     • PAS utilisable pour valider CellPose                                  │
+│                                                                              │
+│  🎯 POUR V14 CELLPOSE VALIDATION:                                           │
+│     → Utiliser APCData (3,619 cellules avec coordonnées)                    │
+│                                                                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+*Documentation mise à jour le 2026-01-21 après analyse complète des fichiers .mat*
+
