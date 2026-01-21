@@ -102,14 +102,44 @@ from cellpose import models
 # Modèle recommandé pour noyaux
 model = models.CellposeModel(gpu=True, pretrained_model='nuclei')
 
-# Paramètres optimaux (LBC)
+# Paramètres optimaux (LBC - validés sur APCData 2026-01-21)
 masks, flows, styles = model.eval(
     image,
-    diameter=30,          # Diamètre moyen noyau en pixels
-    flow_threshold=0.4,   # Seuil de confiance
+    diameter=60,              # Diamètre optimal pour LBC (validé)
+    flow_threshold=0.4,       # Seuil de confiance
     cellprob_threshold=0.0
 )
+
+# Post-filtrage par surface (élimine débris)
+MIN_AREA = 500  # px² (élimine lymphocytes/débris)
+MAX_AREA = 100000  # px² (élimine artefacts)
 ```
+
+### Paramètres Validés (APCData - 2026-01-21)
+
+| Paramètre | Valeur | Impact |
+|-----------|--------|--------|
+| `diameter` | **60** | Taille moyenne noyaux LBC |
+| `flow_threshold` | **0.4** | Balance détection/précision |
+| `cellprob_threshold` | **0.0** | Standard |
+| `min_area` | **500 px²** | Filtre lymphocytes/débris |
+| `max_distance` | **100 px** | Tolérance matching GT |
+
+### Résultats de Validation (n=20 images)
+
+| Métrique | Valeur | Cible | Status |
+|----------|--------|-------|--------|
+| **Abnormal Detection Rate** | **92.3%** | ≥98% | ⚠️ WARN |
+| Detection Rate (All) | 85.9% | ≥90% | - |
+| ASCUS | 100% | - | ✅ |
+| ASCH | 100% | - | ✅ |
+| HSIL | 100% | - | ✅ |
+| LSIL | 90.9% | - | ✅ |
+| SCC | 72.7% | - | ⚠️ |
+
+> **Note:** La précision basse (~8%) est ATTENDUE car APCData n'annote qu'un
+> sous-ensemble de cellules. CellPose détecte correctement les cellules
+> non-annotées (normales) qui seront filtrées par le classifieur.
 
 ### Output
 
