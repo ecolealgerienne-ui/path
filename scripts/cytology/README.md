@@ -42,15 +42,25 @@ CellPose sur tissu (groupes cellulaires):
 
 ---
 
-## 🚀 Pipeline Actuel (Phase 1: SIPaKMeD)
+## 🚀 Pipeline Actuel
+
+### Phase 1: SIPaKMeD (POC — Cellules isolées)
 
 ```
 00_preprocess_sipakmed.py     → Prépare images 224×224 + masques GT
 00b_validate_cellpose.py      → Validation CellPose (diagnostic uniquement)
-01_extract_embeddings_gt.py   → Extrait H-Optimus avec masques GT ← NOUVEAU
+01_extract_embeddings_gt.py   → Extrait H-Optimus avec masques GT
 02_compute_morphometry.py     → Calcule 20 features morphométriques
 03_train_mlp_classifier.py    → Entraîne MLP fusion (1550D → classes)
-04_evaluate_cytology.py       → Évalue (Sensibilité > 0.98)
+04_evaluate_cytology.py       → Évalue (Sensibilité > 0.98) ✅ POC VALIDÉ
+```
+
+### Phase 2: APCData (Production — Multi-cellules LBC)
+
+```
+05_validate_cellpose_apcdata.py  → Valide détection CellPose sur APCData ← EN COURS
+06_end_to_end_apcdata.py         → Pipeline complet: CellPose → H-Optimus → MLP
+07_compare_with_gt.py            → Compare prédictions vs GT annotations
 ```
 
 ### Exécution
@@ -87,12 +97,67 @@ python scripts/cytology/03_train_mlp_classifier.py \
     --epochs 100 \
     --use_focal_loss
 
-# Étape 4: Évaluer (Safety First)
+# Étape 4: Évaluer (Safety First) — Validation formelle POC
 python scripts/cytology/04_evaluate_cytology.py \
     --checkpoint models/checkpoints_v14_cytology/best_model.pth \
     --features_dir data/features/sipakmed \
-    --sensitivity_threshold 0.98
+    --output_dir reports/v14_cytology_validation
 ```
+
+**Outputs générés (Phase 1):**
+- `validation_report.md` — Rapport complet avec KPIs
+- `confusion_matrix_detailed.png` — Matrice 7 classes
+- `confusion_matrix_binary.png` — Normal vs Abnormal
+- `per_class_recall.png` — Recall par classe
+- `kpi_summary.png` — Résumé KPIs vs targets
+- `validation_metrics.json` — Métriques brutes
+
+### Exécution Phase 2 (APCData)
+
+```bash
+# Étape 5: Valider CellPose sur APCData (multi-cellules LBC)
+# Configuration optimale validée (2026-01-21): 90.8% Abnormal Detection
+python scripts/cytology/05_validate_cellpose_apcdata.py \
+    --data_dir data/raw/apcdata/APCData_YOLO \
+    --diameter 60 \
+    --flow_threshold 0.4 \
+    --min_area 400 \
+    --max_distance 120 \
+    --output_dir reports/cellpose_apcdata_validation \
+    --save_visualizations
+
+# Étape 6: Pipeline End-to-End (CellPose → H-Optimus → MLP → Évaluation)
+python scripts/cytology/06_end_to_end_apcdata.py \
+    --data_dir data/raw/apcdata/APCData_YOLO \
+    --mlp_checkpoint models/cytology/mlp_classifier_best.pth \
+    --output_dir reports/end_to_end_apcdata
+```
+
+**Paramètres CellPose Validés (APCData - 2026-01-21):**
+
+| Paramètre | Valeur | Impact |
+|-----------|--------|--------|
+| `diameter` | **60** | Taille moyenne noyaux LBC |
+| `flow_threshold` | **0.4** | Balance détection/précision |
+| `min_area` | **400 px²** | Filtre lymphocytes/débris |
+| `max_distance` | **120 px** | Tolérance matching GT |
+
+**Résultats Validation CellPose (n=425 images, 3619 cellules):**
+
+| Métrique | Valeur | Status |
+|----------|--------|--------|
+| **Abnormal Detection Rate** | **90.8%** | ⚠️ ACCEPTABLE |
+| ASCUS | 94.0% | ✅ |
+| ASCH | 94.5% | ✅ |
+| LSIL | 91.0% | ✅ |
+| HSIL | 87.6% | ⚠️ |
+| SCC | 87.2% | ⚠️ |
+
+**Outputs générés (Phase 2):**
+- `cellpose_validation_report.md` — Rapport détection CellPose
+- `cellpose_validation_summary.png` — Métriques détection
+- `detection_*.png` — Visualisations par image (optionnel)
+- `validation_results.json` — Métriques brutes
 
 ---
 
@@ -118,15 +183,22 @@ python scripts/cytology/04_evaluate_cytology.py \
 ```
 data/
 ├── raw/
-│   └── sipakmed/
-│       └── pictures/
-│           ├── carcinoma_in_situ/      # 813 images
-│           ├── severe_dysplastic/      # 1,470 images
-│           ├── moderate_dysplastic/    # 793 images
-│           ├── light_dysplastic/       # 1,484 images
-│           ├── normal_columnar/        # 787 images
-│           ├── normal_intermediate/    # 518 images
-│           └── normal_superficiel/     # 502 images
+│   ├── sipakmed/
+│   │   └── pictures/
+│   │       ├── carcinoma_in_situ/      # 813 images (isolées)
+│   │       ├── severe_dysplastic/      # 1,470 images
+│   │       ├── moderate_dysplastic/    # 793 images
+│   │       ├── light_dysplastic/       # 1,484 images
+│   │       ├── normal_columnar/        # 787 images
+│   │       ├── normal_intermediate/    # 518 images
+│   │       └── normal_superficiel/     # 502 images
+│   │
+│   └── apcdata/                        # ← NOUVEAU (Phase 2)
+│       └── APCData_points/
+│           ├── images/                 # 425 images (2048×1532)
+│           └── labels/
+│               ├── csv/                # Annotations CSV
+│               └── json/               # Annotations JSON
 │
 ├── processed/
 │   └── sipakmed/
@@ -146,6 +218,17 @@ data/
         ├── train_features.csv          # 20 features morpho
         └── val_features.csv
 ```
+
+### APCData — Détails
+
+| Attribut | Valeur |
+|----------|--------|
+| **Images** | 425 (2048×1532 px) |
+| **Cellules** | 3,619 annotées |
+| **Méthode** | LBC (Liquid-Based Cytology) |
+| **Classes** | 6 Bethesda (NILM, ASCUS, ASCH, LSIL, HSIL, SCC) |
+| **Annotations** | Points (nucleus_x, nucleus_y) |
+| **Documentation** | [docs/cytology/datasets/APCDATA.md](../../docs/cytology/datasets/APCDATA.md) |
 
 ---
 
@@ -228,10 +311,12 @@ features = compute_morpho_features(images, masks)
 
 | Document | Description |
 |----------|-------------|
+| [V14_PRODUCTION_PIPELINE.md](../../docs/cytology/V14_PRODUCTION_PIPELINE.md) | **Pipeline Production End-to-End** |
 | [V14_PIPELINE_EXECUTION_ORDER.md](../../docs/cytology/V14_PIPELINE_EXECUTION_ORDER.md) | Ordre d'exécution complet |
 | [V14_MACENKO_STRATEGY.md](../../docs/cytology/V14_MACENKO_STRATEGY.md) | Normalisation router-dependent |
 | [V14_CYTOLOGY_BRANCH.md](../../docs/cytology/V14_CYTOLOGY_BRANCH.md) | Specs complètes V14 |
 | [V14_MASTER_SLAVE_ARCHITECTURE.md](../../docs/cytology/V14_MASTER_SLAVE_ARCHITECTURE.md) | CellPose pour production |
+| [datasets/APCDATA.md](../../docs/cytology/datasets/APCDATA.md) | Documentation APCData |
 
 ---
 
@@ -265,5 +350,5 @@ python scripts/cytology/01_extract_embeddings_gt.py --batch_size 8
 ---
 
 **Auteur:** V14 Cytology Branch
-**Date:** 2026-01-20
-**Statut:** ✅ Phase 1 Ready (Masques GT)
+**Date:** 2026-01-21
+**Statut:** ✅ Phase 1 DONE (POC Validé) | 🔄 Phase 2 EN COURS (APCData)
