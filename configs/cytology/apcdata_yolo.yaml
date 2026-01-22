@@ -1,0 +1,54 @@
+# APCData YOLO Configuration for Cell Detection
+# V15 Cytology Pipeline — YOLO26 Training
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# Dataset: APCData (Abnormal Pap Cell Dataset)
+# Format: YOLO (class_id x_center y_center width height normalized)
+# Images: 425 LBC specimens, 2048×1532 pixels
+# Cells: ~3,619 annotated cells
+# Classes: 6 Bethesda categories
+#
+# Usage:
+#   from ultralytics import YOLO
+#   model = YOLO("yolo26n.pt")
+#   results = model.train(data="configs/cytology/apcdata_yolo.yaml", epochs=100)
+#
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# Dataset paths (EDIT THESE to match your local setup)
+# ───────────────────────────────────────────────────────────────────────────────
+path: data/raw/apcdata/APCData_YOLO  # Root directory
+train: images  # Train images (relative to path)
+val: images    # Val images (same as train for initial testing)
+# NOTE: For proper training, split images into train/ and val/ subdirectories
+
+# Classes (Bethesda System)
+# ───────────────────────────────────────────────────────────────────────────────
+names:
+  0: NILM    # Negative for Intraepithelial Lesion or Malignancy (Normal)
+  1: ASCUS   # Atypical Squamous Cells of Undetermined Significance
+  2: ASCH    # Atypical Squamous Cells, cannot exclude HSIL
+  3: LSIL    # Low-grade Squamous Intraepithelial Lesion
+  4: HSIL    # High-grade Squamous Intraepithelial Lesion
+  5: SCC     # Squamous Cell Carcinoma
+
+# Number of classes
+nc: 6
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  CLINICAL CONTEXT
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# Binary Classification (for Safety Metrics):
+#   - Normal: NILM (class 0)
+#   - Abnormal: ASCUS, ASCH, LSIL, HSIL, SCC (classes 1-5)
+#
+# Risk Stratification:
+#   - Low Risk: NILM, ASCUS
+#   - High Risk: ASCH, LSIL, HSIL, SCC
+#
+# KPI Critique:
+#   - Sensibilité Anormale > 98% (ne jamais rater un cancer)
+#   - FROC < 2.0 FP/image @ 98% sensibilité
+#
+# ═══════════════════════════════════════════════════════════════════════════════
