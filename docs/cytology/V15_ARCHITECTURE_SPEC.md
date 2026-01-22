@@ -53,16 +53,37 @@
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
-### Datasets (Stratégie Clarifiée)
+### Datasets (Stratégie Simplifiée — POC)
 
-| Usage | Dataset | Niveau | Notes |
-|-------|---------|--------|-------|
-| **Training** | APCData + LBC Hussain | Cell-level | Mélangés, domain randomization |
-| **Validation CellPose** | APCData (hold-out) | Cell-level | Seul dataset avec GT cellules |
-| **OOD Image-level** | CRICVA | Image-level | ⚠️ Pas de coordonnées cellules |
+| Usage | Dataset | Cellules | Notes |
+|-------|---------|----------|-------|
+| **Training + Validation** | **APCData uniquement** | 3,619 | LBC, multi-cellules, Bethesda |
 
-> **⚠️ IMPORTANT:** CRICVA ne contient PAS de coordonnées de cellules (seulement eye-tracking).
-> Il ne peut être utilisé que pour validation image-level, pas pour CellPose/détection.
+> **⚠️ DÉCISION POC:** APCData est le **seul dataset exploitable** pour V15.2 POC.
+> Les autres datasets (SIPaKMeD, Herlev, CRICVA) sont exclus car:
+> - Cellules isolées (≠ scénario production)
+> - Pas d'annotations exploitables
+> - Perte de temps pour le POC
+
+### Ce qu'APCData permet (suffisant pour POC)
+
+| Étape | Faisabilité | Source |
+|-------|-------------|--------|
+| YOLO détection | ✅ Direct | Bounding boxes fournies |
+| Segmentation nucleus | ✅ Via pseudo-masques | Points nucleus → StarDist/circular approx |
+| Extraction patch 224×224 | ✅ Direct | Bounding boxes |
+| Feature visuel | ✅ Direct | Backbone frozen (pas de FT pour POC) |
+| Morphométrie | ✅ Direct | Masques approximatifs suffisants |
+| Classification Bethesda | ✅ Direct | Labels fournis |
+
+### Ce qu'on N'AURA PAS (acceptable pour POC)
+
+- ❌ HoVerNet pixel-perfect
+- ❌ Performance optimale sur clusters serrés
+- ❌ Généralisation production
+- ❌ Robustesse scanner-to-scanner
+
+**Objectif POC:** Démontrer l'architecture V15.2 fonctionne, pas performance optimale.
 
 ### Points de Consensus
 
@@ -1247,7 +1268,8 @@ SINON → LoRA
 | Date | Version | Changements |
 |------|---------|-------------|
 | 2026-01-22 | 1.0 | Draft initial |
-| 2026-01-22 | **2.0** | **Consensus final** — Ajout Phase 0 Benchmark, règle >5% fine-tuning, clarification CRICVA, PCA 128 dims |
+| 2026-01-22 | 2.0 | Consensus final — Ajout Phase 0 Benchmark, règle >5% fine-tuning, clarification CRICVA, PCA 128 dims |
+| 2026-01-22 | **2.1** | **Simplification POC** — APCData uniquement, exclusion autres datasets |
 
 ---
 
