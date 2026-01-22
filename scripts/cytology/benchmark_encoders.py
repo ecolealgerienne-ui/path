@@ -173,87 +173,226 @@ def extract_features(
     return features
 
 # ============================================================================
+# YOLO ANNOTATION LOADING (from existing scripts)
+# ============================================================================
+
+# YOLO class mapping (from classes.txt)
+YOLO_CLASS_MAPPING = {
+    0: "NILM",
+    1: "ASCUS",
+    2: "ASCH",
+    3: "LSIL",
+    4: "HSIL",
+    5: "SCC"
+}
+
+
+def load_yolo_annotations(data_dir: str, image_width: int = 2048, image_height: int = 1532) -> Dict[str, List[Dict]]:
+    """
+    Load APCData annotations from YOLO format.
+
+    YOLO format: class_id x_center y_center width height (normalized 0-1)
+
+    Args:
+        data_dir: Path to APCData_YOLO/ directory
+        image_width: Image width for denormalization
+        image_height: Image height for denormalization
+
+    Returns:
+        Dict mapping image_filename to list of cell annotations
+    """
+    labels_dir = os.path.join(data_dir, 'labels')
+    images_dir = os.path.join(data_dir, 'images')
+
+    if not os.path.exists(labels_dir):
+        raise FileNotFoundError(f"YOLO labels directory not found: {labels_dir}")
+
+    annotations = {}
+
+    # Get all label files (exclude Zone.Identifier files from WSL)
+    label_files = [f for f in os.listdir(labels_dir)
+                   if f.endswith('.txt') and ':Zone' not in f]
+
+    for label_file in label_files:
+        base_name = label_file.replace('.txt', '')
+
+        # Find matching image (try common extensions)
+        image_file = None
+        for ext in ['.jpg', '.png', '.jpeg']:
+            candidate = base_name + ext
+            if os.path.exists(os.path.join(images_dir, candidate)):
+                image_file = candidate
+                break
+
+        if image_file is None:
+            continue
+
+        # Read label file
+        label_path = os.path.join(labels_dir, label_file)
+        cells = []
+
+        with open(label_path, 'r') as f:
+            for line in f:
+                parts = line.strip().split()
+                if len(parts) >= 5:
+                    class_id = int(parts[0])
+                    x_center = float(parts[1])
+                    y_center = float(parts[2])
+
+                    # Denormalize to pixel coordinates
+                    nucleus_x = int(x_center * image_width)
+                    nucleus_y = int(y_center * image_height)
+
+                    bethesda_class = YOLO_CLASS_MAPPING.get(class_id, "NILM")
+
+                    cells.append({
+                        'class': bethesda_class,
+                        'nucleus_x': nucleus_x,
+                        'nucleus_y': nucleus_y
+                    })
+
+        if cells:
+            annotations[image_file] = cells
+
+    return annotations
+
+
+def extract_patch(
+    image: np.ndarray,
+    center_x: float,
+    center_y: float,
+    patch_size: int = 224
+) -> np.ndarray:
+    """
+    Extract a patch centered on (center_x, center_y).
+    Pads with white if near image boundary.
+    """
+    h, w = image.shape[:2]
+    half = patch_size // 2
+
+    # Calculate crop boundaries
+    x1 = int(center_x - half)
+    y1 = int(center_y - half)
+    x2 = x1 + patch_size
+    y2 = y1 + patch_size
+
+    # Create white canvas
+    patch = np.ones((patch_size, patch_size, 3), dtype=np.uint8) * 255
+
+    # Calculate valid regions
+    src_x1 = max(0, x1)
+    src_y1 = max(0, y1)
+    src_x2 = min(w, x2)
+    src_y2 = min(h, y2)
+
+    dst_x1 = src_x1 - x1
+    dst_y1 = src_y1 - y1
+    dst_x2 = dst_x1 + (src_x2 - src_x1)
+    dst_y2 = dst_y1 + (src_y2 - src_y1)
+
+    # Copy valid region
+    patch[dst_y1:dst_y2, dst_x1:dst_x2] = image[src_y1:src_y2, src_x1:src_x2]
+
+    return patch
+
+
+# ============================================================================
 # DATASET
 # ============================================================================
 
-class CytologyBenchmarkDataset(Dataset):
-    """Dataset for encoder benchmarking."""
+class APCDataBenchmarkDataset(Dataset):
+    """
+    Dataset for encoder benchmarking on APCData.
+
+    Loads full images and extracts 224×224 patches centered on annotated cells.
+    Compatible with APCData_YOLO format.
+    """
 
     def __init__(
         self,
         data_dir: str,
-        split: str = 'val',
         transform_mean: tuple = HOPTIMUS_MEAN,
-        transform_std: tuple = HOPTIMUS_STD
+        transform_std: tuple = HOPTIMUS_STD,
+        patch_size: int = 224,
+        max_samples: Optional[int] = None
     ):
         self.data_dir = Path(data_dir)
-        self.split = split
         self.transform_mean = transform_mean
         self.transform_std = transform_std
+        self.patch_size = patch_size
+        self.max_samples = max_samples
 
-        # Load data
+        # Load annotations and build sample list
         self.samples = self._load_samples()
-        print(f"Loaded {len(self.samples)} samples for {split}")
+        print(f"Loaded {len(self.samples)} cell samples from APCData")
 
     def _load_samples(self) -> List[dict]:
-        """Load sample metadata."""
+        """Load sample metadata from YOLO annotations."""
         samples = []
 
-        # Try different data formats
-        # Format 1: NPZ files (SIPaKMeD style)
-        npz_path = self.data_dir / f'{self.split}.npz'
-        if npz_path.exists():
-            data = np.load(npz_path)
-            images = data['images']
-            labels = data['labels']
-            for i in range(len(images)):
-                samples.append({
-                    'image': images[i],
-                    'label': int(labels[i]),
-                    'source': 'npz'
-                })
+        images_dir = self.data_dir / 'images'
+        if not images_dir.exists():
+            print(f"ERROR: Images directory not found: {images_dir}")
             return samples
 
-        # Format 2: Individual images with JSON annotations
-        json_dir = self.data_dir / 'labels' / 'json'
-        image_dir = self.data_dir / 'images'
+        # Get image dimensions from first image
+        image_files = [f for f in os.listdir(images_dir)
+                       if f.endswith(('.jpg', '.png')) and ':Zone' not in f]
 
-        if json_dir.exists() and image_dir.exists():
-            for json_file in json_dir.glob('*.json'):
-                with open(json_file) as f:
-                    ann = json.load(f)
+        if not image_files:
+            print(f"ERROR: No images found in {images_dir}")
+            return samples
 
-                image_name = json_file.stem + '.jpg'
-                image_path = image_dir / image_name
+        # Read first image to get dimensions
+        from PIL import Image as PILImage
+        sample_img = PILImage.open(images_dir / image_files[0])
+        img_width, img_height = sample_img.size
+        print(f"  Image dimensions: {img_width}×{img_height}")
 
-                if image_path.exists():
-                    # Get class from annotation
-                    label = self._get_label_from_annotation(ann)
-                    if label is not None:
-                        samples.append({
-                            'image_path': str(image_path),
-                            'label': label,
-                            'source': 'json'
-                        })
+        # Load YOLO annotations
+        try:
+            annotations = load_yolo_annotations(str(self.data_dir), img_width, img_height)
+            print(f"  Loaded annotations for {len(annotations)} images")
+        except FileNotFoundError as e:
+            print(f"ERROR: {e}")
+            return samples
+
+        # Build sample list (one sample per cell)
+        for image_file, cells in annotations.items():
+            image_path = images_dir / image_file
+
+            if not image_path.exists():
+                continue
+
+            for cell in cells:
+                label = BETHESDA_CLASSES.index(cell['class'])
+                samples.append({
+                    'image_path': str(image_path),
+                    'nucleus_x': cell['nucleus_x'],
+                    'nucleus_y': cell['nucleus_y'],
+                    'label': label,
+                    'class_name': cell['class']
+                })
+
+        # Limit samples if requested
+        if self.max_samples and len(samples) > self.max_samples:
+            # Stratified sampling to maintain class distribution
+            np.random.seed(42)
+            indices = np.random.permutation(len(samples))[:self.max_samples]
+            samples = [samples[i] for i in indices]
+
+        # Print class distribution
+        class_counts = {}
+        for s in samples:
+            c = s['class_name']
+            class_counts[c] = class_counts.get(c, 0) + 1
+
+        print(f"  Class distribution:")
+        for c in BETHESDA_CLASSES:
+            if c in class_counts:
+                print(f"    {c}: {class_counts[c]}")
 
         return samples
-
-    def _get_label_from_annotation(self, ann: dict) -> Optional[int]:
-        """Extract Bethesda label from annotation."""
-        # APCData format
-        if 'shapes' in ann:
-            for shape in ann['shapes']:
-                label_name = shape.get('label', '').upper()
-                if label_name in BETHESDA_CLASSES:
-                    return BETHESDA_CLASSES.index(label_name)
-
-        # Direct label format
-        if 'label' in ann:
-            label_name = ann['label'].upper()
-            if label_name in BETHESDA_CLASSES:
-                return BETHESDA_CLASSES.index(label_name)
-
-        return None
 
     def __len__(self) -> int:
         return len(self.samples)
@@ -261,22 +400,28 @@ class CytologyBenchmarkDataset(Dataset):
     def __getitem__(self, idx: int) -> Tuple[torch.Tensor, int]:
         sample = self.samples[idx]
 
-        # Load image
-        if sample['source'] == 'npz':
-            image = sample['image']
-        else:
-            from PIL import Image
-            image = np.array(Image.open(sample['image_path']).convert('RGB'))
+        # Load full image
+        from PIL import Image as PILImage
+        image = np.array(PILImage.open(sample['image_path']).convert('RGB'))
 
-        # Preprocess
-        image = preprocess_image(
+        # Extract patch centered on cell
+        patch = extract_patch(
             image,
-            target_size=224,
-            mean=self.transform_mean,
-            std=self.transform_std
+            sample['nucleus_x'],
+            sample['nucleus_y'],
+            self.patch_size
         )
 
-        return image, sample['label']
+        # Normalize for encoder
+        patch = patch.astype(np.float32) / 255.0
+        patch = (patch - np.array(self.transform_mean)) / np.array(self.transform_std)
+        tensor = torch.from_numpy(patch).permute(2, 0, 1).float()
+
+        return tensor, sample['label']
+
+
+# Alias for backward compatibility
+CytologyBenchmarkDataset = APCDataBenchmarkDataset
 
 # ============================================================================
 # METRICS
@@ -362,9 +507,10 @@ def compute_ece(y_true: np.ndarray, y_proba: np.ndarray, n_bins: int = 10) -> fl
 
 def run_benchmark(
     encoder_name: str,
-    dataset: CytologyBenchmarkDataset,
+    data_dir: str,
     device: torch.device,
-    batch_size: int = 32
+    batch_size: int = 32,
+    max_samples: Optional[int] = None
 ) -> dict:
     """
     Run benchmark for a single encoder.
@@ -373,9 +519,10 @@ def run_benchmark(
 
     Args:
         encoder_name: Name of encoder
-        dataset: Benchmark dataset
+        data_dir: Path to dataset directory
         device: Torch device
         batch_size: Batch size for feature extraction
+        max_samples: Maximum samples to use
 
     Returns:
         results: Dictionary with metrics
@@ -387,9 +534,17 @@ def run_benchmark(
     # Load encoder
     model, config = load_encoder(encoder_name, device)
 
-    # Create dataloader with correct normalization
-    dataset.transform_mean = config['mean']
-    dataset.transform_std = config['std']
+    # Create dataset with correct normalization for this encoder
+    dataset = APCDataBenchmarkDataset(
+        data_dir,
+        transform_mean=config['mean'],
+        transform_std=config['std'],
+        max_samples=max_samples
+    )
+
+    if len(dataset) == 0:
+        print("ERROR: No samples found!")
+        return None
 
     dataloader = DataLoader(
         dataset,
@@ -498,6 +653,12 @@ def main():
         default=32,
         help='Batch size for feature extraction'
     )
+    parser.add_argument(
+        '--max_samples',
+        type=int,
+        default=None,
+        help='Maximum number of samples to use (None = all)'
+    )
 
     args = parser.parse_args()
 
@@ -508,23 +669,34 @@ def main():
     # Determine data directory
     if args.data_dir is None:
         if args.dataset == 'apcdata':
-            args.data_dir = 'data/raw/apcdata/APCData_points'
+            args.data_dir = 'data/raw/apcdata/APCData_YOLO'
         elif args.dataset == 'sipakmed':
             args.data_dir = 'data/raw/sipakmed'
         else:
             raise ValueError(f"Unknown dataset: {args.dataset}")
 
-    # Load dataset
-    print(f"\nLoading dataset: {args.dataset} from {args.data_dir}")
-    dataset = CytologyBenchmarkDataset(args.data_dir)
-
-    if len(dataset) == 0:
-        print("ERROR: No samples found in dataset!")
-        print("Please check the data directory and format.")
+    # Check if data directory exists
+    if not os.path.exists(args.data_dir):
+        print(f"\n{'='*60}")
+        print("ERROR: Data directory not found!")
+        print(f"{'='*60}")
+        print(f"  Expected path: {args.data_dir}")
+        print(f"\n  To fix, download APCData from:")
+        print(f"    https://data.mendeley.com/datasets/ytd568rh3p/1")
+        print(f"\n  Then extract to:")
+        print(f"    data/raw/apcdata/APCData_YOLO/")
+        print(f"    ├── images/      # 425 images")
+        print(f"    ├── labels/      # 425 .txt files (YOLO format)")
+        print(f"    └── classes.txt  # Class names")
+        print(f"{'='*60}")
         sys.exit(1)
+
+    print(f"\nDataset: {args.dataset}")
+    print(f"Data directory: {args.data_dir}")
 
     # Parse encoders
     encoder_list = [e.strip() for e in args.encoders.split(',')]
+    print(f"Encoders to benchmark: {encoder_list}")
 
     # Run benchmarks
     results = []
@@ -534,8 +706,15 @@ def main():
             continue
 
         try:
-            metrics = run_benchmark(encoder_name, dataset, device, args.batch_size)
-            results.append(metrics)
+            metrics = run_benchmark(
+                encoder_name,
+                args.data_dir,
+                device,
+                args.batch_size,
+                args.max_samples
+            )
+            if metrics is not None:
+                results.append(metrics)
         except Exception as e:
             print(f"Error benchmarking {encoder_name}: {e}")
             import traceback
