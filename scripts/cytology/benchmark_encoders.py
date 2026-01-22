@@ -99,10 +99,13 @@ def load_encoder(encoder_name: str, device: torch.device) -> Tuple[nn.Module, di
     print(f"Loading {encoder_name}: {config['description']}")
 
     if encoder_name == 'h-optimus':
-        from transformers import AutoModel
-        model = AutoModel.from_pretrained(
-            config['model_name'],
-            trust_remote_code=True
+        # H-Optimus must be loaded via timm (not transformers)
+        import timm
+        model = timm.create_model(
+            "hf-hub:bioptimus/H-optimus-0",
+            pretrained=True,
+            init_values=1e-5,
+            dynamic_img_size=False
         )
     elif encoder_name == 'uni':
         # UNI uses timm
@@ -155,9 +158,10 @@ def extract_features(
     """
     with torch.no_grad():
         if encoder_name == 'h-optimus':
-            outputs = model(images)
-            # H-Optimus: output is (B, 261, 1536), CLS at position 0
-            features = outputs[:, 0, :]
+            # H-Optimus via timm: use forward_features
+            outputs = model.forward_features(images)
+            # H-Optimus: output is (B, 261, 1536) = CLS + 4 registers + 256 patches
+            features = outputs[:, 0, :]  # CLS token
         elif encoder_name == 'uni':
             features = model(images)
         elif encoder_name == 'phikon-v2':
