@@ -1,8 +1,25 @@
-# Prompt Nouvelle Session — V14 Cytology Pipeline
+# Prompt Nouvelle Session — V15.2 Cytology Pipeline
 
-> **Date:** 2026-01-21
-> **Branche:** `claude/retrieve-project-context-lbkVY`
-> **Statut:** Phase 2 APCData — CellPose validé (90.8%), Script E2E créé
+> **Date:** 2026-01-22
+> **Version:** V15.2-Lite (POC)
+> **Statut:** ✅ Consensus Final — Architecture documentée, prêt pour Phase 0
+
+---
+
+## 🆕 V15.2 — CHANGEMENT DE PARADIGME
+
+**V15.2 remplace V14** avec une architecture industrielle:
+
+| Composant | V14 | V15.2 |
+|-----------|-----|-------|
+| Détection | CellPose | **YOLO** |
+| Segmentation | CellPose | **HoVerNet-lite** |
+| Encoder | H-Optimus (fixe) | **Benchmark 5 encoders** |
+| Fusion | Concat simple | **Gated Feature Fusion** |
+| Sécurité | — | **Conformal + OOD** |
+| Dataset POC | SIPaKMeD | **APCData uniquement** |
+
+**Document de référence:** `docs/cytology/V15_ARCHITECTURE_SPEC.md`
 
 ---
 
@@ -49,98 +66,70 @@ dans CLAUDE.md pour les futures sessions.
 
 ---
 
-## 📊 CONTEXTE ACTUEL — V14 Cytology
+## 📊 CONTEXTE ACTUEL — V15.2 Cytology
 
 ### État du Projet
 
 | Phase | Status | Description |
 |-------|--------|-------------|
-| **Phase 1: SIPaKMeD (POC)** | ✅ DONE | Sensibilité 99.26%, Kappa 0.7205 |
-| **Phase 2: APCData** | 🔄 EN COURS | CellPose validé, E2E script créé, **À TESTER** |
+| **V14 (Legacy)** | ✅ DONE | POC SIPaKMeD, CellPose validé sur APCData |
+| **V15.2 Phase 0** | ⏳ À FAIRE | Benchmark 5 encoders (7-10 jours) |
+| **V15.2 Phase 1-3** | ⏳ PENDING | Architecture complète (12 semaines) |
 
-### Résultats Validation CellPose (APCData) ✅
+### Dataset POC
 
-**Dataset:** 425 images, 3619 cellules annotées (Bethesda: NILM, ASCUS, ASCH, LSIL, HSIL, SCC)
+**APCData uniquement:** 425 images, 3,619 cellules (Bethesda 6 classes)
 
-**Configuration Optimale Validée:**
-```python
-CELLPOSE_CONFIG = {
-    'diameter': 60,
-    'flow_threshold': 0.4,
-    'cellprob_threshold': 0.0,
-    'min_area': 400,      # Filtre débris/lymphocytes
-    'max_area': 100000,
-    'max_distance': 120   # Tolérance matching GT
-}
-```
-
-**Résultats (Full Dataset n=425):**
-
-| Métrique | Valeur | Cible | Status |
-|----------|--------|-------|--------|
-| **Abnormal Detection Rate** | **90.8%** | ≥98% | ⚠️ ACCEPTABLE |
-| Detection Rate (All) | 85.5% | ≥90% | - |
-| ASCUS | 94.0% | - | ✅ |
-| ASCH | 94.5% | - | ✅ |
-| LSIL | 91.0% | - | ✅ |
-| HSIL | 87.6% | - | ⚠️ |
-| SCC | 87.2% | - | ⚠️ |
+| Aspect | Valeur |
+|--------|--------|
+| Format | LBC (Liquid-Based Cytology) |
+| Annotations | Bounding boxes + Points nucleus |
+| Classes | NILM, ASCUS, ASCH, LSIL, HSIL, SCC |
 
 ---
 
 ## 🎯 PROCHAINE ÉTAPE IMMÉDIATE
 
-### Exécuter le Pipeline End-to-End
+### Phase 0: Benchmark Encoder (7-10 jours)
+
+**Objectif:** Sélection data-driven de l'encoder (pas de dogme)
 
 ```bash
-python scripts/cytology/06_end_to_end_apcdata.py \
-    --data_dir data/raw/apcdata/APCData_YOLO \
-    --mlp_checkpoint models/cytology/mlp_classifier_best.pth \
-    --n_samples 50 \
-    --output_dir reports/end_to_end_apcdata
+python scripts/cytology/benchmark_encoders.py \
+    --dataset apcdata \
+    --encoders h-optimus,uni,phikon-v2,convnext-base,resnet50 \
+    --method linear_probe \
+    --cv_folds 5 \
+    --output_dir reports/encoder_benchmark
 ```
 
-### Prérequis
-- ✅ APCData_YOLO téléchargé (`data/raw/apcdata/APCData_YOLO/`)
-- ⚠️ MLP checkpoint entraîné sur SIPaKMeD (`models/cytology/mlp_classifier_best.pth`)
-- ⚠️ H-Optimus-0 accessible (HuggingFace login)
+### Encoders à tester
 
-### Si le MLP checkpoint n'existe pas
+| Encoder | Dims | Attendu (littérature) |
+|---------|------|----------------------|
+| ResNet50 | 2048 | 70-80% (baseline) |
+| H-Optimus | 1536 | 75-85% |
+| UNI | 1024 | 78-88% |
+| Phikon-v2 | 768 | 80-90% |
+| ConvNeXt-Base | 1024 | 80-92% |
 
-Le MLP doit être entraîné sur SIPaKMeD (Phase 1) avant de lancer le E2E:
+### Règle de Décision
 
-```bash
-# 1. Préprocessing SIPaKMeD
-python scripts/cytology/00_preprocess_sipakmed.py \
-    --raw_dir data/raw/sipakmed/pictures \
-    --output_dir data/processed/sipakmed
-
-# 2. Extraction embeddings H-Optimus
-python scripts/cytology/01_extract_embeddings_gt.py \
-    --data_dir data/processed/sipakmed \
-    --output_dir data/embeddings/sipakmed
-
-# 3. Morphometry
-python scripts/cytology/02_compute_morphometry.py \
-    --data_dir data/processed/sipakmed \
-    --embeddings_dir data/embeddings/sipakmed \
-    --output_dir data/features/sipakmed
-
-# 4. Train MLP
-python scripts/cytology/03_train_mlp_classifier.py \
-    --features_dir data/features/sipakmed \
-    --output_dir models/cytology \
-    --epochs 100 \
-    --use_focal_loss
+```
+1. Sélectionner encoder avec meilleure Balanced Accuracy
+2. Si écart frozen vs fine-tuned > 5% → Full fine-tuning
+3. Sinon → LoRA
 ```
 
-### Métriques Attendues (E2E)
+### Métriques à Collecter
 
-| Métrique | Cible | Priorité |
-|----------|-------|----------|
-| **Sensibilité (Abnormal)** | ≥98% | 🔴 CRITIQUE |
-| **Cohen's Kappa** | ≥0.80 | 🔴 CRITIQUE |
-| Spécificité | ≥60% | 🟢 Secondaire |
+| Métrique | Priorité |
+|----------|----------|
+| **Balanced Accuracy** | 🔴 CRITIQUE |
+| F1-score (macro) | 🔴 CRITIQUE |
+| ASC-H Recall | 🔴 CRITIQUE |
+| HSIL Recall | 🔴 CRITIQUE |
+| ECE (calibration) | 🟡 Important |
 
 ---
 
@@ -268,21 +257,26 @@ c25c046 feat(v14-cyto): Add area-based filtering to CellPose validation
 ## 🎯 RÉSUMÉ POUR NOUVELLE SESSION
 
 **Situation actuelle:**
-1. ✅ CellPose validé sur APCData (90.8% abnormal detection)
-2. ✅ Script `06_end_to_end_apcdata.py` créé
-3. ⏳ E2E pipeline **PAS ENCORE TESTÉ** (besoin checkpoint MLP)
+1. ✅ V15.2 Architecture documentée (consensus final)
+2. ✅ Dataset POC défini: APCData uniquement
+3. ⏳ Phase 0 (Benchmark Encoder) **À DÉMARRER**
 
 **Action immédiate:**
-- Vérifier si `models/cytology/mlp_classifier_best.pth` existe
-- Si oui → Lancer `06_end_to_end_apcdata.py`
-- Si non → Entraîner MLP sur SIPaKMeD d'abord (scripts 00-03)
+- Lancer benchmark encoders sur APCData
+- Collecter Balanced Accuracy pour 5 encoders
+- Décision data-driven sur encoder final
 
-**Objectif final V14 Cytology:**
+**Objectif V15.2 POC:**
+- Démontrer architecture fonctionne
 - Sensibilité ≥98% sur cellules anormales
-- Cohen's Kappa ≥0.80
-- Pipeline production: Image → CellPose → H-Optimus → MLP → Rapport
+- Pipeline: Image → YOLO → HoVerNet-lite → Encoder → GFF → MLP → Sécurité
+
+**Documents clés:**
+- `docs/cytology/V15_ARCHITECTURE_SPEC.md` — Specs complètes
+- `docs/cytology/datasets/APCDATA.md` — Dataset POC
+- `scripts/cytology/benchmark_encoders.py` — Script benchmark
 
 ---
 
-**Dernière mise à jour:** 2026-01-21
-**Session précédente:** Validation CellPose APCData complète, script E2E créé
+**Dernière mise à jour:** 2026-01-22
+**Session actuelle:** Documentation V15.2 finalisée, consensus établi
