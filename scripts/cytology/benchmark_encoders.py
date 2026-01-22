@@ -592,9 +592,11 @@ def run_benchmark(
 
         # Train logistic regression
         clf = LogisticRegression(
-            max_iter=1000,
+            max_iter=5000,
             class_weight='balanced',
-            random_state=42
+            random_state=42,
+            solver='lbfgs',
+            tol=1e-4
         )
         clf.fit(X_train, y_train)
 
