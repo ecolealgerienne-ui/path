@@ -94,7 +94,8 @@ def train_yolo(
     name: str = None,
     resume: bool = False,
     patience: int = 50,
-    save_period: int = 10
+    save_period: int = 10,
+    workers: int = 4
 ) -> str:
     """
     Train YOLO26 on APCData.
@@ -120,6 +121,7 @@ def train_yolo(
     print_info(f"Project: {project}")
     print_info(f"Name: {name}")
     print_info(f"Patience (early stopping): {patience}")
+    print_info(f"Workers: {workers}")
 
     # Load model
     print_header("LOADING MODEL")
@@ -147,6 +149,7 @@ def train_yolo(
         name=name,
         patience=patience,
         save_period=save_period,
+        workers=workers,
         plots=True,
         verbose=True,
         # Augmentation settings optimized for cytology
@@ -213,8 +216,8 @@ def main():
     parser.add_argument(
         "--batch",
         type=int,
-        default=16,
-        help="Batch size"
+        default=8,
+        help="Batch size (default: 8, reduce if OOM)"
     )
     parser.add_argument(
         "--device",
@@ -244,6 +247,12 @@ def main():
         type=int,
         default=50,
         help="Early stopping patience"
+    )
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=4,
+        help="Number of dataloader workers"
     )
 
     args = parser.parse_args()
@@ -286,7 +295,8 @@ def main():
         project=args.project,
         name=args.name,
         resume=args.resume,
-        patience=args.patience
+        patience=args.patience,
+        workers=args.workers
     )
 
     # Summary
