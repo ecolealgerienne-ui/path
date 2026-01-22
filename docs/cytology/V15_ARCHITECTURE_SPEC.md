@@ -2,9 +2,78 @@
 
 > **Version:** 15.2-Lite
 > **Date:** 2026-01-22
-> **Statut:** Draft — En revue
+> **Statut:** ✅ CONSENSUS FINAL
 > **Auteurs:** Equipe CellViT-Optimus + Expert Review
 > **Timeline:** 12 semaines
+
+---
+
+## Stratégie Unifiée (Consensus Final)
+
+> **Ce document représente le consensus final entre l'équipe interne et l'expert externe.**
+> **Aucun aller-retour supplémentaire nécessaire.**
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                    STRATÉGIE V15.2 — CONSENSUS FINAL                        │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│  PHASE 0: BENCHMARK ENCODER (7-10 jours) ◄── NOUVEAU                       │
+│  ────────────────────────────────────────                                   │
+│  • Encoders: H-Optimus / UNI / Phikon / ConvNeXt / ResNet50                │
+│  • Méthode: Linear probe 5-fold CV sur APCData                             │
+│  • Métrique: Balanced Accuracy (pas AUC)                                    │
+│  • Décision: Data-driven, pas de dogme                                      │
+│  • Règle fine-tuning: écart frozen vs fine-tuned >5% → Full FT, sinon LoRA │
+│                                                                             │
+│  PHASE 1: SEGMENTATION (3-4 semaines)                                      │
+│  ─────────────────────────────────────                                      │
+│  • HoVerNet-lite (clusters) + StarDist fallback (isolés)                   │
+│  • YOLO detection → HoVerNet-lite segmentation                             │
+│  • Domain randomization (couleur, luminosité)                              │
+│                                                                             │
+│  PHASE 2: ENCODER + FUSION (3-4 semaines)                                  │
+│  ────────────────────────────────────────                                   │
+│  • Encoder sélectionné par benchmark Phase 0                               │
+│  • Si écart >5% → Full fine-tuning, sinon LoRA                             │
+│  • Gated Feature Fusion (visual + morpho)                                  │
+│                                                                             │
+│  PHASE 3: SÉCURITÉ CLINIQUE (2-3 semaines)                                 │
+│  ─────────────────────────────────────────                                  │
+│  • PCA 128 dims → Mahalanobis (stabilité numérique)                        │
+│  • Conformal Prediction (coverage 95%)                                      │
+│  • OOD reject 98% en V1 (conservateur)                                     │
+│  • Session calibration avec cytopathologistes                              │
+│                                                                             │
+│  PHASE 4: SLIDE-LEVEL (optionnel V2)                                       │
+│  ───────────────────────────────────                                        │
+│  • V1: Top-K anomalies                                                      │
+│  • V2: Attention MIL                                                        │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Datasets (Stratégie Clarifiée)
+
+| Usage | Dataset | Niveau | Notes |
+|-------|---------|--------|-------|
+| **Training** | APCData + LBC Hussain | Cell-level | Mélangés, domain randomization |
+| **Validation CellPose** | APCData (hold-out) | Cell-level | Seul dataset avec GT cellules |
+| **OOD Image-level** | CRICVA | Image-level | ⚠️ Pas de coordonnées cellules |
+
+> **⚠️ IMPORTANT:** CRICVA ne contient PAS de coordonnées de cellules (seulement eye-tracking).
+> Il ne peut être utilisé que pour validation image-level, pas pour CellPose/détection.
+
+### Points de Consensus
+
+| Point | Accord | Source |
+|-------|--------|--------|
+| HoVerNet-lite + StarDist fallback | ✅ Total | Équipe + Expert |
+| Benchmark encoder obligatoire | ✅ Total | Équipe + Expert |
+| Règle >5% écart → Full FT | ✅ Total | Littérature Stanford/Brigham |
+| Conformal Prediction | ✅ Total | Équipe + Expert |
+| PCA 128 dims avant Mahalanobis | ✅ Total | Stabilité numérique |
+| CRICVA limité à image-level | ✅ Clarification | Documentation interne |
 
 ---
 
@@ -88,13 +157,17 @@ V15.2 est une refonte majeure du pipeline cytologie, passant d'une approche "fou
 ┌──────────────────────────────┐  ┌──────────────────────────────────────────┐
 │   VISUAL ENCODER             │  │   MORPHOMÉTRIE AVANCÉE (20 features)     │
 │                              │  │                                          │
-│   Hiérarchie:                │  │   Base (10):                             │
-│   1. Encoder dédié cyto      │  │   • area, perimeter, circularity         │
-│   2. UNI fine-tuné (LoRA)    │  │   • eccentricity, solidity, extent       │
-│   3. Phikon-v2 fine-tuné     │  │   • major/minor axis, aspect ratio       │
-│   4. H-Optimus fine-tuné     │  │   • compactness                          │
+│   ⚠️ SÉLECTION PAR BENCHMARK │  │   Base (10):                             │
+│   (Phase 0 - Data-driven)    │  │   • area, perimeter, circularity         │
+│                              │  │   • eccentricity, solidity, extent       │
+│   Candidats:                 │  │   • major/minor axis, aspect ratio       │
+│   • H-Optimus (baseline)     │  │   • compactness                          │
+│   • UNI                      │  │                                          │
+│   • Phikon-v2                │  │   Intensité H-channel (5):               │
+│   • ConvNeXt-Base            │  │   • mean, std, max, min intensity        │
+│   • ResNet50                 │  │   • integrated_od (proxy ploïdie)        │
 │                              │  │                                          │
-│   Output: 768-1536 dims      │  │   Intensité H-channel (5):               │
+│   Output: 768-1536 dims      │  │   Texture GLCM (5):               │
 │                              │  │   • mean, std, max, min intensity        │
 │                              │  │   • integrated_od (proxy ploïdie)        │
 │                              │  │                                          │
@@ -834,6 +907,52 @@ def analyze_gate_by_class(model, dataloader):
 > **Contexte clinique:** Un diagnostic cytologique erroné peut avoir des conséquences graves.
 > **Objectif:** Le système doit savoir dire "je ne suis pas sûr" et demander une review humaine.
 
+### Architecture Sécurité (Consensus)
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                    COUCHE SÉCURITÉ V15.2 (CONSENSUS)                        │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│  1. RÉDUCTION DIMENSIONNELLE (Stabilité numérique)                         │
+│     • Embeddings 1024-1536 dims → PCA 128 dims                             │
+│     • Évite matrice covariance mal conditionnée                            │
+│     • Mahalanobis stable sur 128 dims                                      │
+│                                                                             │
+│  2. TEMPERATURE SCALING (Calibration)                                      │
+│     • Optimise T sur validation set (NLL minimization)                     │
+│     • Cible: ECE < 0.05                                                    │
+│                                                                             │
+│  3. CONFORMAL PREDICTION (Coverage garantie)                               │
+│     • Prédit un SET de classes, pas une seule                              │
+│     • Garantie: P(vraie classe ∈ set) ≥ 95%                               │
+│     • Si set trop grand (>3 classes) → review humaine                      │
+│                                                                             │
+│  4. OOD DETECTION (Mahalanobis)                                            │
+│     • Distance aux centroïdes de classe                                    │
+│     • Seuil V1: reject 98% (conservateur)                                  │
+│     • Affiné avec pathologistes                                            │
+│                                                                             │
+│  OUTPUTS:                                                                   │
+│  • "Fiable" — Confiance haute, in-distribution                            │
+│  • "À revoir" — Set conformal large OU confiance basse                    │
+│  • "Hors domaine" — OOD détecté                                           │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Seuils V1 (Conservateurs)
+
+| Classe | Sensibilité Min | Spécificité Min |
+|--------|-----------------|-----------------|
+| NILM | 98% | 85% |
+| ASC-US | 95% | 90% |
+| HSIL | **99.5%** | 95% |
+| SCC | **100%** | 95% |
+| OOD Reject | — | **98%** |
+
+> **Philosophie V1:** Préférer sur-rejeter (review humaine) que rater un cancer.
+
 ### Implémentation
 
 ```python
@@ -972,28 +1091,43 @@ class SafetyLayer:
 
 ## Protocoles de Benchmark
 
-### Protocole 1: Validation H-Optimus vs UNI vs Phikon
+### Protocole 0: Benchmark Encoder (PHASE 0 — OBLIGATOIRE)
 
-> **Objectif:** Démontrer que H-Optimus n'est pas optimal pour cytologie Pap.
+> **Objectif:** Sélection data-driven de l'encoder, pas de dogme.
+> **Durée:** 7-10 jours
+> **Priorité:** 🔴 CRITIQUE — Doit être fait AVANT toute autre phase
 
 ```bash
 # Benchmark sur APCData (images réelles LBC)
 python scripts/cytology/benchmark_encoders.py \
     --dataset apcdata \
-    --encoders h-optimus,uni,phikon-v2 \
-    --task bethesda_6class \
+    --encoders h-optimus,uni,phikon-v2,convnext-base,resnet50 \
+    --method linear_probe \
+    --cv_folds 5 \
     --output_dir reports/encoder_benchmark
 ```
 
 **Métriques à collecter:**
 
-| Métrique | H-Optimus | UNI | Phikon-v2 |
-|----------|-----------|-----|-----------|
-| Balanced Accuracy | ? | ? | ? |
-| F1-score (macro) | ? | ? | ? |
-| ASC-H Recall | ? | ? | ? |
-| HSIL Recall | ? | ? | ? |
-| Confidence calibration (ECE) | ? | ? | ? |
+| Métrique | H-Optimus | UNI | Phikon-v2 | ConvNeXt | ResNet50 |
+|----------|-----------|-----|-----------|----------|----------|
+| Balanced Accuracy | ? | ? | ? | ? | ? |
+| F1-score (macro) | ? | ? | ? | ? | ? |
+| ASC-H Recall | ? | ? | ? | ? | ? |
+| HSIL Recall | ? | ? | ? | ? | ? |
+| ECE (calibration) | ? | ? | ? | ? | ? |
+
+**Règle de décision:**
+1. Sélectionner l'encoder avec **meilleure Balanced Accuracy**
+2. Si écart entre frozen et fine-tuned > 5% → Full fine-tuning
+3. Sinon → LoRA
+
+**Attendus (basé sur littérature):**
+- ResNet50: 70-80% (baseline)
+- H-Optimus: 75-85%
+- UNI: 78-88%
+- Phikon: 80-90%
+- ConvNeXt: 80-92%
 
 ### Protocole 2: Validation Clusters HSIL/ASC-H
 
@@ -1023,25 +1157,47 @@ python scripts/cytology/benchmark_stain_normalization.py \
 
 ---
 
-## Roadmap 12 Semaines
+## Roadmap 12 Semaines (Mise à Jour Consensus)
 
-### Phase 1: Fondations (Semaines 1-4)
+### Phase 0: Benchmark Encoder (Semaine 1) ◄── NOUVEAU
+
+> **Objectif:** Décision data-driven sur l'encoder, pas de dogme.
+
+| Jour | Tâche | Livrable |
+|------|-------|----------|
+| J1-2 | Setup benchmark infrastructure | Script `benchmark_encoders.py` |
+| J3-5 | Linear probe 5-fold CV | Résultats par encoder |
+| J6-7 | Analyse + décision | Rapport + encoder sélectionné |
+
+**Encoders testés:**
+- H-Optimus (frozen) — Baseline V14
+- UNI (frozen) — Généralisation large
+- Phikon-v2 (frozen) — Robuste OOD
+- ConvNeXt-Base (frozen) — Textures locales
+- ResNet50 (frozen) — Baseline CNN
+
+**Règle de décision fine-tuning:**
+```
+SI écart (frozen vs fine-tuned) > 5% → Full fine-tuning
+SINON → LoRA
+```
+
+### Phase 1: Fondations (Semaines 2-4)
 
 | Semaine | Tâche | Livrable |
 |---------|-------|----------|
-| S1 | Stain Normalization Macenko | `src/preprocessing/stain_normalization.py` |
-| S2 | Benchmark normalisation sur APCData | Rapport variance couleur |
+| S2 | Stain Normalization Macenko | `src/preprocessing/stain_normalization.py` |
 | S3 | HoVerNet-lite architecture | `src/models/hovernet_lite.py` |
 | S4 | Génération pseudo-masques (SAM) | Dataset pseudo-annotés |
 
-### Phase 2: Encoders & Segmentation (Semaines 5-8)
+### Phase 2: Segmentation & Encoder (Semaines 5-8)
 
 | Semaine | Tâche | Livrable |
 |---------|-------|----------|
-| S5 | Benchmark H-Optimus vs UNI vs Phikon | Rapport comparatif |
-| S6 | Fine-tuning UNI (LoRA) sur APCData | Checkpoint `uni_cytology.pth` |
-| S7 | Entraînement HoVerNet-lite | Checkpoint `hovernet_lite_cytology.pth` |
-| S8 | Validation segmentation clusters | Dice/AJI sur HSIL/ASC-H |
+| S5 | Entraînement HoVerNet-lite | Checkpoint `hovernet_lite_cytology.pth` |
+| S6 | Validation segmentation clusters | Dice/AJI sur HSIL/ASC-H |
+| S7 | Fine-tuning encoder (selon règle) | Checkpoint encoder cytology |
+| S8 | Validation encoder fine-tuné | Rapport performance |
 
 ### Phase 3: Fusion & Sécurité (Semaines 9-12)
 
@@ -1049,8 +1205,15 @@ python scripts/cytology/benchmark_stain_normalization.py \
 |---------|-------|----------|
 | S9 | Gated Feature Fusion | `src/models/gated_fusion.py` |
 | S10 | Temperature Scaling + calibration | Validation ECE < 0.05 |
-| S11 | OOD Detection (Mahalanobis) | Seuils cliniques définis |
+| S11 | OOD Detection (PCA 128 + Mahalanobis) | Seuils cliniques définis |
 | S12 | Intégration pipeline complet | `scripts/cytology/pipeline_v15.py` |
+
+### Phase 4: Slide-Level (Optionnel, Post-V1)
+
+| Version | Approche | Priorité |
+|---------|----------|----------|
+| V1 | Top-K anomalies + heatmap simple | 🟡 Suffisant pour déploiement |
+| V2 | Attention MIL (CLAM/TransMIL) | 🟢 Amélioration future |
 
 ---
 
@@ -1079,5 +1242,14 @@ python scripts/cytology/benchmark_stain_normalization.py \
 
 ---
 
-*Spécification générée le 2026-01-22*
-*Version: Draft 1.0*
+## Changelog
+
+| Date | Version | Changements |
+|------|---------|-------------|
+| 2026-01-22 | 1.0 | Draft initial |
+| 2026-01-22 | **2.0** | **Consensus final** — Ajout Phase 0 Benchmark, règle >5% fine-tuning, clarification CRICVA, PCA 128 dims |
+
+---
+
+*Spécification mise à jour le 2026-01-22*
+*Version: 2.0 — CONSENSUS FINAL*
