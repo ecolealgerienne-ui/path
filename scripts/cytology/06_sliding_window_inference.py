@@ -183,25 +183,33 @@ class HOptimusExtractor:
         self.transform = None
 
     def load_model(self):
-        """Charge H-Optimus-0 depuis HuggingFace"""
+        """Charge H-Optimus-0 depuis HuggingFace via timm"""
         print("  [INFO] Loading H-Optimus-0...")
 
         try:
-            from transformers import AutoModel
             import timm
 
-            self.model = AutoModel.from_pretrained(
-                "bioptimus/H-optimus-0",
-                trust_remote_code=True
+            # Correct way to load H-Optimus-0 via timm
+            self.model = timm.create_model(
+                "hf-hub:bioptimus/H-optimus-0",
+                pretrained=True,
+                init_values=1e-5,
+                dynamic_img_size=False
             )
             self.model = self.model.to(self.device)
             self.model.eval()
 
+            # Freeze all parameters
+            for param in self.model.parameters():
+                param.requires_grad = False
+
             print(f"  [OK] H-Optimus-0 loaded on {self.device}")
+            print(f"  [INFO] Parameters: {sum(p.numel() for p in self.model.parameters()) / 1e9:.2f}B")
             return True
 
         except Exception as e:
             print(f"  [ERROR] Failed to load H-Optimus-0: {e}")
+            print("  [INFO] Make sure you have: pip install timm huggingface_hub")
             return False
 
     def preprocess(self, image: np.ndarray) -> torch.Tensor:
@@ -241,9 +249,11 @@ class HOptimusExtractor:
         """
         with torch.no_grad():
             x = self.preprocess(image)
-            features = self.model(x)
+            # Use forward_features (timm method)
+            features = self.model.forward_features(x)
 
-            # H-Optimus returns (B, 261, 1536) - CLS token is first
+            # H-Optimus returns (B, 261, 1536): CLS + 4 registers + 256 patches
+            # CLS token is first
             if len(features.shape) == 3:
                 cls_token = features[:, 0, :]  # (B, 1536)
             else:
@@ -273,9 +283,10 @@ class HOptimusExtractor:
                 tensors.append(self.preprocess(img))
             batch_tensor = torch.cat(tensors, dim=0)  # (B, 3, 224, 224)
 
-            # Extract features
+            # Extract features using forward_features (timm method)
             with torch.no_grad():
-                features = self.model(batch_tensor)
+                features = self.model.forward_features(batch_tensor)
+                # H-Optimus returns (B, 261, 1536): CLS + 4 registers + 256 patches
                 if len(features.shape) == 3:
                     cls_tokens = features[:, 0, :]  # (B, 1536)
                 else:

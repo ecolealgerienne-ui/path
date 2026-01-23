@@ -213,19 +213,28 @@ def extract_features_hoptimus(
     print("  [INFO] Loading H-Optimus-0...")
 
     try:
-        from transformers import AutoModel
+        import timm
 
-        model = AutoModel.from_pretrained(
-            "bioptimus/H-optimus-0",
-            trust_remote_code=True
+        # Correct way to load H-Optimus-0 via timm
+        model = timm.create_model(
+            "hf-hub:bioptimus/H-optimus-0",
+            pretrained=True,
+            init_values=1e-5,
+            dynamic_img_size=False
         )
         model = model.to(device)
         model.eval()
 
+        # Freeze all parameters
+        for param in model.parameters():
+            param.requires_grad = False
+
         print(f"  [OK] H-Optimus-0 loaded on {device}")
+        print(f"  [INFO] Parameters: {sum(p.numel() for p in model.parameters()) / 1e9:.2f}B")
 
     except Exception as e:
         print(f"  [ERROR] Failed to load H-Optimus-0: {e}")
+        print("  [INFO] Make sure you have: pip install timm huggingface_hub")
         return None, None
 
     all_features = []
@@ -237,10 +246,11 @@ def extract_features_hoptimus(
         for images, labels, paths in tqdm(dataloader, desc="Extracting"):
             images = images.to(device)
 
-            # Extract features
-            features = model(images)
+            # Extract features using forward_features (timm method)
+            features = model.forward_features(images)
 
-            # Get CLS token
+            # H-Optimus returns (B, 261, 1536): CLS + 4 registers + 256 patches
+            # Get CLS token (index 0)
             if len(features.shape) == 3:
                 cls_tokens = features[:, 0, :]  # (B, 1536)
             else:
