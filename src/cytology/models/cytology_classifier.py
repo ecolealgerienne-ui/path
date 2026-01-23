@@ -667,8 +667,592 @@ def count_parameters(model: nn.Module) -> int:
     return sum(p.numel() for p in model.parameters() if p.requires_grad)
 
 
+# ═════════════════════════════════════════════════════════════════════════════
+#  V15.2: MULTI-HEAD HIERARCHICAL CLASSIFIER
+# ═════════════════════════════════════════════════════════════════════════════
+
+# Bethesda System Classification
+BETHESDA_CLASSES = {
+    0: "NILM",   # Negative for Intraepithelial Lesion or Malignancy
+    1: "ASCUS",  # Atypical Squamous Cells of Undetermined Significance
+    2: "ASCH",   # Atypical Squamous Cells, cannot exclude HSIL
+    3: "LSIL",   # Low-grade Squamous Intraepithelial Lesion
+    4: "HSIL",   # High-grade Squamous Intraepithelial Lesion
+    5: "SCC"     # Squamous Cell Carcinoma
+}
+
+# Binary mapping: Normal (NILM) vs Abnormal (all others)
+BINARY_MAPPING = {
+    0: 0,  # NILM → Normal
+    1: 1,  # ASCUS → Abnormal
+    2: 1,  # ASCH → Abnormal
+    3: 1,  # LSIL → Abnormal
+    4: 1,  # HSIL → Abnormal
+    5: 1   # SCC → Abnormal
+}
+
+# Severity mapping: Low-risk (NILM, ASCUS, LSIL) vs High-risk (ASCH, HSIL, SCC)
+SEVERITY_MAPPING = {
+    0: 0,  # NILM → Low-risk
+    1: 0,  # ASCUS → Low-risk
+    2: 1,  # ASCH → High-risk
+    3: 0,  # LSIL → Low-risk
+    4: 1,  # HSIL → High-risk
+    5: 1   # SCC → High-risk
+}
+
+
+class RejectionLayer(nn.Module):
+    """
+    Rejection Layer pour cas incertains (Conformal Prediction approach)
+
+    Principe: Apprend à prédire si une cellule doit être envoyée en révision
+    manuelle basé sur l'incertitude des prédictions.
+
+    Méthode: Utilise la Non-Conformity Score basée sur:
+        1. Entropie de la distribution de probabilité
+        2. Différence entre top-1 et top-2 probabilités
+        3. Features latentes (haute dimension = pattern complexe)
+
+    Usage:
+        rejection_layer = RejectionLayer(latent_dim=256)
+        should_reject, confidence = rejection_layer(latent_features, probs)
+    """
+
+    def __init__(
+        self,
+        latent_dim: int = 256,
+        hidden_dim: int = 64,
+        rejection_threshold: float = 0.5
+    ):
+        """
+        Args:
+            latent_dim: Dimension des features latentes (256)
+            hidden_dim: Dimension couche cachée (64)
+            rejection_threshold: Seuil de rejet (0.5 = par défaut)
+        """
+        super().__init__()
+
+        self.rejection_threshold = rejection_threshold
+
+        # Network pour prédire rejection probability
+        # Input: latent (256) + uncertainty_features (3)
+        self.rejection_network = nn.Sequential(
+            nn.Linear(latent_dim + 3, hidden_dim),
+            nn.ReLU(),
+            nn.Dropout(0.2),
+            nn.Linear(hidden_dim, 1),
+            nn.Sigmoid()
+        )
+
+        self._initialize_weights()
+
+    def _initialize_weights(self):
+        for m in self.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.xavier_uniform_(m.weight)
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0)
+
+    def compute_uncertainty_features(self, probs: torch.Tensor) -> torch.Tensor:
+        """
+        Calcule features d'incertitude à partir des probabilités
+
+        Args:
+            probs: (B, num_classes) — Probabilités après softmax
+
+        Returns:
+            uncertainty_features: (B, 3)
+                - Entropy normalisée
+                - Margin (top1 - top2)
+                - Max probability
+        """
+        # Entropy: H = -sum(p * log(p))
+        entropy = -torch.sum(probs * torch.log(probs + 1e-8), dim=1, keepdim=True)
+        max_entropy = torch.log(torch.tensor(probs.size(1), dtype=torch.float, device=probs.device))
+        normalized_entropy = entropy / max_entropy
+
+        # Margin: top1 - top2
+        sorted_probs, _ = torch.sort(probs, dim=1, descending=True)
+        margin = (sorted_probs[:, 0:1] - sorted_probs[:, 1:2])
+
+        # Max probability
+        max_prob = sorted_probs[:, 0:1]
+
+        return torch.cat([normalized_entropy, margin, max_prob], dim=1)
+
+    def forward(
+        self,
+        latent_features: torch.Tensor,
+        probs: torch.Tensor
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Forward pass
+
+        Args:
+            latent_features: (B, latent_dim) — Features avant classification
+            probs: (B, num_classes) — Probabilités après softmax
+
+        Returns:
+            should_reject: (B, 1) — Bool tensor (True = envoyer en révision)
+            rejection_prob: (B, 1) — Probabilité de rejet [0, 1]
+        """
+        # Calcul features d'incertitude
+        uncertainty_features = self.compute_uncertainty_features(probs)
+
+        # Concat latent + uncertainty
+        rejection_input = torch.cat([latent_features, uncertainty_features], dim=1)
+
+        # Prédiction
+        rejection_prob = self.rejection_network(rejection_input)
+
+        # Décision binaire
+        should_reject = rejection_prob > self.rejection_threshold
+
+        return should_reject, rejection_prob
+
+    def set_threshold(self, threshold: float):
+        """Ajuste le seuil de rejet (utile pour calibration)"""
+        self.rejection_threshold = threshold
+
+
+class CytologyMultiHead(nn.Module):
+    """
+    V15.2 Multi-Head Hierarchical Classifier pour Cytologie
+
+    Architecture hiérarchique validée par expert (industrie: Hologic, BD-Techcyte):
+
+        Head 1 (Binary): Normal (NILM) vs Abnormal (ASCUS→SCC)
+            └─ Si Abnormal →
+
+        Head 2 (Severity): Low-risk (ASCUS, LSIL) vs High-risk (ASCH, HSIL, SCC)
+            └─ Input: GFF features + morpho features (expert recommendation)
+
+        Head 3 (Fine-grained): 6 classes Bethesda complètes
+
+        Rejection Layer: Identifie cas incertains pour révision manuelle
+
+    Avantages:
+        - Décision médicale progressive (triage → diagnostic)
+        - Interprétabilité (chaque head = question clinique)
+        - Rejection layer = safety net (jamais rater un cancer)
+
+    Usage:
+        model = CytologyMultiHead(embedding_dim=1536, morpho_dim=20)
+        outputs = model(embeddings, morpho_features)
+        # outputs = {
+        #     'binary_logits': (B, 2),
+        #     'severity_logits': (B, 2),
+        #     'fine_logits': (B, 6),
+        #     'binary_probs': (B, 2),
+        #     'severity_probs': (B, 2),
+        #     'fine_probs': (B, 6),
+        #     'should_reject': (B, 1),
+        #     'rejection_prob': (B, 1),
+        #     'gate': (B, 1536)
+        # }
+    """
+
+    def __init__(
+        self,
+        embedding_dim: int = 1536,
+        morpho_dim: int = 20,
+        hidden_dim: int = 256,
+        dropout_rate: float = 0.3,
+        use_batchnorm_morpho: bool = True,
+        rejection_threshold: float = 0.5
+    ):
+        """
+        Args:
+            embedding_dim: Dimension embedding H-Optimus (1536)
+            morpho_dim: Dimension features morphométriques (20)
+            hidden_dim: Dimension couche cachée partagée (256)
+            dropout_rate: Taux dropout (0.3)
+            use_batchnorm_morpho: Activer BatchNorm sur morpho dans GFF
+            rejection_threshold: Seuil pour rejection layer (0.5)
+        """
+        super().__init__()
+
+        self.embedding_dim = embedding_dim
+        self.morpho_dim = morpho_dim
+        self.hidden_dim = hidden_dim
+
+        # ═══════════════════════════════════════════════════════════════════
+        #  GATED FEATURE FUSION (Shared Backbone)
+        # ═══════════════════════════════════════════════════════════════════
+
+        self.gff = GatedFeatureFusion(
+            embedding_dim=embedding_dim,
+            morpho_dim=morpho_dim,
+            use_batchnorm_morpho=use_batchnorm_morpho
+        )
+
+        # ═══════════════════════════════════════════════════════════════════
+        #  SHARED FEATURE EXTRACTOR
+        # ═══════════════════════════════════════════════════════════════════
+
+        # Shared: GFF output (1536) → latent (256)
+        self.shared_encoder = nn.Sequential(
+            nn.Linear(embedding_dim, 512),
+            nn.ReLU(),
+            nn.Dropout(dropout_rate),
+            nn.Linear(512, hidden_dim),
+            nn.ReLU(),
+            nn.Dropout(dropout_rate * 0.66)  # 0.2
+        )
+
+        # ═══════════════════════════════════════════════════════════════════
+        #  HEAD 1: BINARY (Normal vs Abnormal)
+        # ═══════════════════════════════════════════════════════════════════
+
+        # Input: latent (256)
+        self.head_binary = nn.Sequential(
+            nn.Linear(hidden_dim, 64),
+            nn.ReLU(),
+            nn.Dropout(0.1),
+            nn.Linear(64, 2)  # Normal, Abnormal
+        )
+
+        # ═══════════════════════════════════════════════════════════════════
+        #  HEAD 2: SEVERITY (Low-risk vs High-risk)
+        # ═══════════════════════════════════════════════════════════════════
+
+        # Input: latent (256) + morpho_normalized (20)
+        # Expert recommendation: morpho features help distinguish severity
+        # (nucleus area, chromatin granularity, shape irregularity)
+        if use_batchnorm_morpho:
+            self.morpho_batchnorm_severity = nn.BatchNorm1d(morpho_dim)
+        else:
+            self.morpho_batchnorm_severity = nn.Identity()
+
+        self.head_severity = nn.Sequential(
+            nn.Linear(hidden_dim + morpho_dim, 64),  # 256 + 20 = 276
+            nn.ReLU(),
+            nn.Dropout(0.1),
+            nn.Linear(64, 2)  # Low-risk, High-risk
+        )
+
+        # ═══════════════════════════════════════════════════════════════════
+        #  HEAD 3: FINE-GRAINED (6 Bethesda Classes)
+        # ═══════════════════════════════════════════════════════════════════
+
+        # Input: latent (256)
+        self.head_fine = nn.Sequential(
+            nn.Linear(hidden_dim, 128),
+            nn.ReLU(),
+            nn.Dropout(0.2),
+            nn.Linear(128, 6)  # NILM, ASCUS, ASCH, LSIL, HSIL, SCC
+        )
+
+        # ═══════════════════════════════════════════════════════════════════
+        #  REJECTION LAYER
+        # ═══════════════════════════════════════════════════════════════════
+
+        self.rejection_layer = RejectionLayer(
+            latent_dim=hidden_dim,
+            hidden_dim=64,
+            rejection_threshold=rejection_threshold
+        )
+
+        # Initialisation
+        self._initialize_weights()
+
+    def _initialize_weights(self):
+        """Initialisation Xavier pour tous les heads"""
+        for name, m in self.named_modules():
+            # Skip GFF et rejection_layer (déjà initialisés)
+            if name.startswith('gff') or name.startswith('rejection_layer'):
+                continue
+            if isinstance(m, nn.Linear):
+                nn.init.xavier_uniform_(m.weight)
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0)
+
+    def forward(
+        self,
+        embedding: torch.Tensor,
+        morpho_features: torch.Tensor,
+        return_all: bool = True
+    ) -> dict:
+        """
+        Forward pass multi-head
+
+        Args:
+            embedding: H-Optimus embeddings (B, 1536)
+            morpho_features: Morphometric features (B, 20)
+            return_all: Si True, retourne tous les outputs
+
+        Returns:
+            dict avec:
+                - binary_logits: (B, 2)
+                - severity_logits: (B, 2)
+                - fine_logits: (B, 6)
+                - binary_probs: (B, 2) — Si return_all
+                - severity_probs: (B, 2) — Si return_all
+                - fine_probs: (B, 6) — Si return_all
+                - should_reject: (B, 1) — Si return_all
+                - rejection_prob: (B, 1) — Si return_all
+                - gate: (B, 1536) — Si return_all
+                - latent: (B, 256) — Si return_all
+        """
+        # ═══════════════════════════════════════════════════════════════════
+        #  GATED FEATURE FUSION
+        # ═══════════════════════════════════════════════════════════════════
+
+        fused, gate = self.gff(embedding, morpho_features)  # (B, 1536)
+
+        # ═══════════════════════════════════════════════════════════════════
+        #  SHARED ENCODER
+        # ═══════════════════════════════════════════════════════════════════
+
+        latent = self.shared_encoder(fused)  # (B, 256)
+
+        # ═══════════════════════════════════════════════════════════════════
+        #  HEAD 1: BINARY
+        # ═══════════════════════════════════════════════════════════════════
+
+        binary_logits = self.head_binary(latent)  # (B, 2)
+
+        # ═══════════════════════════════════════════════════════════════════
+        #  HEAD 2: SEVERITY (avec morpho features)
+        # ═══════════════════════════════════════════════════════════════════
+
+        morpho_norm_severity = self.morpho_batchnorm_severity(morpho_features)
+        severity_input = torch.cat([latent, morpho_norm_severity], dim=1)  # (B, 276)
+        severity_logits = self.head_severity(severity_input)  # (B, 2)
+
+        # ═══════════════════════════════════════════════════════════════════
+        #  HEAD 3: FINE-GRAINED
+        # ═══════════════════════════════════════════════════════════════════
+
+        fine_logits = self.head_fine(latent)  # (B, 6)
+
+        # ═══════════════════════════════════════════════════════════════════
+        #  OUTPUT
+        # ═══════════════════════════════════════════════════════════════════
+
+        outputs = {
+            'binary_logits': binary_logits,
+            'severity_logits': severity_logits,
+            'fine_logits': fine_logits
+        }
+
+        if return_all:
+            # Probabilities
+            binary_probs = F.softmax(binary_logits, dim=1)
+            severity_probs = F.softmax(severity_logits, dim=1)
+            fine_probs = F.softmax(fine_logits, dim=1)
+
+            outputs['binary_probs'] = binary_probs
+            outputs['severity_probs'] = severity_probs
+            outputs['fine_probs'] = fine_probs
+
+            # Rejection (basé sur fine-grained probs)
+            should_reject, rejection_prob = self.rejection_layer(latent, fine_probs)
+            outputs['should_reject'] = should_reject
+            outputs['rejection_prob'] = rejection_prob
+
+            # Debug/interpretability
+            outputs['gate'] = gate
+            outputs['latent'] = latent
+
+        return outputs
+
+    def predict(
+        self,
+        embedding: torch.Tensor,
+        morpho_features: torch.Tensor
+    ) -> dict:
+        """
+        Prédiction avec labels et confidences
+
+        Returns:
+            dict avec:
+                - binary_pred: (B,) — 0=Normal, 1=Abnormal
+                - binary_conf: (B,) — Confiance [0, 1]
+                - severity_pred: (B,) — 0=Low-risk, 1=High-risk
+                - severity_conf: (B,) — Confiance [0, 1]
+                - fine_pred: (B,) — 0-5 (Bethesda)
+                - fine_conf: (B,) — Confiance [0, 1]
+                - should_reject: (B,) — Bool
+                - rejection_prob: (B,) — [0, 1]
+        """
+        self.eval()
+        with torch.no_grad():
+            outputs = self.forward(embedding, morpho_features, return_all=True)
+
+            # Binary
+            binary_conf, binary_pred = outputs['binary_probs'].max(dim=1)
+
+            # Severity
+            severity_conf, severity_pred = outputs['severity_probs'].max(dim=1)
+
+            # Fine-grained
+            fine_conf, fine_pred = outputs['fine_probs'].max(dim=1)
+
+            return {
+                'binary_pred': binary_pred,
+                'binary_conf': binary_conf,
+                'severity_pred': severity_pred,
+                'severity_conf': severity_conf,
+                'fine_pred': fine_pred,
+                'fine_conf': fine_conf,
+                'should_reject': outputs['should_reject'].squeeze(-1),
+                'rejection_prob': outputs['rejection_prob'].squeeze(-1)
+            }
+
+    def get_hierarchical_prediction(
+        self,
+        embedding: torch.Tensor,
+        morpho_features: torch.Tensor
+    ) -> dict:
+        """
+        Prédiction hiérarchique progressive (triage clinique)
+
+        Flow:
+            1. Binary: Normal? → Si oui, stop
+            2. Severity: High-risk? → Priorisation
+            3. Fine: Classe précise
+            4. Rejection: Besoin révision?
+
+        Returns:
+            dict avec interprétation clinique
+        """
+        preds = self.predict(embedding, morpho_features)
+        batch_size = embedding.size(0)
+
+        results = []
+        for i in range(batch_size):
+            result = {
+                'is_normal': bool(preds['binary_pred'][i] == 0),
+                'normal_confidence': float(preds['binary_conf'][i]) if preds['binary_pred'][i] == 0 else float(1 - preds['binary_conf'][i]),
+                'is_high_risk': bool(preds['severity_pred'][i] == 1),
+                'severity_confidence': float(preds['severity_conf'][i]),
+                'bethesda_class': int(preds['fine_pred'][i]),
+                'bethesda_name': BETHESDA_CLASSES[int(preds['fine_pred'][i])],
+                'bethesda_confidence': float(preds['fine_conf'][i]),
+                'needs_review': bool(preds['should_reject'][i]),
+                'review_probability': float(preds['rejection_prob'][i])
+            }
+
+            # Clinical interpretation
+            if result['is_normal']:
+                result['clinical_action'] = "Routine follow-up"
+                result['priority'] = "LOW"
+            elif result['is_high_risk']:
+                result['clinical_action'] = "Immediate colposcopy recommended"
+                result['priority'] = "HIGH"
+            else:
+                result['clinical_action'] = "HPV testing / 6-month follow-up"
+                result['priority'] = "MEDIUM"
+
+            if result['needs_review']:
+                result['clinical_action'] += " (MANUAL REVIEW REQUIRED)"
+                result['priority'] = "REVIEW"
+
+            results.append(result)
+
+        return results
+
+    def set_rejection_threshold(self, threshold: float):
+        """Ajuste le seuil de rejet"""
+        self.rejection_layer.set_threshold(threshold)
+
+
+class MultiHeadLoss(nn.Module):
+    """
+    Loss combinée pour CytologyMultiHead
+
+    Combine:
+        - Binary loss (CrossEntropy ou Focal)
+        - Severity loss (CrossEntropy ou Focal)
+        - Fine-grained loss (CrossEntropy ou Focal)
+
+    Pondération par importance clinique:
+        - Binary: λ=1.0 (triage)
+        - Severity: λ=1.5 (priorisation clinique)
+        - Fine: λ=1.0 (diagnostic précis)
+    """
+
+    def __init__(
+        self,
+        lambda_binary: float = 1.0,
+        lambda_severity: float = 1.5,
+        lambda_fine: float = 1.0,
+        use_focal: bool = True,
+        gamma: float = 2.0,
+        class_weights_fine: Optional[torch.Tensor] = None
+    ):
+        super().__init__()
+
+        self.lambda_binary = lambda_binary
+        self.lambda_severity = lambda_severity
+        self.lambda_fine = lambda_fine
+
+        if use_focal:
+            self.loss_binary = FocalLoss(gamma=gamma)
+            self.loss_severity = FocalLoss(gamma=gamma)
+            self.loss_fine = FocalLoss(alpha=class_weights_fine, gamma=gamma)
+        else:
+            self.loss_binary = nn.CrossEntropyLoss()
+            self.loss_severity = nn.CrossEntropyLoss()
+            if class_weights_fine is not None:
+                self.loss_fine = nn.CrossEntropyLoss(weight=class_weights_fine)
+            else:
+                self.loss_fine = nn.CrossEntropyLoss()
+
+    def forward(
+        self,
+        outputs: dict,
+        targets_fine: torch.Tensor
+    ) -> Tuple[torch.Tensor, dict]:
+        """
+        Calcul loss combinée
+
+        Args:
+            outputs: dict from CytologyMultiHead.forward()
+            targets_fine: (B,) — Labels Bethesda [0-5]
+
+        Returns:
+            total_loss: Scalar
+            loss_dict: dict avec losses individuelles
+        """
+        # Dériver targets binary et severity depuis fine
+        targets_binary = torch.tensor(
+            [BINARY_MAPPING[t.item()] for t in targets_fine],
+            device=targets_fine.device,
+            dtype=torch.long
+        )
+        targets_severity = torch.tensor(
+            [SEVERITY_MAPPING[t.item()] for t in targets_fine],
+            device=targets_fine.device,
+            dtype=torch.long
+        )
+
+        # Losses individuelles
+        loss_binary = self.loss_binary(outputs['binary_logits'], targets_binary)
+        loss_severity = self.loss_severity(outputs['severity_logits'], targets_severity)
+        loss_fine = self.loss_fine(outputs['fine_logits'], targets_fine)
+
+        # Total pondéré
+        total_loss = (
+            self.lambda_binary * loss_binary +
+            self.lambda_severity * loss_severity +
+            self.lambda_fine * loss_fine
+        )
+
+        loss_dict = {
+            'loss_binary': loss_binary.item(),
+            'loss_severity': loss_severity.item(),
+            'loss_fine': loss_fine.item(),
+            'loss_total': total_loss.item()
+        }
+
+        return total_loss, loss_dict
+
+
 if __name__ == '__main__':
-    """Test V14 et V15 architectures"""
+    """Test V14, V15 et V15.2 (MultiHead) architectures"""
 
     batch_size = 4
     embedding = torch.randn(batch_size, 1536)
@@ -719,6 +1303,79 @@ if __name__ == '__main__':
     print(f"  Morpho Weight: {gate_stats['morpho_weight']:.2%}")
 
     # ═════════════════════════════════════════════════════════════════════
+    #  TEST V15.2 MULTI-HEAD CLASSIFIER
+    # ═════════════════════════════════════════════════════════════════════
+
+    print("\n" + "=" * 80)
+    print("V15.2 MULTI-HEAD HIERARCHICAL CLASSIFIER")
+    print("=" * 80)
+
+    model_multihead = CytologyMultiHead(
+        embedding_dim=1536,
+        morpho_dim=20,
+        hidden_dim=256,
+        rejection_threshold=0.5
+    )
+    print(f"Total Parameters: {count_parameters(model_multihead):,}")
+    print(f"Architecture:")
+    print(f"  Shared: GFF → 1536 → 512 → 256")
+    print(f"  Head 1 (Binary): 256 → 64 → 2")
+    print(f"  Head 2 (Severity): 276 → 64 → 2 (includes morpho)")
+    print(f"  Head 3 (Fine): 256 → 128 → 6")
+    print(f"  Rejection: 259 → 64 → 1")
+
+    model_multihead.train()
+    outputs = model_multihead(embedding, morpho, return_all=True)
+
+    print(f"\nOutputs:")
+    print(f"  binary_logits: {outputs['binary_logits'].shape}")
+    print(f"  severity_logits: {outputs['severity_logits'].shape}")
+    print(f"  fine_logits: {outputs['fine_logits'].shape}")
+    print(f"  binary_probs: {outputs['binary_probs'].shape}")
+    print(f"  severity_probs: {outputs['severity_probs'].shape}")
+    print(f"  fine_probs: {outputs['fine_probs'].shape}")
+    print(f"  should_reject: {outputs['should_reject'].shape}")
+    print(f"  rejection_prob: {outputs['rejection_prob'].shape}")
+
+    # Test hierarchical prediction
+    model_multihead.eval()
+    clinical_results = model_multihead.get_hierarchical_prediction(embedding, morpho)
+    print(f"\nClinical Interpretation (Sample 0):")
+    result = clinical_results[0]
+    print(f"  Is Normal: {result['is_normal']} (conf: {result['normal_confidence']:.2%})")
+    print(f"  Is High-Risk: {result['is_high_risk']} (conf: {result['severity_confidence']:.2%})")
+    print(f"  Bethesda Class: {result['bethesda_name']} (conf: {result['bethesda_confidence']:.2%})")
+    print(f"  Needs Review: {result['needs_review']} (prob: {result['review_probability']:.2%})")
+    print(f"  Priority: {result['priority']}")
+    print(f"  Clinical Action: {result['clinical_action']}")
+
+    # ═════════════════════════════════════════════════════════════════════
+    #  TEST MULTI-HEAD LOSS
+    # ═════════════════════════════════════════════════════════════════════
+
+    print("\n" + "=" * 80)
+    print("MULTI-HEAD LOSS TEST")
+    print("=" * 80)
+
+    targets_fine = torch.tensor([0, 2, 4, 5])  # NILM, ASCH, HSIL, SCC
+
+    criterion_multihead = MultiHeadLoss(
+        lambda_binary=1.0,
+        lambda_severity=1.5,
+        lambda_fine=1.0,
+        use_focal=True
+    )
+
+    model_multihead.train()
+    outputs = model_multihead(embedding, morpho, return_all=False)
+    total_loss, loss_dict = criterion_multihead(outputs, targets_fine)
+
+    print(f"Loss Binary: {loss_dict['loss_binary']:.4f}")
+    print(f"Loss Severity: {loss_dict['loss_severity']:.4f}")
+    print(f"Loss Fine: {loss_dict['loss_fine']:.4f}")
+    print(f"Loss Total: {loss_dict['loss_total']:.4f}")
+
+    # ═════════════════════════════════════════════════════════════════════
     #  TEST FOCAL LOSS
     # ═════════════════════════════════════════════════════════════════════
 
@@ -746,11 +1403,16 @@ if __name__ == '__main__':
 
     params_v14 = count_parameters(model_v14)
     params_v15 = count_parameters(model_v15)
+    params_multihead = count_parameters(model_multihead)
 
-    print(f"V14 (Concat): {params_v14:,} params")
-    print(f"V15 (GFF):    {params_v15:,} params")
-    print(f"Overhead GFF: +{params_v15 - params_v14:,} params (+{(params_v15/params_v14 - 1)*100:.1f}%)")
+    print(f"V14 (Concat):       {params_v14:,} params")
+    print(f"V15 (GFF):          {params_v15:,} params")
+    print(f"V15.2 (MultiHead):  {params_multihead:,} params")
+    print(f"\nOverhead:")
+    print(f"  GFF vs Concat:      +{params_v15 - params_v14:,} (+{(params_v15/params_v14 - 1)*100:.1f}%)")
+    print(f"  MultiHead vs GFF:   +{params_multihead - params_v15:,} (+{(params_multihead/params_v15 - 1)*100:.1f}%)")
 
     print("\n" + "=" * 80)
-    print("✅ V14 & V15 Architectures validated — Ready for training")
+    print("V14, V15 & V15.2 Architectures validated")
+    print("Ready for training")
     print("=" * 80)

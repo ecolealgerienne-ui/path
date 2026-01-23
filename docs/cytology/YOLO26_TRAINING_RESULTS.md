@@ -212,29 +212,144 @@ mixup=0.0        # Désactivé (préserve intégrité cellulaire)
 
 ---
 
+## Décision Architecturale V15.2 (2026-01-23)
+
+> **Validation Expert (Industrie: Hologic, BD-Techcyte)**
+>
+> L'architecture proposée correspond aux standards industrie pour le screening cervical.
+
+### Analyse des Résultats YOLO26
+
+**Constat:** YOLO détecte bien les cellules mais confond les classes intermédiaires.
+
+| Aspect | Performance | Analyse |
+|--------|-------------|---------|
+| **Détection cellules** | Excellente | NILM 84%, SCC 62% recall |
+| **Classification** | Faible sur classes similaires | ASCUS/ASCH/LSIL/HSIL: 28-36% recall |
+
+**Cause:** Les classes Bethesda intermédiaires partagent des morphologies très proches.
+YOLO n'est pas optimisé pour cette granularité fine.
+
+### Architecture Retenue: Detection-Only + Multi-Head
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                     V15.2 ARCHITECTURE PIPELINE                         │
+└─────────────────────────────────────────────────────────────────────────┘
+
+                        Image LBC (2048×1532)
+                               │
+                               ▼
+                    ┌──────────────────────┐
+                    │  YOLO26 Detection    │  ← 1 classe: "cell"
+                    │  (mAP50 > 85%)       │
+                    └──────────┬───────────┘
+                               │
+                    Crops cellules détectées
+                               │
+              ┌────────────────┴────────────────┐
+              ▼                                 ▼
+    ┌──────────────────┐              ┌──────────────────┐
+    │  H-Optimus-0     │              │  Morpho Features │
+    │  (1536D frozen)  │              │  (20D computed)  │
+    └────────┬─────────┘              └────────┬─────────┘
+              │                                 │
+              └─────────────┬───────────────────┘
+                            │
+                            ▼
+                 ┌─────────────────────┐
+                 │  Gated Feature      │
+                 │  Fusion (GFF)       │
+                 └──────────┬──────────┘
+                            │
+                            ▼
+                 ┌─────────────────────┐
+                 │  Shared Encoder     │
+                 │  (256D latent)      │
+                 └──────────┬──────────┘
+                            │
+         ┌──────────────────┼──────────────────┐
+         ▼                  ▼                  ▼
+┌─────────────────┐ ┌─────────────────┐ ┌─────────────────┐
+│  Head 1: Binary │ │  Head 2: Sev.   │ │  Head 3: Fine   │
+│  Normal/Abnorm  │ │  Low/High Risk  │ │  6 Bethesda     │
+│  (Triage)       │ │  (+morpho feat) │ │  (Diagnostic)   │
+└────────┬────────┘ └────────┬────────┘ └────────┬────────┘
+         │                   │                   │
+         └───────────────────┴───────────────────┘
+                            │
+                            ▼
+                 ┌─────────────────────┐
+                 │  Rejection Layer    │
+                 │  (Conformal Pred.)  │
+                 │  → Manual Review    │
+                 └─────────────────────┘
+```
+
+### Spécification des Heads
+
+| Head | Input | Output | Rôle Clinique |
+|------|-------|--------|---------------|
+| **Binary** | latent (256) | Normal/Abnormal | Triage rapide |
+| **Severity** | latent (256) + morpho (20) | Low-risk/High-risk | Priorisation |
+| **Fine** | latent (256) | 6 classes Bethesda | Diagnostic précis |
+| **Rejection** | latent (256) + uncertainty (3) | Review/OK | Safety net |
+
+### Mapping des Classes
+
+**Binary (Head 1):**
+- Normal: NILM
+- Abnormal: ASCUS, ASCH, LSIL, HSIL, SCC
+
+**Severity (Head 2):**
+- Low-risk: NILM, ASCUS, LSIL
+- High-risk: ASCH, HSIL, SCC
+
+### Implémentation
+
+- **Script conversion:** `scripts/cytology/04_convert_to_detection_only.py`
+- **Multi-Head model:** `src/cytology/models/cytology_classifier.py` → `CytologyMultiHead`
+- **Loss combinée:** `MultiHeadLoss` (λ_binary=1.0, λ_severity=1.5, λ_fine=1.0)
+
+---
+
 ## Prochaines Étapes
 
 ### Court terme
 1. ⏳ Attendre résultats YOLO26s
 2. 📊 Comparer nano vs small
-3. 📝 Décider si suffisant pour passer au classifier
+3. 🔄 Convertir APCData vers detection-only (1 classe)
+4. 🎯 Entraîner YOLO detection-only
 
 ### Moyen terme
-1. Tester classifier sur SIPaKMeD (cellules isolées)
-2. Intégrer YOLO + classifier sur APCData
-3. Évaluer pipeline complet
+1. Entraîner CytologyMultiHead sur SIPaKMeD (cellules isolées)
+2. Intégrer YOLO detection + MultiHead classifier sur APCData
+3. Calibrer Rejection Layer (seuil optimal)
+4. Évaluer métriques cliniques (Sensibilité Malin > 98%)
 
-### Améliorations potentielles YOLO
-- [ ] Class weights pour déséquilibre
-- [ ] Image size 1024 (plus de détails)
-- [ ] YOLO26m si yolo26s insuffisant
-- [ ] Augmentation offline si nécessaire
+### Améliorations potentielles YOLO Detection
+- [ ] Image size 1024 (plus de détails pour petites cellules)
+- [ ] YOLO26m si recall insuffisant
+- [ ] Test-Time Augmentation (TTA) pour robustesse
 
 ---
 
 ## Références
 
-- **Checkpoint YOLO26n:** `runs/detect/runs/cytology/apcdata_yolo26n_20260123_121505/weights/best.pt`
-- **Script training:** `scripts/cytology/03_train_yolo26_apcdata.py`
-- **Config dataset:** `configs/cytology/apcdata_yolo.yaml`
-- **Documentation YOLO26:** https://docs.ultralytics.com/models/yolo26/
+### Checkpoints & Configs
+- **Checkpoint YOLO26n:** `runs/cytology/apcdata_yolo26n_*/weights/best.pt`
+- **Config dataset (6 classes):** `configs/cytology/apcdata_yolo.yaml`
+
+### Scripts
+- **Test YOLO:** `scripts/cytology/01_test_yolo26_apcdata.py`
+- **Split train/val:** `scripts/cytology/02_prepare_apcdata_split.py`
+- **Training YOLO:** `scripts/cytology/03_train_yolo26_apcdata.py`
+- **Convert to detection-only:** `scripts/cytology/04_convert_to_detection_only.py`
+
+### Models
+- **Multi-Head Classifier:** `src/cytology/models/cytology_classifier.py` → `CytologyMultiHead`
+- **GFF Module:** `src/cytology/models/cytology_classifier.py` → `GatedFeatureFusion`
+
+### Documentation Externe
+- **YOLO26:** https://docs.ultralytics.com/models/yolo26/
+- **Bethesda System:** https://www.cancer.gov/publications/dictionaries/cancer-terms/def/bethesda-system
