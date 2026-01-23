@@ -1,7 +1,7 @@
 """
-YOLO26 Training on APCData — Cell Detection
+YOLO Training on APCData — Cell Detection
 
-Ce script entraîne YOLO26 pour la détection de cellules sur APCData.
+Ce script entraîne YOLO (v8 ou 26) pour la détection de cellules sur APCData.
 
 Prérequis:
     1. Exécuter 02_prepare_apcdata_split.py pour créer train/val split
@@ -10,16 +10,20 @@ Prérequis:
 Usage:
     python scripts/cytology/03_train_yolo26_apcdata.py \
         --data data/raw/apcdata/APCData_YOLO/data.yaml \
-        --model yolo26n.pt \
+        --model yolov8s.pt \
         --epochs 100 \
         --imgsz 640
 
 Modèles disponibles:
-    - yolo26n.pt: Nano (rapide, moins précis)
-    - yolo26s.pt: Small (bon équilibre)
-    - yolo26m.pt: Medium (plus précis)
-    - yolo26l.pt: Large (haute précision)
-    - yolo26x.pt: Extra-large (maximum précision)
+    YOLOv8 (recommandé pour cytologie - plus rapide, stable):
+    - yolov8n.pt: Nano (3.2M params, très rapide)
+    - yolov8s.pt: Small (11.2M params, bon équilibre) ★ RECOMMANDÉ
+    - yolov8m.pt: Medium (25.9M params)
+    - yolov8l.pt: Large (43.7M params)
+    - yolov8x.pt: Extra-large (68.2M params)
+
+    YOLO26 (plus lourd, moins adapté pour 1 classe):
+    - yolo26n.pt, yolo26s.pt, yolo26m.pt, yolo26l.pt, yolo26x.pt
 
 Author: V15 Cytology Branch
 Date: 2026-01-22
@@ -197,9 +201,14 @@ def main():
     parser.add_argument(
         "--model",
         type=str,
-        default="yolo26n.pt",
-        choices=["yolo26n.pt", "yolo26s.pt", "yolo26m.pt", "yolo26l.pt", "yolo26x.pt"],
-        help="YOLO26 model variant"
+        default="yolov8s.pt",
+        choices=[
+            # YOLOv8 (recommandé pour cytologie)
+            "yolov8n.pt", "yolov8s.pt", "yolov8m.pt", "yolov8l.pt", "yolov8x.pt",
+            # YOLO26 (plus lourd, moins adapté)
+            "yolo26n.pt", "yolo26s.pt", "yolo26m.pt", "yolo26l.pt", "yolo26x.pt",
+        ],
+        help="YOLO model variant (YOLOv8 recommended for cytology)"
     )
     parser.add_argument(
         "--epochs",
@@ -258,8 +267,8 @@ def main():
     args = parser.parse_args()
 
     print("\n" + "=" * 80)
-    print("  YOLO26 TRAINING ON APCDATA")
-    print("  V15 Cytology Pipeline")
+    print("  YOLO TRAINING ON APCDATA")
+    print("  V15 Cytology Pipeline (YOLOv8/YOLO26)")
     print("=" * 80)
 
     # Verify prerequisites
