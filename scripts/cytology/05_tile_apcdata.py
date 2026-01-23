@@ -312,7 +312,8 @@ def process_split(
     split: str,
     tile_size: int,
     overlap: float,
-    min_bbox_ratio: float
+    min_bbox_ratio: float,
+    skip_empty: bool = False
 ) -> Dict[str, int]:
     """Process a single split (train or val)."""
 
@@ -360,6 +361,10 @@ def process_split(
         tiles = tile_image(image, bboxes, tile_size, overlap, min_bbox_ratio)
 
         for idx, (tile_img, tile_bboxes, (tx, ty)) in enumerate(tiles):
+            # Skip empty tiles if requested
+            if skip_empty and len(tile_bboxes) == 0:
+                continue
+
             # Generate tile filename
             tile_name = f"{img_path.stem}_tile_{idx:03d}_x{tx}_y{ty}"
 
@@ -450,6 +455,11 @@ def main():
         action="store_true",
         help="Overwrite output directory if exists"
     )
+    parser.add_argument(
+        "--skip_empty",
+        action="store_true",
+        help="Skip tiles without any cells (faster training)"
+    )
 
     args = parser.parse_args()
 
@@ -467,6 +477,7 @@ def main():
     print_info(f"Tile size: {args.tile_size}×{args.tile_size}")
     print_info(f"Overlap: {args.overlap*100:.0f}%")
     print_info(f"Min bbox ratio: {args.min_bbox_ratio*100:.0f}%")
+    print_info(f"Skip empty tiles: {args.skip_empty}")
 
     # Verify input
     print_header("STEP 1: VERIFY INPUT")
@@ -501,7 +512,8 @@ def main():
         print_info(f"Processing {split}...")
         stats = process_split(
             input_dir, output_dir, split,
-            args.tile_size, args.overlap, args.min_bbox_ratio
+            args.tile_size, args.overlap, args.min_bbox_ratio,
+            skip_empty=args.skip_empty
         )
 
         if stats:
