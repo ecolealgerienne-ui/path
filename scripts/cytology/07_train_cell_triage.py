@@ -392,7 +392,8 @@ def evaluate_thresholds(
 
     results = {}
 
-    for threshold in [0.1, 0.2, 0.3, 0.4, 0.5]:
+    # Include very low thresholds for maximum recall
+    for threshold in [0.01, 0.02, 0.05, 0.1, 0.2, 0.3, 0.4, 0.5]:
         preds, probs = model.predict(features, threshold=threshold)
         preds = preds.cpu().numpy()
         labels_np = labels.numpy()
