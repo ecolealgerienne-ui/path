@@ -350,10 +350,11 @@ python scripts/cytology/12_visualize_predictions.py --image img.jpg --cell_level
 - [x] `apply_confidence_boosting()` dans `src/preprocessing/h_channel.py`
 - [ ] Évaluer réduction faux positifs sur dataset réel
 
-### Phase 4: Visualisation Cell-Level 🔄 EN COURS
+### Phase 4: Visualisation Cell-Level ✅ TERMINÉE
 - [x] `detect_nuclei_for_visualization()` dans `src/preprocessing/h_channel.py`
 - [x] `render_nuclei_overlay()` dans `src/preprocessing/h_channel.py`
-- [ ] Intégrer option `--cell_level` dans `12_visualize_predictions.py`
+- [x] Option `--cell_level` intégrée dans `12_visualize_predictions.py`
+- [x] `draw_cell_level_overlay()` et `draw_cell_level_legend()` ajoutées
 
 ### Phase 5: Validation
 - [ ] Benchmark Confidence Boosting vs baseline
@@ -413,7 +414,8 @@ python scripts/cytology/12_visualize_predictions.py --image img.jpg --cell_level
 
 | Date | Version | Changements |
 |------|---------|-------------|
-| 2026-01-24 | **v1.0** | **Architecture finalisée** — H-Stats = post-processing only |
+| 2026-01-24 | **v1.1** | Phase 4 complète — `--cell_level` intégré dans visualisation |
+| 2026-01-24 | v1.0 | Architecture finalisée — H-Stats = post-processing only |
 | 2026-01-24 | v0.4 | Cell Triage V2 expérimenté et abandonné (régression -5.8%) |
 | 2026-01-24 | v0.3 | Phase 2 implémentée (Cell Triage v2 training script) |
 | 2026-01-24 | v0.2 | Phase 1 + Phase 3 + Phase 4 (partiel) implémentées |
