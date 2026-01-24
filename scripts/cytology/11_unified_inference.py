@@ -278,7 +278,9 @@ class UnifiedInferencePipeline:
             image = cv2.resize(image, (HOPTIMUS_INPUT_SIZE, HOPTIMUS_INPUT_SIZE))
 
         image = image.astype(np.float32) / 255.0
-        image = (image - np.array(HOPTIMUS_MEAN)) / np.array(HOPTIMUS_STD)
+        mean = np.array(HOPTIMUS_MEAN, dtype=np.float32)
+        std = np.array(HOPTIMUS_STD, dtype=np.float32)
+        image = (image - mean) / std
         tensor = torch.from_numpy(image).permute(2, 0, 1).unsqueeze(0)
         return tensor.to(self.device)
 
