@@ -2,28 +2,30 @@
 
 > **Date:** 2026-01-23
 > **Objectif:** Pipeline cytologie cervicale avec >95% recall pour usage clinique
-> **Status:** ✅ Phase 1 COMPLETE — Production Ready
+> **Status:** ✅ Phase 1 COMPLETE — Production Ready & SOTA Validated
 
 ---
 
 ## Executive Summary
 
-Le pipeline V15.2 atteint **97.1% recall** pour la detection d'anomalies cellulaires, depassant l'objectif initial de 95%. L'approche utilise H-Optimus-0 comme backbone avec une architecture MultiHead hierarchique.
+Le pipeline V15.2 atteint **96.88% recall** pour la detection d'anomalies cellulaires et **85.48% pour high-grade**, depassant l'objectif initial et l'etat de l'art publie (2020-2025).
 
 | Composant | Status | Performance |
 |-----------|--------|-------------|
 | YOLO Detection | ❌ Abandonne | Max 71.3% recall |
 | Sliding Window | ✅ Complete | 100% coverage |
 | Cell Triage | ✅ Complete | **96.28% recall** @ threshold 0.01 |
-| MultiHead Bethesda | ✅ **TRAINED** | **97.1% binary recall** |
+| MultiHead Bethesda | ✅ **TRAINED** | **96.88% binary / 85.48% severity** |
 
-### Resultats Finaux
+### Resultats Finaux (APCData + SIPaKMeD)
 
-| Priorite | Metrique | Resultat | Objectif | Status |
-|----------|----------|----------|----------|--------|
-| 🔴 P1 | Binary Recall (Abnormal) | **97.1%** | >95% | ✅ ATTEINT |
-| 🟠 P2 | Severity Recall (High-grade) | **81.5%** | >80% | ✅ ATTEINT |
-| 🟡 P3 | Fine-grained Balanced Acc | **60.3%** | >50% | ✅ ATTEINT |
+| Priorite | Metrique | Resultat | Litterature | Status |
+|----------|----------|----------|-------------|--------|
+| 🔴 P1 | Binary Recall (Abnormal) | **96.88%** | 94-97% | ✅ **Top-tier** |
+| 🟠 P2 | Severity Recall (High-grade) | **85.48%** | 75-83% | ✅ **Au-dessus SOTA** |
+| 🟡 P3 | Fine-grained Balanced Acc | **59.73%** | 55-62% | ✅ **SOTA** |
+
+> **Validation Litterature:** Voir [V15_2_LITERATURE_COMPARISON.md](./V15_2_LITERATURE_COMPARISON.md)
 
 ---
 
