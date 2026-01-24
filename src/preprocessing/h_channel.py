@@ -277,7 +277,8 @@ def detect_nuclei_for_visualization(
     predicted_class: str = "UNKNOWN",
     use_adaptive_threshold: bool = True,
     min_nucleus_area: int = MIN_NUCLEUS_AREA,
-    max_nucleus_area: int = MAX_NUCLEUS_AREA
+    max_nucleus_area: int = MAX_NUCLEUS_AREA,
+    stain_type: str = "auto"
 ) -> List[Dict]:
     """
     Detect nuclei in a patch for cell-level visualization.
@@ -293,6 +294,7 @@ def detect_nuclei_for_visualization(
         use_adaptive_threshold: Use adaptive threshold (better for clusters)
         min_nucleus_area: Minimum nucleus area in pixels
         max_nucleus_area: Maximum nucleus area in pixels
+        stain_type: "pap" for Papanicolaou, "he" for H&E, "auto" to detect
 
     Returns:
         List of nuclei dicts with keys:
@@ -306,49 +308,38 @@ def detect_nuclei_for_visualization(
         >>> for n in nuclei:
         ...     cv2.drawContours(image, [n['contour']], -1, (0, 0, 255), 2)
     """
-    # Extract H-channel
-    h_channel = extract_h_channel_ruifrok(rgb_image, output_range="uint8")
+    # For cytology (Pap stain), use grayscale-based detection
+    # Nuclei appear as DARK regions in both Pap and H&E
+    # Convert to grayscale
+    gray = cv2.cvtColor(rgb_image, cv2.COLOR_RGB2GRAY)
 
     if use_adaptive_threshold:
-        # Adaptive threshold (better for varying illumination and clusters)
-        # Note: In Ruifrok H-channel, nuclei have HIGH values (bright)
-        # THRESH_BINARY_INV: pixels BELOW threshold → 255
-        # We want nuclei (high values) to be white, so use THRESH_BINARY
+        # Adaptive threshold - nuclei are DARK, so use THRESH_BINARY_INV
+        # This makes dark regions (nuclei) white in the binary mask
         binary = cv2.adaptiveThreshold(
-            h_channel, 255,
+            gray, 255,
             cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-            cv2.THRESH_BINARY,
-            blockSize=21,
-            C=-5  # Negative C to favor high values (nuclei)
+            cv2.THRESH_BINARY_INV,  # Invert: dark pixels → white
+            blockSize=31,  # Larger block for better local adaptation
+            C=10  # Positive C: pixels must be C darker than local mean
         )
     else:
-        # Otsu threshold
+        # Otsu threshold on inverted image
         _, binary = cv2.threshold(
-            h_channel, 0, 255,
-            cv2.THRESH_BINARY + cv2.THRESH_OTSU
+            gray, 0, 255,
+            cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU
         )
 
-    # Morphological cleanup
-    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
-    binary = cv2.morphologyEx(binary, cv2.MORPH_OPEN, kernel)
+    # Morphological cleanup - remove noise and smooth contours
+    kernel_open = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+    kernel_close = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+    binary = cv2.morphologyEx(binary, cv2.MORPH_OPEN, kernel_open)
+    binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel_close)
 
-    # Distance transform for watershed-style separation
-    dist_transform = cv2.distanceTransform(binary, cv2.DIST_L2, 5)
-
-    # Use lower threshold (0.3) to preserve more of the nucleus shape
-    # This is important for cytology where nuclei are often small
-    threshold_ratio = 0.3
-    _, sure_fg = cv2.threshold(
-        dist_transform,
-        threshold_ratio * dist_transform.max(),
-        255,
-        0
-    )
-    sure_fg = np.uint8(sure_fg)
-
-    # Find contours
+    # Find contours directly on binary mask (no distance transform)
+    # This preserves the full nucleus shape
     contours, _ = cv2.findContours(
-        sure_fg,
+        binary,
         cv2.RETR_EXTERNAL,
         cv2.CHAIN_APPROX_SIMPLE
     )
@@ -464,28 +455,33 @@ def render_nuclei_overlay(
         >>> vis = render_nuclei_overlay(patch, nuclei, color_space="RGB")
         >>> cv2.imwrite("visualization.png", cv2.cvtColor(vis, cv2.COLOR_RGB2BGR))
     """
-    overlay = image.copy()
+    result = image.copy()
 
+    # First pass: draw semi-transparent fill
+    if alpha > 0:
+        overlay = image.copy()
+        for nucleus in nuclei:
+            color_bgr = BETHESDA_COLORS.get(nucleus['class'], (200, 200, 200))
+            if color_space.upper() == "RGB":
+                color = (color_bgr[2], color_bgr[1], color_bgr[0])
+            else:
+                color = color_bgr
+            cv2.drawContours(overlay, [nucleus['contour']], -1, color, -1)
+        # Blend fill only
+        result = cv2.addWeighted(overlay, alpha, result, 1 - alpha, 0)
+
+    # Second pass: draw SOLID outlines on top (no blending - always visible)
     for nucleus in nuclei:
-        # BETHESDA_COLORS are in BGR format
         color_bgr = BETHESDA_COLORS.get(nucleus['class'], (200, 200, 200))
-
-        # Convert to RGB if needed
         if color_space.upper() == "RGB":
-            color = (color_bgr[2], color_bgr[1], color_bgr[0])  # BGR → RGB
+            color = (color_bgr[2], color_bgr[1], color_bgr[0])
         else:
             color = color_bgr
 
         contour = nucleus['contour']
 
-        # Draw contour outline (thicker for visibility)
-        cv2.drawContours(overlay, [contour], -1, color, 3)
-
-        # Fill with semi-transparent color
-        cv2.drawContours(overlay, [contour], -1, color, -1)
-
-    # Blend with original
-    result = cv2.addWeighted(overlay, alpha, image, 1 - alpha, 0)
+        # Draw solid outline - NOT blended, always fully visible
+        cv2.drawContours(result, [contour], -1, color, 2)
 
     return result
 
