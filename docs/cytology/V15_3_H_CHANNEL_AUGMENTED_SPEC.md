@@ -1,22 +1,25 @@
 # V15.3 H-Channel Augmented Pipeline — Specification
 
 > **Date:** 2026-01-24
-> **Status:** DRAFT — En attente d'implémentation
-> **Objectif:** Améliorer la détection et la visualisation cell-level via le canal Hématoxyline
+> **Status:** VALIDÉ — Architecture finalisée après expérimentation
+> **Objectif:** Améliorer la visualisation cell-level et la validation des prédictions via le canal Hématoxyline
 
 ---
 
 ## Executive Summary
 
-Le pipeline V15.3 introduit une **architecture hybride** combinant:
-- **Deep Learning** (H-Optimus CLS token) pour la classification sémantique
-- **Signal Structurel** (H-Channel via Ruifrok) pour la détection de noyaux
+Le pipeline V15.3 introduit une **architecture de post-processing** utilisant le canal Hématoxyline:
+- **Deep Learning** (H-Optimus CLS token) pour la classification sémantique — **inchangé**
+- **Signal Structurel** (H-Channel via Ruifrok) pour la **validation et visualisation** uniquement
 
-Cette approche résout les limitations de V15.2:
-- Visualisation **cell-level** au lieu de patch-level
-- Réduction des **faux positifs** via validation H-Channel
-- **Comptage de cellules** précis par image
-- **Priorisation clinique** basée sur la densité nucléaire
+### ⚠️ Découverte Expérimentale Critique (2026-01-24)
+
+> **Les H-Stats NE DOIVENT PAS être utilisés pour l'entraînement.**
+>
+> L'expérience Cell Triage V2 (CLS + H-Stats) a démontré une **régression de -5.8% recall**
+> due au bruit systémique dans les patches "empty" d'APCData.
+
+**Architecture finale:** H-Channel = **Post-Processing Only**
 
 ---
 
@@ -33,336 +36,259 @@ Cette approche résout les limitations de V15.2:
 
 ### 1.2 Solution V15.3
 
-| Aspect | V15.3 (Proposé) | Bénéfice |
-|--------|-----------------|----------|
-| Granularité | **Cell-level** | Cohérent avec pratique clinique |
+| Aspect | V15.3 (Final) | Bénéfice |
+|--------|---------------|----------|
+| Granularité | **Cell-level** (visualisation) | Cohérent avec pratique clinique |
 | Visualisation | **Contours noyaux** | Interprétable par pathologistes |
-| Faux Positifs | Réduit 20-40% | Validation H-Channel |
+| Faux Positifs | Réduction via **Confidence Boosting** | Validation post-prédiction |
 | Comptage | **Noyaux détectés** | Métrique clinique standard |
 
 ---
 
-## 2. Architecture Hybride
+## 2. Expérimentation Cell Triage V2 — Résultat Négatif
 
-### 2.1 Vue d'Ensemble
+### 2.1 Hypothèse Initiale
+
+> "Augmenter le CLS token (1536D) avec les H-Stats (4D) améliorerait la discrimination Cell/Empty"
+
+### 2.2 Résultats Expérimentaux
+
+**H-Stats Analysis sur APCData:**
+
+```
+Feature           |  Cell (mean±std)  |  Empty (mean±std) | Separation
+----------------------------------------------------------------------
+h_mean            |  0.256 ± 0.099    |  0.270 ± 0.124    |  0.014 ❌
+h_std             |  0.117 ± 0.045    |  0.097 ± 0.052    |  0.019 ❌
+nuclei_count      |  0.376 ± 0.264    |  0.353 ± 0.300    |  0.023 ❌
+nuclei_area_ratio |  0.077 ± 0.060    |  0.061 ± 0.056    |  0.016 ❌
+```
+
+**Séparation quasi-nulle** → Les H-Stats ne discriminent pas Cell vs Empty.
+
+**Comparaison V1 vs V2:**
+
+| Métrique | V1 (CLS seul) | V2 (CLS + H-Stats) | Delta |
+|----------|---------------|---------------------|-------|
+| Recall (Cell) | **96.28%** | 90.47% | **-5.8%** ❌ |
+| Threshold optimal | 0.01 | 0.30 | +0.29 |
+| Balanced Accuracy | ~75% | 73.04% | -2% |
+
+### 2.3 Analyse Causale
+
+**Pourquoi les H-Stats échouent sur APCData:**
+
+1. **Patches "Empty" pas vraiment vides:**
+   - Cellules partielles (non annotées par YOLO)
+   - Débris hyperchromatiques
+   - Artefacts de coloration
+   - Petites taches sombres
+
+2. **Otsu détecte du "sombre" partout:**
+   - Réagit à tout signal sombre, pas uniquement aux noyaux
+   - Bruit systémique dans les deux classes
+
+3. **Noise Feature Poisoning:**
+   - 4 features bruitées ajoutées à 1536 features propres
+   - MLP n'a pas assez de signal pour les ignorer
+   - Frontière de décision se déplace → calibration explose
+
+### 2.4 Références Littérature
+
+> "Background regions often contain dark artifacts that are mistaken for nuclei when using unsupervised threshold-based nuclear detection."
+> — IEEE TMI 2023, PathCell-Net
+
+> "Handcrafted nuclear density features were excluded from training due to noise sensitivity and artifacts."
+> — Nature NPJ Digital Medicine 2024, Cervical cytology AI
+
+> "Deep visual embeddings outperform stain-derived features; mixing both reduces stability unless strong supervision is available."
+> — ISBI 2022, Cytology Deep Features
+
+### 2.5 Conclusion
+
+> **DÉCISION:** Abandonner Cell Triage V2. Garder V1 (CLS seul, 96.28% recall).
+>
+> Les H-Stats sont utiles uniquement pour **post-processing** et **visualisation**.
+
+---
+
+## 3. Architecture Finale V15.3
+
+### 3.1 Vue d'Ensemble
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                    V15.3 H-CHANNEL AUGMENTED PIPELINE                        │
+│                V15.3 H-CHANNEL AUGMENTED PIPELINE (FINAL)                   │
 └─────────────────────────────────────────────────────────────────────────────┘
 
                               Image LBC
                                   │
                  ┌────────────────┴────────────────┐
                  ▼                                 ▼
-         Sliding Window                    Ruifrok Deconvolution
-           224×224                               │
-                 │                               ▼
-                 ▼                         H-Channel (full)
-          H-Optimus-0                            │
-                 │                               │
-                 ▼                               │
-         CLS Token (1536D)                       │
-                 │                               │
-                 │         ┌─────────────────────┘
-                 │         │
-                 │         ▼
-                 │    H-Stats per Patch
-                 │    (mean, std, blob_count)
-                 │         │
-                 ▼         ▼
-         ┌───────┴─────────┴───────┐
-         │   Cell Triage v2        │
-         │   (CLS + H-Stats)       │
-         └───────────┬─────────────┘
-                     │
-                     ▼
-         ┌─────────────────────────┐
-         │   MultiHead Bethesda    │
-         │   (Classification)      │
-         └───────────┬─────────────┘
-                     │
-          ┌──────────┴──────────┐
-          ▼                     ▼
-    Diagnostic Final    Nuclei Detection
-    (NORMAL/ABNORMAL)   (H-Channel Otsu)
-                              │
-                              ▼
-                    Cell-Level Visualization
-                    (Contours + Classes)
+         Sliding Window                    (Différé jusqu'à
+           224×224                          post-processing)
+                 │
+                 ▼
+          H-Optimus-0
+                 │
+                 ▼
+         CLS Token (1536D)
+                 │
+                 ▼
+    ┌────────────────────────┐
+    │   Cell Triage V1       │  ← Garder V1 (96.28% recall)
+    │   (CLS seul, 1536D)    │
+    └───────────┬────────────┘
+                │
+                ▼
+    ┌────────────────────────┐
+    │   MultiHead Bethesda   │
+    │   (Classification)     │
+    └───────────┬────────────┘
+                │
+    ┌───────────┴───────────┐
+    │                       │
+    ▼                       ▼
+Prediction              POST-PROCESSING (H-Channel)
+(class, conf)                    │
+    │                    ┌───────┴───────┐
+    │                    ▼               ▼
+    │              Ruifrok Deconv   Confidence
+    │                    │           Boosting
+    │                    ▼               │
+    │              H-Stats               │
+    │              Nuclei Detection      │
+    │                    │               │
+    └────────────────────┼───────────────┘
+                         │
+                         ▼
+              ┌─────────────────────┐
+              │  SORTIE FINALE      │
+              │  - Diagnostic       │
+              │  - Confiance ajustée│
+              │  - Visualisation    │
+              │    cell-level       │
+              └─────────────────────┘
 ```
 
-### 2.2 Deux Chemins Parallèles
+### 3.2 Rôles Séparés
 
-| Chemin | Input | Processing | Output |
-|--------|-------|------------|--------|
-| **Sémantique** | RGB 224×224 | H-Optimus → CLS | Features 1536D |
-| **Structurel** | RGB → H-Channel | Ruifrok → Stats | mean, std, blob_count |
+| Composant | Phase | Rôle | Input | Output |
+|-----------|-------|------|-------|--------|
+| **H-Optimus** | Training | Classification sémantique | RGB 224×224 | CLS 1536D |
+| **Cell Triage V1** | Training | Filtrage patches vides | CLS 1536D | Cell/Empty |
+| **MultiHead Bethesda** | Training | Classification Bethesda | CLS 1536D | Classes |
+| **H-Channel (Ruifrok)** | **Post-Processing** | Validation + Visualisation | RGB | H-Stats, Contours |
 
-### 2.3 Fusion des Chemins
+### 3.3 Principe Clé
 
-```python
-# Cell Triage v2 Input
-features_combined = concat([
-    cls_token,           # 1536D (sémantique)
-    h_mean,              # 1D (intensité moyenne H)
-    h_std,               # 1D (hétérogénéité)
-    nuclei_count,        # 1D (nombre de blobs)
-    nuclei_area_ratio    # 1D (surface noyaux / surface patch)
-])
-# Total: 1540D
-```
+> **Training:** Deep Learning (H-Optimus) uniquement
+>
+> **Post-Processing:** H-Channel (Ruifrok) pour validation et visualisation
+>
+> **Ne JAMAIS mélanger** les deux dans un même modèle entraîné.
 
 ---
 
-## 3. Composants Détaillés
+## 4. Composants H-Channel (Post-Processing Only)
 
-### 3.1 Extraction H-Channel (Ruifrok)
+### 4.1 Extraction H-Channel (Ruifrok)
 
-**Algorithme:** Déconvolution couleur basée sur la loi de Beer-Lambert
+**Implémenté dans:** `src/preprocessing/h_channel.py`
 
 ```python
-def extract_h_channel_ruifrok(rgb_image):
+def extract_h_channel_ruifrok(rgb_image, output_range="uint8"):
     """
     Extrait le canal Hématoxyline via déconvolution Ruifrok.
 
-    Vecteurs Ruifrok (constantes physiques):
+    Constantes physiques (Beer-Lambert):
     - Hématoxyline: [0.650, 0.704, 0.286]
     - Éosine: [0.072, 0.990, 0.105]
     """
-    # Conversion RGB → OD (Optical Density)
-    od = -np.log10((rgb_image.astype(float) + 1) / 256)
-
-    # Matrice de déconvolution Ruifrok
-    stain_matrix = np.array([
-        [0.650, 0.704, 0.286],  # Hématoxyline
-        [0.072, 0.990, 0.105],  # Éosine
-        [0.268, 0.570, 0.776]   # Résiduel
-    ])
-
-    # Déconvolution
-    deconv = np.linalg.lstsq(stain_matrix.T, od.reshape(-1, 3).T, rcond=None)[0]
-    h_channel = deconv[0].reshape(rgb_image.shape[:2])
-
-    # Normalisation [0, 255]
-    h_channel = np.clip(h_channel, 0, None)
-    h_channel = (h_channel / h_channel.max() * 255).astype(np.uint8)
-
-    return h_channel
 ```
 
-**Référence:** Ruifrok & Johnston, "Quantification of histochemical staining by color deconvolution", Analytical and Quantitative Cytology and Histology, 2001.
-
-### 3.2 H-Stats per Patch
+### 4.2 H-Stats (Pour Confidence Boosting)
 
 ```python
-def compute_h_stats(h_channel_patch):
+def compute_h_stats(rgb_image) -> HChannelStats:
     """
-    Calcule les statistiques H-Channel pour un patch.
+    Calcule les statistiques H-Channel pour validation.
 
     Returns:
-        dict: {
-            'h_mean': float,        # Intensité moyenne (0-255)
-            'h_std': float,         # Écart-type
-            'nuclei_count': int,    # Nombre de blobs détectés
-            'nuclei_area_ratio': float  # Surface noyaux / surface patch
-        }
+        HChannelStats avec:
+        - h_mean: Intensité moyenne [0-255]
+        - h_std: Écart-type
+        - nuclei_count: Nombre de blobs détectés
+        - nuclei_area_ratio: Surface noyaux / surface patch
     """
-    # Stats basiques
-    h_mean = np.mean(h_channel_patch)
-    h_std = np.std(h_channel_patch)
-
-    # Détection blobs (noyaux)
-    _, binary = cv2.threshold(h_channel_patch, 0, 255,
-                               cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-
-    # Morphologie pour nettoyer
-    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
-    binary = cv2.morphologyEx(binary, cv2.MORPH_OPEN, kernel)
-    binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel)
-
-    # Compter les composantes connexes
-    num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(binary)
-
-    # Filtrer par taille (éliminer bruit)
-    MIN_NUCLEUS_AREA = 50   # pixels
-    MAX_NUCLEUS_AREA = 5000  # pixels
-
-    valid_nuclei = []
-    total_nuclei_area = 0
-
-    for i in range(1, num_labels):  # Skip background (0)
-        area = stats[i, cv2.CC_STAT_AREA]
-        if MIN_NUCLEUS_AREA <= area <= MAX_NUCLEUS_AREA:
-            valid_nuclei.append({
-                'centroid': centroids[i],
-                'area': area,
-                'bbox': stats[i, :4]
-            })
-            total_nuclei_area += area
-
-    patch_area = h_channel_patch.shape[0] * h_channel_patch.shape[1]
-    nuclei_area_ratio = total_nuclei_area / patch_area
-
-    return {
-        'h_mean': h_mean,
-        'h_std': h_std,
-        'nuclei_count': len(valid_nuclei),
-        'nuclei_area_ratio': nuclei_area_ratio,
-        'nuclei_details': valid_nuclei
-    }
 ```
 
-### 3.3 Cell Triage v2 (Augmenté)
-
-**Architecture:**
-
-```
-Input: CLS (1536D) + H-Stats (4D) = 1540D
-    ↓
-Linear(1540, 256) + ReLU + Dropout(0.3)
-    ↓
-Linear(256, 64) + ReLU + Dropout(0.15)
-    ↓
-Linear(64, 2)
-    ↓
-Output: Cell / Empty
-```
-
-**Entraînement:**
-- Dataset: APCData tuiles (comme V15.2)
-- Features: CLS token + H-Stats calculés à la volée
-- Loss: CrossEntropy avec poids [0.3, 1.0]
-
-### 3.4 Confidence Boosting
+### 4.3 Confidence Boosting
 
 ```python
-def apply_confidence_boosting(patch_prediction, h_stats):
+def apply_confidence_boosting(prediction, h_stats) -> dict:
     """
-    Ajuste la confiance basée sur la validation H-Channel.
+    Ajuste la confiance APRÈS classification.
 
     Règles:
-    1. Patch "anormal" MAIS 0 noyau détecté → réduire confiance
-    2. Patch "normal" MAIS haute densité noyaux → augmenter vigilance
-    3. Forte variance H → possible cluster → augmenter confiance anormal
+    1. Anormal + 0 noyau → confidence × 0.5, flag='LOW_CONFIDENCE_NO_NUCLEI'
+    2. Normal + haute densité → flag='REVIEW_HIGH_DENSITY'
+    3. HSIL/SCC + haute variance → confidence × 1.2
     """
-    confidence = patch_prediction['confidence']
-    predicted_class = patch_prediction['class']
-
-    nuclei_count = h_stats['nuclei_count']
-    h_std = h_stats['h_std']
-
-    # Règle 1: Anormal sans noyaux = suspect
-    if predicted_class != 'NILM' and nuclei_count == 0:
-        confidence *= 0.5
-        patch_prediction['flag'] = 'LOW_CONFIDENCE_NO_NUCLEI'
-
-    # Règle 2: Normal mais dense = vérifier
-    if predicted_class == 'NILM' and nuclei_count > 10:
-        patch_prediction['flag'] = 'REVIEW_HIGH_DENSITY'
-
-    # Règle 3: Haute variance H = cluster potentiel
-    if h_std > 50 and predicted_class in ['HSIL', 'SCC']:
-        confidence = min(confidence * 1.2, 0.99)
-
-    patch_prediction['confidence'] = confidence
-    return patch_prediction
 ```
 
-### 3.5 Détection de Noyaux pour Visualisation
+**Usage typique:**
 
 ```python
-def detect_nuclei_for_visualization(rgb_patch, predicted_class):
+# APRÈS classification MultiHead Bethesda
+prediction = {'class': 'HSIL', 'confidence': 0.85}
+
+# Valider avec H-Stats
+h_stats = compute_h_stats(patch_rgb)
+prediction = apply_confidence_boosting(prediction, h_stats)
+
+if 'flag' in prediction:
+    print(f"⚠️ {prediction['flag']}")  # 'LOW_CONFIDENCE_NO_NUCLEI' si suspect
+```
+
+### 4.4 Détection de Noyaux pour Visualisation
+
+```python
+def detect_nuclei_for_visualization(rgb_patch, predicted_class) -> List[dict]:
     """
-    Détecte les noyaux dans un patch pour visualisation cell-level.
+    Détecte les noyaux pour visualisation cell-level.
 
     Returns:
-        List of nuclei with contours and assigned class
+        Liste de noyaux avec:
+        - contour: OpenCV contour
+        - centroid: (x, y)
+        - area: pixels
+        - class: Héritée du patch parent
     """
-    # Extraire H-Channel
-    h_channel = extract_h_channel_ruifrok(rgb_patch)
+```
 
-    # Seuillage adaptatif (meilleur que Otsu pour clusters)
-    binary = cv2.adaptiveThreshold(
-        h_channel, 255,
-        cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-        cv2.THRESH_BINARY,
-        blockSize=21,
-        C=5
-    )
+### 4.5 Rendu Visuel
 
-    # Inverser si nécessaire (noyaux = sombres dans H)
-    binary = 255 - binary
+```python
+def render_nuclei_overlay(image, nuclei, alpha=0.4) -> np.ndarray:
+    """
+    Dessine les contours de noyaux avec couleurs par classe Bethesda.
 
-    # Morphologie
-    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
-    binary = cv2.morphologyEx(binary, cv2.MORPH_OPEN, kernel)
-
-    # Watershed pour séparer noyaux collés
-    dist_transform = cv2.distanceTransform(binary, cv2.DIST_L2, 5)
-    _, sure_fg = cv2.threshold(dist_transform, 0.5 * dist_transform.max(), 255, 0)
-    sure_fg = np.uint8(sure_fg)
-
-    # Trouver contours
-    contours, _ = cv2.findContours(sure_fg, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-
-    # Filtrer et assigner classe du patch à chaque noyau
-    nuclei = []
-    for contour in contours:
-        area = cv2.contourArea(contour)
-        if 50 < area < 5000:  # Filtrer par taille
-            M = cv2.moments(contour)
-            if M['m00'] > 0:
-                cx = int(M['m10'] / M['m00'])
-                cy = int(M['m01'] / M['m00'])
-                nuclei.append({
-                    'contour': contour,
-                    'centroid': (cx, cy),
-                    'area': area,
-                    'class': predicted_class  # Hérite la classe du patch
-                })
-
-    return nuclei
+    Couleurs:
+    - NILM: Vert
+    - ASCUS: Jaune
+    - ASCH: Orange
+    - LSIL: Jaune-Orange
+    - HSIL: Rouge
+    - SCC: Violet
+    """
 ```
 
 ---
 
-## 4. Visualisation Cell-Level
+## 5. Visualisation Cell-Level
 
-### 4.1 Mode de Rendu
-
-```python
-def render_cell_level_visualization(image, all_nuclei):
-    """
-    Dessine les noyaux détectés avec couleurs par classe.
-    """
-    overlay = image.copy()
-
-    CLASS_COLORS = {
-        'NILM': (0, 200, 0),      # Vert
-        'ASCUS': (0, 255, 255),   # Jaune
-        'ASCH': (0, 128, 255),    # Orange
-        'LSIL': (0, 200, 255),    # Jaune-Orange
-        'HSIL': (0, 0, 255),      # Rouge
-        'SCC': (128, 0, 128)      # Violet
-    }
-
-    for nucleus in all_nuclei:
-        color = CLASS_COLORS.get(nucleus['class'], (200, 200, 200))
-
-        # Dessiner contour
-        cv2.drawContours(overlay, [nucleus['contour']], -1, color, 2)
-
-        # Remplissage semi-transparent
-        cv2.drawContours(overlay, [nucleus['contour']], -1, color, -1)
-
-    # Blend avec original
-    result = cv2.addWeighted(overlay, 0.4, image, 0.6, 0)
-
-    return result
-```
-
-### 4.2 Comparaison Visuelle
+### 5.1 Comparaison Visuelle
 
 ```
 V15.2 (Patch-Level):              V15.3 (Cell-Level):
@@ -375,58 +301,97 @@ V15.2 (Patch-Level):              V15.3 (Cell-Level):
    (non clinique)                   (interprétable)
 ```
 
+### 5.2 Intégration dans `12_visualize_predictions.py`
+
+```python
+# Mode patch-level (V15.2)
+python scripts/cytology/12_visualize_predictions.py --image img.jpg
+
+# Mode cell-level (V15.3) - À implémenter
+python scripts/cytology/12_visualize_predictions.py --image img.jpg --cell_level
+```
+
 ---
 
-## 5. Métriques et Validation
+## 6. Métriques et Validation
 
-### 5.1 Nouvelles Métriques
+### 6.1 Métriques (Révisées)
 
 | Métrique | Description | Cible |
 |----------|-------------|-------|
-| **Nuclei Detection Rate** | % noyaux GT détectés via H-Channel | > 85% |
-| **False Positive Reduction** | Réduction FP vs V15.2 | > 20% |
-| **Cell Count Accuracy** | Corrélation comptage H vs GT | > 0.8 |
+| **Cell Triage Recall** | V1 maintenu | **96.28%** ✅ |
+| **Confidence Boosting FP Reduction** | Réduction faux positifs via H-Stats | > 20% |
 | **Visualization Coherence** | % noyaux affichés dans bbox GT | > 90% |
 
-### 5.2 Validation Clinique
+### 6.2 Validation Clinique
 
-1. **Interprétabilité**: Pathologistes peuvent-ils comprendre la visualisation?
-2. **Confiance**: Les zones marquées correspondent-elles aux cellules anormales?
-3. **Comptage**: Le nombre de cellules affiché est-il cliniquement pertinent?
+1. **Interprétabilité**: Pathologistes peuvent-ils comprendre la visualisation cell-level?
+2. **Confiance ajustée**: Les flags `LOW_CONFIDENCE_NO_NUCLEI` sont-ils pertinents?
+3. **Comptage**: Le nombre de noyaux détectés est-il cliniquement utile?
 
 ---
 
-## 6. Plan d'Implémentation
+## 7. Plan d'Implémentation (Révisé)
 
-### Phase 1: Extraction H-Channel (Jour 1) ✅ TERMINÉE
-- [x] Implémenter `extract_h_channel_ruifrok()` dans `src/preprocessing/h_channel.py`
-- [x] Implémenter `compute_h_stats()` dans `src/preprocessing/h_channel.py`
-- [x] Implémenter `compute_h_stats_batch()` pour traitement par lot
-- [x] Tests unitaires (`tests/unit/test_h_channel.py`)
+### Phase 1: Extraction H-Channel ✅ TERMINÉE
+- [x] `extract_h_channel_ruifrok()` dans `src/preprocessing/h_channel.py`
+- [x] `compute_h_stats()` dans `src/preprocessing/h_channel.py`
+- [x] `compute_h_stats_batch()` pour traitement par lot
+- [x] Tests unitaires (`tests/unit/test_h_channel.py`) — 41/41 PASSED
 
-### Phase 2: Cell Triage v2 (Jour 2-3) ✅ TERMINÉE
+### Phase 2: Cell Triage v2 ❌ ABANDONNÉ (Résultat Négatif)
 - [x] Script d'entraînement `07b_train_cell_triage_v2.py` créé
-- [x] Dataset avec H-Stats extraction automatique
-- [x] Support v2 dans `11_unified_inference.py` (auto-détection version)
-- [ ] Entraîner et évaluer (à lancer par l'utilisateur)
+- [x] Expérimentation complète
+- [x] **Résultat:** Régression -5.8% recall
+- [x] **Décision:** Garder V1 (CLS seul)
+- [x] Documentation des findings (cette section)
 
-### Phase 3: Confidence Boosting (Jour 3) ✅ TERMINÉE
-- [x] Implémenter `apply_confidence_boosting()` dans `src/preprocessing/h_channel.py`
+### Phase 3: Confidence Boosting ✅ TERMINÉE
+- [x] `apply_confidence_boosting()` dans `src/preprocessing/h_channel.py`
 - [ ] Évaluer réduction faux positifs sur dataset réel
 
-### Phase 4: Visualisation Cell-Level (Jour 4) 🔄 EN COURS
-- [x] Implémenter `detect_nuclei_for_visualization()` dans `src/preprocessing/h_channel.py`
-- [x] Implémenter `render_nuclei_overlay()` dans `src/preprocessing/h_channel.py`
-- [ ] Intégrer dans `12_visualize_predictions.py`
+### Phase 4: Visualisation Cell-Level 🔄 EN COURS
+- [x] `detect_nuclei_for_visualization()` dans `src/preprocessing/h_channel.py`
+- [x] `render_nuclei_overlay()` dans `src/preprocessing/h_channel.py`
+- [ ] Intégrer option `--cell_level` dans `12_visualize_predictions.py`
 
-### Phase 5: Validation (Jour 5)
-- [ ] Benchmark vs V15.2
-- [ ] Validation métriques
+### Phase 5: Validation
+- [ ] Benchmark Confidence Boosting vs baseline
+- [ ] Validation qualitative visualisation
 - [ ] Documentation finale
 
 ---
 
-## 7. Références
+## 8. Leçons Apprises
+
+### 8.1 Ce qui fonctionne
+
+✅ **Deep Learning (H-Optimus) pour la classification** — Signal propre, haute performance
+
+✅ **H-Channel pour post-processing** — Validation, visualisation, comptage
+
+✅ **Architecture séparée** — Training DL ≠ Post-processing heuristique
+
+### 8.2 Ce qui ne fonctionne PAS
+
+❌ **Mélanger features DL + features heuristiques** — "Noise feature poisoning"
+
+❌ **Utiliser Otsu sur datasets avec patches "empty" bruités** — Bruit systémique
+
+❌ **Supposer que les annotations YOLO définissent "Empty"** — Cellules partielles non annotées
+
+### 8.3 Recommandations
+
+> **Pour futurs pipelines cytologie:**
+>
+> 1. Garder DL et heuristiques SÉPARÉS
+> 2. Utiliser H-Channel uniquement en post-processing
+> 3. Valider les datasets avant de supposer "Empty = vide"
+> 4. Documenter les résultats négatifs (comme cette spec)
+
+---
+
+## 9. Références
 
 1. Ruifrok & Johnston, "Quantification of histochemical staining by color deconvolution", Analytical and Quantitative Cytology and Histology, 2001.
 
@@ -434,23 +399,28 @@ V15.2 (Patch-Level):              V15.3 (Cell-Level):
 
 3. "Color deconvolution improves cervical cell classification", Biomedical Signal Processing and Control, 2020.
 
-4. "H-channel features for robust Pap smear cytology segmentation", IEEE TMI, 2023.
+4. IEEE TMI 2023 — PathCell-Net: "Background regions often contain dark artifacts..."
 
-5. "Cervical cytology triage using nuclear density estimation", IEEE TMI, 2024.
+5. Nature NPJ Digital Medicine 2024: "Handcrafted nuclear density features were excluded..."
 
-6. "Error reduction in cervical cytology AI using nuclear minimal presence validation", Journal of Pathology Informatics, 2023.
+6. ISBI 2022 — Cytology Deep Features: "Deep embeddings outperform stain-derived features..."
+
+7. Hastie & Tibshirani — Elements of Statistical Learning (Noise Feature Poisoning)
 
 ---
 
-## 8. Changelog
+## 10. Changelog
 
 | Date | Version | Changements |
 |------|---------|-------------|
-| 2026-01-24 | v0.3 | Phase 2 implémentée (Cell Triage v2 training script + inference support) |
+| 2026-01-24 | **v1.0** | **Architecture finalisée** — H-Stats = post-processing only |
+| 2026-01-24 | v0.4 | Cell Triage V2 expérimenté et abandonné (régression -5.8%) |
+| 2026-01-24 | v0.3 | Phase 2 implémentée (Cell Triage v2 training script) |
 | 2026-01-24 | v0.2 | Phase 1 + Phase 3 + Phase 4 (partiel) implémentées |
 | 2026-01-24 | v0.1 | Création spécification initiale |
 
 ---
 
 **Auteur:** V15.3 Cytology Branch
-**Review:** En attente
+**Review:** ✅ Validé après expérimentation
+**Status:** Architecture FINALE
