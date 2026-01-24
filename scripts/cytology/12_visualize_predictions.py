@@ -442,7 +442,9 @@ def draw_cell_level_overlay(
 
     # Render all nuclei on image
     if all_nuclei:
-        annotated = render_nuclei_overlay(annotated, all_nuclei, alpha=alpha)
+        annotated = render_nuclei_overlay(
+            annotated, all_nuclei, alpha=alpha, color_space="RGB"
+        )
 
     return annotated, len(all_nuclei), nuclei_by_class
 

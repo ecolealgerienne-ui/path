@@ -311,15 +311,16 @@ def detect_nuclei_for_visualization(
 
     if use_adaptive_threshold:
         # Adaptive threshold (better for varying illumination and clusters)
+        # Note: In Ruifrok H-channel, nuclei have HIGH values (bright)
+        # THRESH_BINARY_INV: pixels BELOW threshold → 255
+        # We want nuclei (high values) to be white, so use THRESH_BINARY
         binary = cv2.adaptiveThreshold(
             h_channel, 255,
             cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
             cv2.THRESH_BINARY,
             blockSize=21,
-            C=5
+            C=-5  # Negative C to favor high values (nuclei)
         )
-        # Invert (nuclei are dark in H-channel → high values)
-        binary = 255 - binary
     else:
         # Otsu threshold
         _, binary = cv2.threshold(
@@ -333,9 +334,13 @@ def detect_nuclei_for_visualization(
 
     # Distance transform for watershed-style separation
     dist_transform = cv2.distanceTransform(binary, cv2.DIST_L2, 5)
+
+    # Use lower threshold (0.3) to preserve more of the nucleus shape
+    # This is important for cytology where nuclei are often small
+    threshold_ratio = 0.3
     _, sure_fg = cv2.threshold(
         dist_transform,
-        0.5 * dist_transform.max(),
+        threshold_ratio * dist_transform.max(),
         255,
         0
     )
@@ -353,7 +358,8 @@ def detect_nuclei_for_visualization(
     for contour in contours:
         area = cv2.contourArea(contour)
 
-        if min_nucleus_area < area < max_nucleus_area:
+        # Inclusive bounds for area filter
+        if min_nucleus_area <= area <= max_nucleus_area:
             M = cv2.moments(contour)
             if M['m00'] > 0:
                 cx = int(M['m10'] / M['m00'])
@@ -438,7 +444,8 @@ BETHESDA_COLORS = {
 def render_nuclei_overlay(
     image: np.ndarray,
     nuclei: List[Dict],
-    alpha: float = 0.4
+    alpha: float = 0.4,
+    color_space: str = "RGB"
 ) -> np.ndarray:
     """
     Render nuclei contours on image with class-based colors.
@@ -447,23 +454,32 @@ def render_nuclei_overlay(
         image: RGB or BGR image (H, W, 3)
         nuclei: List of nuclei from detect_nuclei_for_visualization()
         alpha: Transparency for filled contours (0=invisible, 1=opaque)
+        color_space: "RGB" or "BGR" - format of input image
 
     Returns:
         Image with nuclei overlay
 
     Example:
         >>> nuclei = detect_nuclei_for_visualization(patch, "HSIL")
-        >>> vis = render_nuclei_overlay(patch, nuclei)
-        >>> cv2.imwrite("visualization.png", vis)
+        >>> vis = render_nuclei_overlay(patch, nuclei, color_space="RGB")
+        >>> cv2.imwrite("visualization.png", cv2.cvtColor(vis, cv2.COLOR_RGB2BGR))
     """
     overlay = image.copy()
 
     for nucleus in nuclei:
-        color = BETHESDA_COLORS.get(nucleus['class'], (200, 200, 200))
+        # BETHESDA_COLORS are in BGR format
+        color_bgr = BETHESDA_COLORS.get(nucleus['class'], (200, 200, 200))
+
+        # Convert to RGB if needed
+        if color_space.upper() == "RGB":
+            color = (color_bgr[2], color_bgr[1], color_bgr[0])  # BGR → RGB
+        else:
+            color = color_bgr
+
         contour = nucleus['contour']
 
-        # Draw contour outline
-        cv2.drawContours(overlay, [contour], -1, color, 2)
+        # Draw contour outline (thicker for visibility)
+        cv2.drawContours(overlay, [contour], -1, color, 3)
 
         # Fill with semi-transparent color
         cv2.drawContours(overlay, [contour], -1, color, -1)
