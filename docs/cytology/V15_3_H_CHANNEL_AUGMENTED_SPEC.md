@@ -398,24 +398,25 @@ V15.2 (Patch-Level):              V15.3 (Cell-Level):
 
 ## 6. Plan d'Implémentation
 
-### Phase 1: Extraction H-Channel (Jour 1)
-- [ ] Implémenter `extract_h_channel_ruifrok()` dans `src/preprocessing/`
-- [ ] Implémenter `compute_h_stats()` dans `src/preprocessing/`
-- [ ] Tests unitaires
+### Phase 1: Extraction H-Channel (Jour 1) ✅ TERMINÉE
+- [x] Implémenter `extract_h_channel_ruifrok()` dans `src/preprocessing/h_channel.py`
+- [x] Implémenter `compute_h_stats()` dans `src/preprocessing/h_channel.py`
+- [x] Implémenter `compute_h_stats_batch()` pour traitement par lot
+- [x] Tests unitaires (`tests/unit/test_h_channel.py`)
 
 ### Phase 2: Cell Triage v2 (Jour 2-3)
 - [ ] Modifier dataset pour inclure H-Stats
-- [ ] Entraîner Cell Triage v2 avec features augmentées
+- [ ] Entraîner Cell Triage v2 avec features augmentées (1540D)
 - [ ] Évaluer amélioration recall
 
-### Phase 3: Confidence Boosting (Jour 3)
-- [ ] Implémenter `apply_confidence_boosting()`
-- [ ] Évaluer réduction faux positifs
+### Phase 3: Confidence Boosting (Jour 3) ✅ TERMINÉE
+- [x] Implémenter `apply_confidence_boosting()` dans `src/preprocessing/h_channel.py`
+- [ ] Évaluer réduction faux positifs sur dataset réel
 
-### Phase 4: Visualisation Cell-Level (Jour 4)
-- [ ] Implémenter `detect_nuclei_for_visualization()`
-- [ ] Implémenter `render_cell_level_visualization()`
-- [ ] Mettre à jour `12_visualize_predictions.py`
+### Phase 4: Visualisation Cell-Level (Jour 4) 🔄 EN COURS
+- [x] Implémenter `detect_nuclei_for_visualization()` dans `src/preprocessing/h_channel.py`
+- [x] Implémenter `render_nuclei_overlay()` dans `src/preprocessing/h_channel.py`
+- [ ] Intégrer dans `12_visualize_predictions.py`
 
 ### Phase 5: Validation (Jour 5)
 - [ ] Benchmark vs V15.2
@@ -444,6 +445,7 @@ V15.2 (Patch-Level):              V15.3 (Cell-Level):
 
 | Date | Version | Changements |
 |------|---------|-------------|
+| 2026-01-24 | v0.2 | Phase 1 + Phase 3 + Phase 4 (partiel) implémentées |
 | 2026-01-24 | v0.1 | Création spécification initiale |
 
 ---
