@@ -330,6 +330,220 @@ HEATMAP_COLORS = {
     4: (0, 0, 180),      # Dark red - SCC
 }
 
+# Metrics-based colors (RGB format)
+METRICS_COLORS = {
+    "TP": (0, 180, 0),      # Green - True Positive (confirmed)
+    "FP": (255, 200, 0),    # Yellow - False Positive (to verify)
+    "FN": (255, 0, 0),      # Red - False Negative (ALERT!)
+    "TN": None,             # Not displayed
+}
+
+
+# =============================================================================
+#  METRICS COMPUTATION
+# =============================================================================
+
+def compute_patch_metrics(
+    diagnosis: 'ImageDiagnosis',
+    annotations: list,
+    tile_size: int = 224,
+    img_width: int = None,
+    img_height: int = None
+) -> dict:
+    """
+    Compute TP/FP/FN metrics at patch level by comparing predictions with GT.
+
+    Logic:
+    - For each GT annotation (cell box), find which patch contains its center
+    - If that patch is predicted abnormal → TP
+    - If that patch is predicted normal/empty → FN (missed!)
+    - Patches predicted abnormal with no GT inside → FP
+
+    Args:
+        diagnosis: ImageDiagnosis from pipeline
+        annotations: List of (class_id, class_name, x1, y1, x2, y2) from GT
+        tile_size: Patch size
+        img_width: Image width
+        img_height: Image height
+
+    Returns:
+        dict with:
+            - 'tp_patches': list of (x, y) for true positive patches
+            - 'fp_patches': list of (x, y) for false positive patches
+            - 'fn_patches': list of (x, y) for false negative patches
+            - 'tp_count', 'fp_count', 'fn_count': counts
+            - 'precision', 'recall', 'f1': metrics
+    """
+    # Build set of patches predicted as abnormal (not NILM)
+    predicted_abnormal = set()
+    patch_info = {}  # (x, y) -> patch object
+
+    for patch in diagnosis.patch_results:
+        if patch.has_cells and patch.class_name != "NILM":
+            predicted_abnormal.add((patch.x, patch.y))
+        patch_info[(patch.x, patch.y)] = patch
+
+    # Find which patches contain GT annotations (abnormal cells only)
+    # NILM annotations (class_id=0) are normal, skip them
+    gt_patches = set()
+    gt_abnormal_annotations = []
+
+    for class_id, class_name, x1, y1, x2, y2 in annotations:
+        # Skip NILM (normal) annotations
+        if class_name == "NILM" or class_id == 0:
+            continue
+
+        gt_abnormal_annotations.append((class_id, class_name, x1, y1, x2, y2))
+
+        # Find center of annotation
+        cx = (x1 + x2) // 2
+        cy = (y1 + y2) // 2
+
+        # Find which patch contains this center
+        for patch in diagnosis.patch_results:
+            px, py = patch.x, patch.y
+            if px <= cx < px + tile_size and py <= cy < py + tile_size:
+                gt_patches.add((px, py))
+                break
+
+    # Compute TP, FP, FN
+    tp_patches = list(predicted_abnormal & gt_patches)  # Predicted AND in GT
+    fp_patches = list(predicted_abnormal - gt_patches)  # Predicted but NOT in GT
+    fn_patches = list(gt_patches - predicted_abnormal)  # In GT but NOT predicted
+
+    tp = len(tp_patches)
+    fp = len(fp_patches)
+    fn = len(fn_patches)
+
+    # Compute metrics
+    precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
+    recall = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+    f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0.0
+
+    return {
+        'tp_patches': tp_patches,
+        'fp_patches': fp_patches,
+        'fn_patches': fn_patches,
+        'tp_count': tp,
+        'fp_count': fp,
+        'fn_count': fn,
+        'gt_cells': len(gt_abnormal_annotations),
+        'precision': precision,
+        'recall': recall,
+        'f1': f1
+    }
+
+
+def draw_metrics_overlay(
+    image: np.ndarray,
+    metrics: dict,
+    tile_size: int = 224,
+    alpha: float = 0.4
+) -> np.ndarray:
+    """
+    Draw visualization with TP/FP/FN colored patches.
+
+    Args:
+        image: Original image (RGB)
+        metrics: Dict from compute_patch_metrics()
+        tile_size: Patch size
+        alpha: Fill transparency
+
+    Returns:
+        Annotated image
+    """
+    annotated = image.copy()
+    overlay = image.copy()
+
+    # Draw FP patches (yellow - to verify) - draw first (lowest priority)
+    for (x, y) in metrics['fp_patches']:
+        x2 = min(x + tile_size, image.shape[1])
+        y2 = min(y + tile_size, image.shape[0])
+        color = METRICS_COLORS["FP"]
+        cv2.rectangle(overlay, (x, y), (x2, y2), color, -1)
+        cv2.rectangle(annotated, (x, y), (x2, y2), color, 2)
+
+    # Draw TP patches (green - confirmed)
+    for (x, y) in metrics['tp_patches']:
+        x2 = min(x + tile_size, image.shape[1])
+        y2 = min(y + tile_size, image.shape[0])
+        color = METRICS_COLORS["TP"]
+        cv2.rectangle(overlay, (x, y), (x2, y2), color, -1)
+        cv2.rectangle(annotated, (x, y), (x2, y2), color, 3)
+
+    # Draw FN patches (red - ALERT!) - draw last (highest priority)
+    for (x, y) in metrics['fn_patches']:
+        x2 = min(x + tile_size, image.shape[1])
+        y2 = min(y + tile_size, image.shape[0])
+        color = METRICS_COLORS["FN"]
+        cv2.rectangle(overlay, (x, y), (x2, y2), color, -1)
+        cv2.rectangle(annotated, (x, y), (x2, y2), color, 4)
+        # Add X mark for missed detections
+        cv2.line(annotated, (x, y), (x2, y2), color, 2)
+        cv2.line(annotated, (x2, y), (x, y2), color, 2)
+
+    # Blend overlay
+    cv2.addWeighted(overlay, alpha, annotated, 1 - alpha, 0, annotated)
+
+    return annotated
+
+
+def draw_metrics_legend(
+    image: np.ndarray,
+    metrics: dict
+) -> np.ndarray:
+    """
+    Draw legend for metrics visualization.
+    """
+    annotated = image.copy()
+    h, w = image.shape[:2]
+
+    # Legend content
+    lines = [
+        (f"Recall: {metrics['recall']:.1%}", None),
+        (f"Precision: {metrics['precision']:.1%}", None),
+        ("", None),
+        (f"Confirmed (TP): {metrics['tp_count']}", METRICS_COLORS["TP"]),
+        (f"To verify (FP): {metrics['fp_count']}", METRICS_COLORS["FP"]),
+        (f"MISSED (FN): {metrics['fn_count']}", METRICS_COLORS["FN"]),
+    ]
+
+    # Box dimensions
+    line_height = 25
+    margin = 10
+    box_width = 180
+    box_height = margin * 2 + len(lines) * line_height
+
+    # Position: top-right
+    box_x = w - box_width - margin
+    box_y = margin
+
+    # Background
+    overlay = annotated.copy()
+    cv2.rectangle(overlay, (box_x, box_y), (box_x + box_width, box_y + box_height),
+                  (255, 255, 255), -1)
+    cv2.addWeighted(overlay, 0.85, annotated, 0.15, 0, annotated)
+    cv2.rectangle(annotated, (box_x, box_y), (box_x + box_width, box_y + box_height),
+                  (0, 0, 0), 1)
+
+    # Draw lines
+    y_pos = box_y + margin + 15
+    for text, color in lines:
+        if color is not None:
+            cv2.rectangle(annotated, (box_x + margin, y_pos - 12),
+                          (box_x + margin + 15, y_pos + 3), color, -1)
+            cv2.rectangle(annotated, (box_x + margin, y_pos - 12),
+                          (box_x + margin + 15, y_pos + 3), (0, 0, 0), 1)
+            text_x = box_x + margin + 22
+        else:
+            text_x = box_x + margin
+
+        cv2.putText(annotated, text, (text_x, y_pos),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 0, 0), 1)
+        y_pos += line_height
+
+    return annotated
+
 
 # =============================================================================
 #  VISUALIZATION FUNCTIONS
@@ -1203,6 +1417,8 @@ Examples:
                         help="V15.3: Use cell-level visualization with nuclei contours (instead of patch rectangles)")
     parser.add_argument("--heatmap", action="store_true",
                         help="Use smooth heatmap visualization (only suspicious areas colored)")
+    parser.add_argument("--metrics", action="store_true",
+                        help="Show TP/FP/FN metrics visualization (requires --compare_gt)")
 
     # Pipeline options
     parser.add_argument("--tile_size", type=int, default=224)
@@ -1221,7 +1437,9 @@ Examples:
 
     print("\n" + "=" * 80)
     print("  CYTOLOGY PREDICTION VISUALIZATION")
-    if args.heatmap:
+    if args.metrics:
+        print("  Metrics Mode (TP/FP/FN Analysis)")
+    elif args.heatmap:
         print("  Heatmap Mode (Suspicious Areas Only)")
     elif args.cell_level:
         print("  V15.3 Cell-Level (Nuclei Contours via H-Channel)")
@@ -1321,7 +1539,48 @@ Examples:
                 label_path = labels_dir / f"{image_path.stem}.txt"
                 annotations = load_yolo_annotations(label_path, img_w, img_h)
 
-                if args.heatmap:
+                if args.metrics:
+                    # Metrics-based visualization: GT (left) | TP/FP/FN (right)
+                    # Compute metrics
+                    metrics = compute_patch_metrics(
+                        diagnosis, annotations,
+                        tile_size=args.tile_size,
+                        img_width=img_w, img_height=img_h
+                    )
+
+                    # Left side: Ground Truth annotations
+                    gt_image = draw_ground_truth(image.copy(), annotations, border_width=3)
+                    cv2.putText(gt_image, "GROUND TRUTH", (10, 30),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 3)
+                    cv2.putText(gt_image, "GROUND TRUTH", (10, 30),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 0), 2)
+
+                    # Right side: Metrics overlay (TP/FP/FN)
+                    metrics_img = draw_metrics_overlay(
+                        image, metrics,
+                        tile_size=args.tile_size,
+                        alpha=0.35
+                    )
+                    metrics_img = draw_metrics_legend(metrics_img, metrics)
+                    cv2.putText(metrics_img, "PREDICTION", (10, 30),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 3)
+                    cv2.putText(metrics_img, "PREDICTION", (10, 30),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 0), 2)
+
+                    # Separator
+                    separator = np.ones((img_h, 3, 3), dtype=np.uint8) * 40
+
+                    # Combine
+                    comparison = np.hstack([gt_image, separator, metrics_img])
+
+                    # Add banner at bottom
+                    comparison = draw_diagnosis_banner(comparison, diagnosis)
+
+                    print(f"    GT abnormal cells: {metrics['gt_cells']}")
+                    print(f"    TP: {metrics['tp_count']} | FP: {metrics['fp_count']} | FN: {metrics['fn_count']}")
+                    print(f"    Recall: {metrics['recall']:.1%} | Precision: {metrics['precision']:.1%}")
+
+                elif args.heatmap:
                     # Heatmap comparison: GT (left) | Heatmap (right)
                     # Left side: Ground Truth annotations
                     gt_image = draw_ground_truth(image.copy(), annotations, border_width=3)
