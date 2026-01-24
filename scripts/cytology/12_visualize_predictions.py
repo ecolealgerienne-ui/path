@@ -1,22 +1,34 @@
 """
 Visualisation des Predictions — Cell Triage + MultiHead Bethesda
 
-Ce script genere des images annotees avec les predictions du pipeline V15.2:
+Ce script genere des images annotees avec les predictions du pipeline:
+
+V15.2 (Patch-Level):
 - Rectangles colores par severite (Vert=NILM, Jaune=Low-grade, Rouge=High-grade)
-- Legende avec comptage par classe
-- Diagnostic final et recommandation clinique
+
+V15.3 (Cell-Level) [--cell_level]:
+- Contours de noyaux detectes via H-Channel (Ruifrok)
+- Chaque noyau herite la classe du patch parent
+- Plus interpretable pour les pathologistes
 
 Usage:
+    # Patch-level (V15.2)
     python scripts/cytology/12_visualize_predictions.py \
         --image path/to/image.jpg \
         --output results/visualizations/
+
+    # Cell-level (V15.3)
+    python scripts/cytology/12_visualize_predictions.py \
+        --image path/to/image.jpg \
+        --output results/visualizations/ \
+        --cell_level
 
     # Process all images in directory
     python scripts/cytology/12_visualize_predictions.py \
         --input_dir data/raw/apcdata/APCData_YOLO/val/images \
         --output results/visualizations/
 
-Author: V15.2 Cytology Branch
+Author: V15.2/V15.3 Cytology Branch
 Date: 2026-01-24
 """
 
@@ -29,6 +41,15 @@ from typing import Optional
 import cv2
 import numpy as np
 import importlib.util
+
+# Import H-Channel functions for V15.3 cell-level visualization
+from src.preprocessing.h_channel import (
+    detect_nuclei_for_visualization,
+    render_nuclei_overlay,
+    compute_h_stats,
+    apply_confidence_boosting,
+    BETHESDA_COLORS as H_CHANNEL_COLORS
+)
 
 # Dynamic import from 11_unified_inference.py
 def _import_unified_inference():
@@ -348,6 +369,195 @@ def draw_patch_overlay(
     return annotated
 
 
+def draw_cell_level_overlay(
+    image: np.ndarray,
+    diagnosis: ImageDiagnosis,
+    tile_size: int = 224,
+    alpha: float = 0.4,
+    min_nucleus_area: int = 50,
+    max_nucleus_area: int = 5000
+) -> tuple:
+    """
+    Draw nuclei contours detected via H-Channel (V15.3).
+
+    For each patch with cells, detects nuclei using Ruifrok deconvolution
+    and draws their contours with the class color inherited from the patch.
+
+    Args:
+        image: Original image (RGB)
+        diagnosis: ImageDiagnosis from unified pipeline
+        tile_size: Size of patches
+        alpha: Transparency of contour fill (0=transparent, 1=opaque)
+        min_nucleus_area: Minimum nucleus area in pixels
+        max_nucleus_area: Maximum nucleus area in pixels
+
+    Returns:
+        tuple: (annotated_image, nuclei_count, nuclei_by_class)
+    """
+    annotated = image.copy()
+    all_nuclei = []
+    nuclei_by_class = {}
+
+    for patch in diagnosis.patch_results:
+        if not patch.has_cells:
+            continue
+
+        x, y = patch.x, patch.y
+        x2 = min(x + tile_size, image.shape[1])
+        y2 = min(y + tile_size, image.shape[0])
+
+        # Extract patch
+        patch_rgb = image[y:y2, x:x2].copy()
+
+        # Skip if patch is too small
+        if patch_rgb.shape[0] < 50 or patch_rgb.shape[1] < 50:
+            continue
+
+        # Detect nuclei in this patch
+        nuclei = detect_nuclei_for_visualization(
+            patch_rgb,
+            predicted_class=patch.class_name,
+            min_nucleus_area=min_nucleus_area,
+            max_nucleus_area=max_nucleus_area
+        )
+
+        # Offset nuclei coordinates to image space
+        for nucleus in nuclei:
+            # Offset contour
+            nucleus['contour'] = nucleus['contour'] + np.array([x, y])
+            # Offset centroid
+            cx, cy = nucleus['centroid']
+            nucleus['centroid'] = (cx + x, cy + y)
+
+            all_nuclei.append(nucleus)
+
+            # Count by class
+            cls = nucleus['class']
+            nuclei_by_class[cls] = nuclei_by_class.get(cls, 0) + 1
+
+    # Render all nuclei on image
+    if all_nuclei:
+        annotated = render_nuclei_overlay(annotated, all_nuclei, alpha=alpha)
+
+    return annotated, len(all_nuclei), nuclei_by_class
+
+
+def draw_cell_level_legend(
+    image: np.ndarray,
+    nuclei_by_class: dict,
+    total_nuclei: int,
+    position: str = "top-right"
+) -> np.ndarray:
+    """
+    Draw legend for cell-level visualization.
+
+    Args:
+        image: Annotated image
+        nuclei_by_class: Dict of {class_name: count}
+        total_nuclei: Total number of nuclei detected
+        position: Legend position
+
+    Returns:
+        Image with legend
+    """
+    h, w = image.shape[:2]
+    annotated = image.copy()
+
+    # Prepare legend items
+    items = []
+    for class_name in ["NILM", "ASCUS", "ASCH", "LSIL", "HSIL", "SCC"]:
+        count = nuclei_by_class.get(class_name, 0)
+        if count > 0:
+            color = CLASS_COLORS.get(class_name, (180, 180, 180))
+            items.append((class_name, count, color))
+
+    if not items:
+        items.append(("No nuclei", 0, (180, 180, 180)))
+
+    # Calculate legend dimensions
+    legend_width = 200
+    legend_height = (len(items) + 1) * LEGEND_LINE_HEIGHT + 2 * LEGEND_MARGIN  # +1 for total
+
+    # Position
+    if "right" in position:
+        x_start = w - legend_width - LEGEND_MARGIN
+    else:
+        x_start = LEGEND_MARGIN
+
+    if "bottom" in position:
+        y_start = h - legend_height - LEGEND_MARGIN
+    else:
+        y_start = LEGEND_MARGIN
+
+    # Draw semi-transparent background
+    overlay = annotated.copy()
+    cv2.rectangle(
+        overlay,
+        (x_start, y_start),
+        (x_start + legend_width, y_start + legend_height),
+        (255, 255, 255),
+        -1
+    )
+    cv2.addWeighted(overlay, 0.8, annotated, 0.2, 0, annotated)
+
+    # Draw border
+    cv2.rectangle(
+        annotated,
+        (x_start, y_start),
+        (x_start + legend_width, y_start + legend_height),
+        (0, 0, 0),
+        1
+    )
+
+    # Title
+    y_pos = y_start + LEGEND_MARGIN + LEGEND_LINE_HEIGHT // 2
+    cv2.putText(
+        annotated,
+        f"Nuclei Detected: {total_nuclei}",
+        (x_start + LEGEND_MARGIN, y_pos + 5),
+        LEGEND_FONT,
+        LEGEND_FONT_SCALE,
+        (0, 0, 0),
+        LEGEND_THICKNESS + 1
+    )
+    y_pos += LEGEND_LINE_HEIGHT
+
+    # Draw legend items
+    for name, count, color in items:
+        # Color box
+        color_bgr = (color[2], color[1], color[0])
+        cv2.rectangle(
+            annotated,
+            (x_start + LEGEND_MARGIN, y_pos - LEGEND_BOX_SIZE // 2),
+            (x_start + LEGEND_MARGIN + LEGEND_BOX_SIZE, y_pos + LEGEND_BOX_SIZE // 2),
+            color_bgr,
+            -1
+        )
+        cv2.rectangle(
+            annotated,
+            (x_start + LEGEND_MARGIN, y_pos - LEGEND_BOX_SIZE // 2),
+            (x_start + LEGEND_MARGIN + LEGEND_BOX_SIZE, y_pos + LEGEND_BOX_SIZE // 2),
+            (0, 0, 0),
+            1
+        )
+
+        # Text
+        text = f"{name}: {count}"
+        cv2.putText(
+            annotated,
+            text,
+            (x_start + LEGEND_MARGIN + LEGEND_BOX_SIZE + 10, y_pos + 5),
+            LEGEND_FONT,
+            LEGEND_FONT_SCALE,
+            (0, 0, 0),
+            LEGEND_THICKNESS
+        )
+
+        y_pos += LEGEND_LINE_HEIGHT
+
+    return annotated
+
+
 def draw_legend(
     image: np.ndarray,
     diagnosis: ImageDiagnosis,
@@ -568,8 +778,9 @@ def visualize_diagnosis(
     color_mode: str = "severity",
     show_empty: bool = False,
     show_legend: bool = True,
-    show_banner: bool = True
-) -> str:
+    show_banner: bool = True,
+    cell_level: bool = False
+) -> dict:
     """
     Generate complete visualization for a diagnosis.
 
@@ -583,9 +794,10 @@ def visualize_diagnosis(
         show_empty: Show empty patches
         show_legend: Add legend
         show_banner: Add diagnosis banner
+        cell_level: Use V15.3 cell-level visualization (nuclei contours)
 
     Returns:
-        Path to saved visualization
+        dict with 'path' and optionally 'nuclei_count'
     """
     # Load image
     image = cv2.imread(image_path)
@@ -593,18 +805,37 @@ def visualize_diagnosis(
         raise ValueError(f"Could not load image: {image_path}")
     image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
 
-    # Draw overlays
-    annotated = draw_patch_overlay(
-        image, diagnosis,
-        tile_size=tile_size,
-        alpha=alpha,
-        show_empty=show_empty,
-        color_mode=color_mode
-    )
+    result = {'path': output_path}
 
-    # Add legend
-    if show_legend:
-        annotated = draw_legend(annotated, diagnosis, color_mode=color_mode)
+    if cell_level:
+        # V15.3: Cell-level visualization with nuclei contours
+        annotated, nuclei_count, nuclei_by_class = draw_cell_level_overlay(
+            image, diagnosis,
+            tile_size=tile_size,
+            alpha=alpha
+        )
+
+        result['nuclei_count'] = nuclei_count
+        result['nuclei_by_class'] = nuclei_by_class
+
+        # Add cell-level legend
+        if show_legend:
+            annotated = draw_cell_level_legend(
+                annotated, nuclei_by_class, nuclei_count
+            )
+    else:
+        # V15.2: Patch-level visualization with rectangles
+        annotated = draw_patch_overlay(
+            image, diagnosis,
+            tile_size=tile_size,
+            alpha=alpha,
+            show_empty=show_empty,
+            color_mode=color_mode
+        )
+
+        # Add legend
+        if show_legend:
+            annotated = draw_legend(annotated, diagnosis, color_mode=color_mode)
 
     # Add banner
     if show_banner:
@@ -616,7 +847,7 @@ def visualize_diagnosis(
     # Save
     cv2.imwrite(output_path, annotated_bgr)
 
-    return output_path
+    return result
 
 
 # =============================================================================
@@ -684,6 +915,8 @@ Examples:
                         help="Hide legend")
     parser.add_argument("--no_banner", action="store_true",
                         help="Hide diagnosis banner")
+    parser.add_argument("--cell_level", action="store_true",
+                        help="V15.3: Use cell-level visualization with nuclei contours (instead of patch rectangles)")
 
     # Pipeline options
     parser.add_argument("--tile_size", type=int, default=224)
@@ -702,7 +935,10 @@ Examples:
 
     print("\n" + "=" * 80)
     print("  CYTOLOGY PREDICTION VISUALIZATION")
-    print("  V15.2 Cell Triage + MultiHead Bethesda")
+    if args.cell_level:
+        print("  V15.3 Cell-Level (Nuclei Contours via H-Channel)")
+    else:
+        print("  V15.2 Patch-Level (Rectangle Overlays)")
     print("=" * 80)
 
     # Validate inputs
@@ -813,8 +1049,8 @@ Examples:
                 print(f"    Patches: {diagnosis.patches_with_cells}/{diagnosis.total_patches} with cells")
                 print(f"    Saved: {output_path}")
             else:
-                # Standard visualization
-                visualize_diagnosis(
+                # Standard visualization (patch-level or cell-level)
+                vis_result = visualize_diagnosis(
                     str(image_path),
                     diagnosis,
                     str(output_path),
@@ -823,11 +1059,14 @@ Examples:
                     color_mode=args.color_mode,
                     show_empty=args.show_empty,
                     show_legend=not args.no_legend,
-                    show_banner=not args.no_banner
+                    show_banner=not args.no_banner,
+                    cell_level=args.cell_level
                 )
 
                 print(f"    Result: {diagnosis.binary_result} - {diagnosis.severity_result}")
                 print(f"    Patches: {diagnosis.patches_with_cells}/{diagnosis.total_patches} with cells")
+                if args.cell_level and 'nuclei_count' in vis_result:
+                    print(f"    Nuclei detected: {vis_result['nuclei_count']}")
                 print(f"    Saved: {output_path}")
 
             results_summary.append({
