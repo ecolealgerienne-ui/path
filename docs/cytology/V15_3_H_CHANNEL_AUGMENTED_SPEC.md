@@ -404,10 +404,11 @@ V15.2 (Patch-Level):              V15.3 (Cell-Level):
 - [x] Implémenter `compute_h_stats_batch()` pour traitement par lot
 - [x] Tests unitaires (`tests/unit/test_h_channel.py`)
 
-### Phase 2: Cell Triage v2 (Jour 2-3)
-- [ ] Modifier dataset pour inclure H-Stats
-- [ ] Entraîner Cell Triage v2 avec features augmentées (1540D)
-- [ ] Évaluer amélioration recall
+### Phase 2: Cell Triage v2 (Jour 2-3) ✅ TERMINÉE
+- [x] Script d'entraînement `07b_train_cell_triage_v2.py` créé
+- [x] Dataset avec H-Stats extraction automatique
+- [x] Support v2 dans `11_unified_inference.py` (auto-détection version)
+- [ ] Entraîner et évaluer (à lancer par l'utilisateur)
 
 ### Phase 3: Confidence Boosting (Jour 3) ✅ TERMINÉE
 - [x] Implémenter `apply_confidence_boosting()` dans `src/preprocessing/h_channel.py`
@@ -445,6 +446,7 @@ V15.2 (Patch-Level):              V15.3 (Cell-Level):
 
 | Date | Version | Changements |
 |------|---------|-------------|
+| 2026-01-24 | v0.3 | Phase 2 implémentée (Cell Triage v2 training script + inference support) |
 | 2026-01-24 | v0.2 | Phase 1 + Phase 3 + Phase 4 (partiel) implémentées |
 | 2026-01-24 | v0.1 | Création spécification initiale |
 
