@@ -305,6 +305,8 @@ python scripts/cytology/06_sliding_window_inference.py \
 | `scripts/cytology/06_sliding_window_inference.py` | Inference sliding window | ✅ |
 | `scripts/cytology/07_train_cell_triage.py` | Entrainement Cell Triage | ✅ |
 | `scripts/cytology/08_train_multihead_bethesda.py` | Entrainement MultiHead Bethesda | ✅ |
+| `scripts/cytology/11_unified_inference.py` | Pipeline unifie Cell Triage + Bethesda | ✅ |
+| `scripts/cytology/12_visualize_predictions.py` | Visualisation des predictions | ✅ |
 
 ### 6.2 Modeles Entraines
 
@@ -386,8 +388,8 @@ python scripts/cytology/06_sliding_window_inference.py \
 
 ### 9.1 Court Terme (Production)
 
-- [ ] Integrer Cell Triage + MultiHead dans pipeline d'inference unifie
-- [ ] Ajouter visualisation des predictions sur les images
+- [x] Integrer Cell Triage + MultiHead dans pipeline d'inference unifie → `11_unified_inference.py`
+- [x] Ajouter visualisation des predictions sur les images → `12_visualize_predictions.py`
 - [ ] Creer API REST pour integration clinique
 
 ### 9.2 Moyen Terme (Amelioration)
@@ -446,4 +448,5 @@ D'ou les poids de classe asymetriques: `[0.3, 1.0]` pour privilegier la detectio
 | Date | Version | Changements |
 |------|---------|-------------|
 | 2026-01-23 | v1.0 | Creation initiale, Cell Triage 96% |
-| 2026-01-23 | **v2.0** | **MultiHead Bethesda trained, 97.1% binary recall** |
+| 2026-01-23 | v2.0 | MultiHead Bethesda trained, 97.1% binary recall |
+| 2026-01-24 | **v2.1** | **Visualisation des predictions (12_visualize_predictions.py)** |

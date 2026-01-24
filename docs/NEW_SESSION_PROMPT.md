@@ -30,7 +30,8 @@ scripts/cytology/
 ├── 08_train_multihead_bethesda.py  # ✅ MultiHead Bethesda
 ├── 09_extract_sipakmed_features.py # ✅ SIPaKMeD integration
 ├── 10_train_multihead_combined.py  # ✅ Combined training
-└── 11_unified_inference.py         # ✅ Pipeline unifié complet
+├── 11_unified_inference.py         # ✅ Pipeline unifié complet
+└── 12_visualize_predictions.py     # ✅ Visualisation des prédictions
 ```
 
 ### Modèles Entraînés
@@ -96,8 +97,8 @@ Le pattern utilisé dans V15.2:
 ### 9.1 Court Terme (Production)
 
 - [x] ~~Intégrer Cell Triage + MultiHead dans pipeline d'inférence unifié~~ → `11_unified_inference.py`
-- [ ] **Ajouter visualisation des prédictions sur les images** ← **PROCHAINE ÉTAPE**
-- [ ] Créer API REST pour intégration clinique
+- [x] ~~Ajouter visualisation des prédictions sur les images~~ → `12_visualize_predictions.py`
+- [ ] **Créer API REST pour intégration clinique** ← **PROCHAINE ÉTAPE**
 
 ### 9.2 Moyen Terme (Amélioration)
 
@@ -113,53 +114,58 @@ Le pattern utilisé dans V15.2:
 
 ---
 
-## 🎯 TÂCHE IMMÉDIATE: Visualisation des Prédictions
+## ✅ TÂCHE COMPLÉTÉE: Visualisation des Prédictions
+
+> **Status:** Implémentée dans `12_visualize_predictions.py`
+
+### Usage
+
+```bash
+# Single image
+python scripts/cytology/12_visualize_predictions.py \
+    --image path/to/image.jpg \
+    --output results/visualizations/
+
+# Directory of images
+python scripts/cytology/12_visualize_predictions.py \
+    --input_dir data/raw/apcdata/APCData_YOLO/val/images \
+    --output results/visualizations/ \
+    --max_images 10
+
+# Fine-grained class colors
+python scripts/cytology/12_visualize_predictions.py \
+    --image path/to/image.jpg \
+    --color_mode class
+```
+
+### Fonctionnalités
+- Overlay des patches colorés par sévérité (Vert=NILM, Jaune=Low-grade, Rouge=High-grade)
+- Légende avec comptage par classe
+- Bannière avec diagnostic final et recommandation clinique
+- Mode `--color_mode class` pour afficher les 6 classes Bethesda
+
+---
+
+## 🎯 PROCHAINE TÂCHE: API REST pour Intégration Clinique
 
 ### Objectif
-Créer un script qui génère une image annotée avec les prédictions du pipeline.
+Créer une API REST (FastAPI) pour intégration dans systèmes cliniques.
 
-### Spécifications
+### Spécifications suggérées
+1. **Endpoints:**
+   - `POST /diagnose` — Upload image, retourne diagnostic
+   - `GET /health` — Status de l'API
 
-1. **Input:** Image LBC + résultats du pipeline unifié (`11_unified_inference.py`)
-
-2. **Output:** Image avec overlay des patches colorés par sévérité:
-   - 🟢 Vert = NILM (Normal)
-   - 🟡 Jaune = Low-grade (ASCUS, LSIL)
-   - 🔴 Rouge = High-grade (ASCH, HSIL, SCC)
-   - ⬜ Gris/Transparent = Patch vide (filtré par Cell Triage)
-
-3. **Éléments à afficher:**
-   - Rectangles sur les patches avec cellules
-   - Légende avec comptage par classe
-   - Diagnostic final (NORMAL / ABNORMAL Low-grade / ABNORMAL High-grade)
-   - Recommandation clinique
-
-### Script de référence
-`scripts/cytology/11_unified_inference.py` contient:
-- `UnifiedInferencePipeline` — pipeline complet
-- `PatchResult` — résultat par patch (x, y, class_name, severity, etc.)
-- `ImageDiagnosis` — diagnostic agrégé
-
-### Pattern suggéré
-```python
-# Utiliser OpenCV pour dessiner
-import cv2
-
-# Couleurs BGR
-COLORS = {
-    "Normal": (0, 255, 0),      # Vert
-    "Low-grade": (0, 255, 255), # Jaune
-    "High-grade": (0, 0, 255),  # Rouge
-    "Empty": (128, 128, 128)    # Gris
-}
-
-# Dessiner rectangle pour chaque patch
-for patch in diagnosis.patch_results:
-    if patch.has_cells:
-        color = COLORS[patch.severity]
-        cv2.rectangle(image, (patch.x, patch.y),
-                     (patch.x + 224, patch.y + 224), color, 2)
-```
+2. **Response format:**
+   ```json
+   {
+     "diagnosis": "ABNORMAL",
+     "severity": "High-grade",
+     "recommendation": "Colposcopy recommended",
+     "confidence": 0.95,
+     "patch_count": {"NILM": 45, "HSIL": 3, ...}
+   }
+   ```
 
 ---
 
@@ -231,14 +237,14 @@ b08d1b9 feat(v15.2): Add SIPaKMeD integration for combined training
 
 ## ✅ CHECKLIST NOUVELLE SESSION
 
-1. [ ] Lire `docs/cytology/V15_2_PIPELINE_PROGRESS.md` section 9
-2. [ ] Vérifier les scripts existants dans `scripts/cytology/`
-3. [ ] Utiliser `11_unified_inference.py` comme base
-4. [ ] Créer la visualisation (étape 9.1.2)
-5. [ ] Mettre à jour la doc après complétion
+1. [x] Lire `docs/cytology/V15_2_PIPELINE_PROGRESS.md` section 9
+2. [x] Vérifier les scripts existants dans `scripts/cytology/`
+3. [x] Utiliser `11_unified_inference.py` comme base
+4. [x] Créer la visualisation (étape 9.1.2) → `12_visualize_predictions.py`
+5. [x] Mettre à jour la doc après complétion
 6. [ ] Commit et push
 
 ---
 
-**Dernière mise à jour:** 2026-01-23
-**Prochaine action:** Ajouter visualisation des prédictions sur les images
+**Dernière mise à jour:** 2026-01-24
+**Prochaine action:** Créer API REST pour intégration clinique
