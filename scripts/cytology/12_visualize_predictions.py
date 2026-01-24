@@ -308,8 +308,247 @@ def create_comparison_image(
 
 
 # =============================================================================
+#  HEATMAP SEVERITY SCALE (for suspicious areas only)
+# =============================================================================
+
+# Severity scores for heatmap intensity (0 = not shown, higher = more intense)
+SEVERITY_SCORES = {
+    "NILM": 0,      # Not shown
+    "ASCUS": 1,     # Low suspicion
+    "ASCH": 2,      # Moderate suspicion
+    "LSIL": 2,      # Low-grade lesion
+    "HSIL": 3,      # High-grade lesion
+    "SCC": 4,       # Cancer
+}
+
+# Heatmap color scale (BGR format for OpenCV)
+# From yellow (low severity) to red (high severity)
+HEATMAP_COLORS = {
+    1: (0, 255, 255),    # Yellow - ASCUS
+    2: (0, 165, 255),    # Orange - ASCH/LSIL
+    3: (0, 0, 255),      # Red - HSIL
+    4: (0, 0, 180),      # Dark red - SCC
+}
+
+
+# =============================================================================
 #  VISUALIZATION FUNCTIONS
 # =============================================================================
+
+def draw_heatmap_overlay(
+    image: np.ndarray,
+    diagnosis: 'ImageDiagnosis',
+    tile_size: int = 224,
+    blur_kernel: int = 51,
+    alpha: float = 0.5
+) -> tuple:
+    """
+    Draw smooth heatmap overlay showing only suspicious areas.
+
+    Normal (NILM) patches are NOT colored - only suspicious areas
+    are highlighted with a gradient from yellow to red.
+
+    Args:
+        image: Original image (RGB)
+        diagnosis: ImageDiagnosis from unified pipeline
+        tile_size: Size of patches (default 224)
+        blur_kernel: Gaussian blur kernel size for smoothing
+        alpha: Heatmap transparency (0=transparent, 1=opaque)
+
+    Returns:
+        tuple: (annotated_image, stats_dict)
+    """
+    h, w = image.shape[:2]
+
+    # Create severity map (float, for smooth blending)
+    severity_map = np.zeros((h, w), dtype=np.float32)
+
+    # Create color channels for heatmap
+    heatmap_r = np.zeros((h, w), dtype=np.float32)
+    heatmap_g = np.zeros((h, w), dtype=np.float32)
+    heatmap_b = np.zeros((h, w), dtype=np.float32)
+
+    # Stats tracking
+    stats = {
+        "suspicious_patches": 0,
+        "ascus_count": 0,
+        "lsil_count": 0,
+        "hsil_count": 0,
+        "scc_count": 0,
+    }
+
+    for patch in diagnosis.patch_results:
+        if not patch.has_cells:
+            continue
+
+        # Get severity score
+        score = SEVERITY_SCORES.get(patch.class_name, 0)
+
+        # Skip NILM patches (score = 0)
+        if score == 0:
+            continue
+
+        stats["suspicious_patches"] += 1
+
+        # Track by class
+        if patch.class_name == "ASCUS":
+            stats["ascus_count"] += 1
+        elif patch.class_name in ["LSIL", "ASCH"]:
+            stats["lsil_count"] += 1
+        elif patch.class_name == "HSIL":
+            stats["hsil_count"] += 1
+        elif patch.class_name == "SCC":
+            stats["scc_count"] += 1
+
+        x, y = patch.x, patch.y
+        x2 = min(x + tile_size, w)
+        y2 = min(y + tile_size, h)
+
+        # Get color for this severity level (BGR)
+        color = HEATMAP_COLORS.get(score, (0, 200, 255))
+
+        # Fill the patch region
+        severity_map[y:y2, x:x2] = np.maximum(severity_map[y:y2, x:x2], score / 4.0)
+        heatmap_b[y:y2, x:x2] = color[0]
+        heatmap_g[y:y2, x:x2] = color[1]
+        heatmap_r[y:y2, x:x2] = color[2]
+
+    # Apply Gaussian blur for smooth transitions
+    if blur_kernel > 0:
+        severity_map = cv2.GaussianBlur(severity_map, (blur_kernel, blur_kernel), 0)
+        heatmap_r = cv2.GaussianBlur(heatmap_r, (blur_kernel, blur_kernel), 0)
+        heatmap_g = cv2.GaussianBlur(heatmap_g, (blur_kernel, blur_kernel), 0)
+        heatmap_b = cv2.GaussianBlur(heatmap_b, (blur_kernel, blur_kernel), 0)
+
+    # Normalize severity map to [0, 1]
+    if severity_map.max() > 0:
+        severity_map = severity_map / severity_map.max()
+
+    # Create colored heatmap
+    heatmap = np.stack([heatmap_r, heatmap_g, heatmap_b], axis=-1).astype(np.uint8)
+
+    # Blend heatmap with original image using severity as alpha mask
+    # Only blend where severity > 0 (suspicious areas)
+    annotated = image.copy()
+
+    for c in range(3):
+        # Blend: result = original * (1 - alpha * severity) + heatmap * (alpha * severity)
+        blend_mask = alpha * severity_map
+        annotated[:, :, c] = (
+            image[:, :, c] * (1 - blend_mask) +
+            heatmap[:, :, c] * blend_mask
+        ).astype(np.uint8)
+
+    return annotated, stats
+
+
+def draw_heatmap_legend(
+    image: np.ndarray,
+    stats: dict
+) -> np.ndarray:
+    """
+    Draw legend for heatmap visualization.
+
+    Args:
+        image: Image to add legend to
+        stats: Statistics dict from draw_heatmap_overlay
+
+    Returns:
+        Image with legend
+    """
+    annotated = image.copy()
+    h, w = image.shape[:2]
+
+    # Legend box dimensions
+    legend_items = []
+
+    if stats["suspicious_patches"] > 0:
+        legend_items.append(("Suspicious Zones", None, stats["suspicious_patches"]))
+
+        if stats["ascus_count"] > 0:
+            legend_items.append(("ASCUS", (255, 255, 0), stats["ascus_count"]))
+        if stats["lsil_count"] > 0:
+            legend_items.append(("LSIL/ASCH", (255, 165, 0), stats["lsil_count"]))
+        if stats["hsil_count"] > 0:
+            legend_items.append(("HSIL", (255, 0, 0), stats["hsil_count"]))
+        if stats["scc_count"] > 0:
+            legend_items.append(("SCC", (180, 0, 0), stats["scc_count"]))
+    else:
+        legend_items.append(("No suspicious areas", (0, 200, 0), 0))
+
+    # Calculate legend size
+    line_height = 25
+    margin = 10
+    box_width = 180
+    box_height = margin * 2 + len(legend_items) * line_height
+
+    # Position: top-right
+    box_x = w - box_width - margin
+    box_y = margin
+
+    # Draw semi-transparent background
+    overlay = annotated.copy()
+    cv2.rectangle(
+        overlay,
+        (box_x, box_y),
+        (box_x + box_width, box_y + box_height),
+        (255, 255, 255),
+        -1
+    )
+    cv2.addWeighted(overlay, 0.85, annotated, 0.15, 0, annotated)
+
+    # Draw border
+    cv2.rectangle(
+        annotated,
+        (box_x, box_y),
+        (box_x + box_width, box_y + box_height),
+        (0, 0, 0),
+        1
+    )
+
+    # Draw legend items
+    y_pos = box_y + margin + 15
+
+    for label, color, count in legend_items:
+        if color is not None:
+            # Color box
+            cv2.rectangle(
+                annotated,
+                (box_x + margin, y_pos - 12),
+                (box_x + margin + 15, y_pos + 3),
+                color,
+                -1
+            )
+            cv2.rectangle(
+                annotated,
+                (box_x + margin, y_pos - 12),
+                (box_x + margin + 15, y_pos + 3),
+                (0, 0, 0),
+                1
+            )
+            text_x = box_x + margin + 22
+        else:
+            text_x = box_x + margin
+
+        # Text
+        if count > 0:
+            text = f"{label}: {count}"
+        else:
+            text = label
+
+        cv2.putText(
+            annotated,
+            text,
+            (text_x, y_pos),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.45,
+            (0, 0, 0),
+            1
+        )
+        y_pos += line_height
+
+    return annotated
+
 
 def draw_patch_overlay(
     image: np.ndarray,
@@ -786,7 +1025,8 @@ def visualize_diagnosis(
     show_empty: bool = False,
     show_legend: bool = True,
     show_banner: bool = True,
-    cell_level: bool = False
+    cell_level: bool = False,
+    heatmap: bool = False
 ) -> dict:
     """
     Generate complete visualization for a diagnosis.
@@ -802,6 +1042,7 @@ def visualize_diagnosis(
         show_legend: Add legend
         show_banner: Add diagnosis banner
         cell_level: Use V15.3 cell-level visualization (nuclei contours)
+        heatmap: Use smooth heatmap visualization (suspicious areas only)
 
     Returns:
         dict with 'path' and optionally 'nuclei_count'
@@ -814,7 +1055,22 @@ def visualize_diagnosis(
 
     result = {'path': output_path}
 
-    if cell_level:
+    if heatmap:
+        # Heatmap visualization (suspicious areas only)
+        annotated, stats = draw_heatmap_overlay(
+            image, diagnosis,
+            tile_size=tile_size,
+            blur_kernel=71,  # Large blur for smooth transitions
+            alpha=0.6 if alpha < 0.5 else alpha  # Ensure visible
+        )
+
+        result['suspicious_patches'] = stats['suspicious_patches']
+
+        # Add heatmap legend
+        if show_legend:
+            annotated = draw_heatmap_legend(annotated, stats)
+
+    elif cell_level:
         # V15.3: Cell-level visualization with nuclei contours
         annotated, nuclei_count, nuclei_by_class = draw_cell_level_overlay(
             image, diagnosis,
@@ -924,6 +1180,8 @@ Examples:
                         help="Hide diagnosis banner")
     parser.add_argument("--cell_level", action="store_true",
                         help="V15.3: Use cell-level visualization with nuclei contours (instead of patch rectangles)")
+    parser.add_argument("--heatmap", action="store_true",
+                        help="Use smooth heatmap visualization (only suspicious areas colored)")
 
     # Pipeline options
     parser.add_argument("--tile_size", type=int, default=224)
@@ -942,7 +1200,9 @@ Examples:
 
     print("\n" + "=" * 80)
     print("  CYTOLOGY PREDICTION VISUALIZATION")
-    if args.cell_level:
+    if args.heatmap:
+        print("  Heatmap Mode (Suspicious Areas Only)")
+    elif args.cell_level:
         print("  V15.3 Cell-Level (Nuclei Contours via H-Channel)")
     else:
         print("  V15.2 Patch-Level (Rectangle Overlays)")
@@ -1067,11 +1327,14 @@ Examples:
                     show_empty=args.show_empty,
                     show_legend=not args.no_legend,
                     show_banner=not args.no_banner,
-                    cell_level=args.cell_level
+                    cell_level=args.cell_level,
+                    heatmap=args.heatmap
                 )
 
                 print(f"    Result: {diagnosis.binary_result} - {diagnosis.severity_result}")
                 print(f"    Patches: {diagnosis.patches_with_cells}/{diagnosis.total_patches} with cells")
+                if args.heatmap and 'suspicious_patches' in vis_result:
+                    print(f"    Suspicious zones: {vis_result['suspicious_patches']}")
                 if args.cell_level and 'nuclei_count' in vis_result:
                     print(f"    Nuclei detected: {vis_result['nuclei_count']}")
                 print(f"    Saved: {output_path}")
