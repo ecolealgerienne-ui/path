@@ -1,25 +1,52 @@
 # Prompt Nouvelle Session — V15.2 Cytology Pipeline
 
-> **Date:** 2026-01-22
-> **Version:** V15.2-Lite (POC)
-> **Statut:** ✅ Consensus Final — Architecture documentée, prêt pour Phase 0
+> **Date:** 2026-01-23
+> **Version:** V15.2 — Production Ready & SOTA Validated
+> **Statut:** ✅ Pipeline complet, visualisation à implémenter
 
 ---
 
-## 🆕 V15.2 — CHANGEMENT DE PARADIGME
+## 🎯 CONTEXTE ACTUEL
 
-**V15.2 remplace V14** avec une architecture industrielle:
+### Résumé V15.2
 
-| Composant | V14 | V15.2 |
-|-----------|-----|-------|
-| Détection | CellPose | **YOLO** |
-| Segmentation | CellPose | **HoVerNet-lite** |
-| Encoder | H-Optimus (fixe) | **Benchmark 5 encoders** |
-| Fusion | Concat simple | **Gated Feature Fusion** |
-| Sécurité | — | **Conformal + OOD** |
-| Dataset POC | SIPaKMeD | **APCData uniquement** |
+Le pipeline V15.2 est **fonctionnel et validé SOTA** (comparé à 12 publications peer-reviewed 2020-2025):
 
-**Document de référence:** `docs/cytology/V15_ARCHITECTURE_SPEC.md`
+| Métrique | Notre Résultat | Littérature | Status |
+|----------|---------------|-------------|--------|
+| Binary Recall (Abnormal) | **96.88%** | 94-97% | ✅ Top-tier |
+| Severity Recall (High-grade) | **85.48%** | 75-83% | ✅ **Au-dessus SOTA** |
+| Fine-grained Balanced Acc | **59.73%** | 55-62% | ✅ SOTA |
+
+> **Important:** 60% sur LBC réel = SOTA. Les scores 93-97% sur SIPaKMeD sont sur cellules isolées (non représentatif cliniquement).
+
+### Scripts Existants (À UTILISER)
+
+```
+scripts/cytology/
+├── 05_tile_apcdata.py              # ✅ Tiling 672×672
+├── 06_sliding_window_inference.py  # ✅ Sliding window + features
+├── 07_train_cell_triage.py         # ✅ Cell Triage (96.28% recall)
+├── 08_train_multihead_bethesda.py  # ✅ MultiHead Bethesda
+├── 09_extract_sipakmed_features.py # ✅ SIPaKMeD integration
+├── 10_train_multihead_combined.py  # ✅ Combined training
+└── 11_unified_inference.py         # ✅ Pipeline unifié complet
+```
+
+### Modèles Entraînés
+
+| Modèle | Chemin | Performance |
+|--------|--------|-------------|
+| Cell Triage | `models/cytology/cell_triage.pt` | 96.28% recall @ threshold 0.01 |
+| MultiHead Bethesda | `models/cytology/multihead_bethesda_combined.pt` | 96.88% binary, 85.48% severity, 59.73% fine-grained |
+
+### Documentation Existante
+
+| Fichier | Description |
+|---------|-------------|
+| `docs/cytology/V15_2_PIPELINE_PROGRESS.md` | Rapport final V15.2 (section 9 = TODO) |
+| `docs/cytology/V15_2_LITERATURE_COMPARISON.md` | Comparaison 12 publications peer-reviewed |
+| `CLAUDE.md` | Contexte projet global |
 
 ---
 
@@ -27,256 +54,191 @@
 
 ### 1. Utilise TOUJOURS l'existant
 ```
-- NE JAMAIS créer un nouveau fichier si un existant peut être modifié
-- NE JAMAIS dupliquer du code — importer depuis src/ ou scripts existants
-- VÉRIFIER avec grep/glob si une fonction existe déjà avant de la coder
+- NE JAMAIS créer un nouveau script si un existant peut être modifié
+- VÉRIFIER dans scripts/cytology/ avant de créer quoi que ce soit
+- LIRE les scripts existants pour comprendre le pattern utilisé
+- Les classes CellTriageClassifier et MultiHeadBethesdaClassifier sont dans 11_unified_inference.py
 ```
 
 ### 2. On ne réinvente pas la roue
 ```
-- Les scripts dans scripts/cytology/ sont la référence
-- Les constantes sont dans src/constants.py et src/preprocessing/
-- Les algorithmes critiques sont dans src/postprocessing/, src/metrics/, etc.
+- Les constantes (HOPTIMUS_MEAN, BETHESDA_CLASSES, etc.) sont dans les scripts existants
+- Les modèles sont chargés via torch.load() avec weights_only=False
+- IMPORTER depuis l'existant, ne pas redéfinir
 ```
 
 ### 3. Pas d'initiatives sans raison
 ```
-- NE PAS ajouter de features non demandées
-- NE PAS refactorer du code qui fonctionne
-- NE PAS changer les paramètres validés sans demande explicite
+- Suivre UNIQUEMENT la section 9 de docs/cytology/V15_2_PIPELINE_PROGRESS.md
+- Ne pas ajouter de fonctionnalités non demandées
+- Ne pas "améliorer" le code existant sans demande explicite
 ```
 
 ### 4. S'inspirer des scripts existants
 ```
-scripts/cytology/
-├── 00_preprocess_sipakmed.py      # Preprocessing référence
-├── 01_extract_embeddings_gt.py    # H-Optimus extraction référence
-├── 02_compute_morphometry.py      # Morphometry 20 features référence
-├── 03_train_mlp_classifier.py     # MLP architecture référence
-├── 04_evaluate_cytology.py        # Évaluation Safety First référence
-├── 05_validate_cellpose_apcdata.py # CellPose validation ✅ VALIDÉ
-└── 06_end_to_end_apcdata.py       # Pipeline E2E ✅ CRÉÉ (à tester)
+Le pattern utilisé dans V15.2:
+- H-Optimus via timm.create_model("hf-hub:bioptimus/H-optimus-0")
+- Features extraites avec model.forward_features(x)[:, 0, :] (CLS token)
+- Normalisation: HOPTIMUS_MEAN, HOPTIMUS_STD
+- Taille input: 224×224
 ```
 
-### 5. Mettre à jour CLAUDE.md
+### 5. Mettre à jour la documentation
 ```
-Toute décision importante, paramètre validé, ou résultat doit être documenté
-dans CLAUDE.md pour les futures sessions.
+- Après chaque étape terminée, mettre à jour section 9 de V15_2_PIPELINE_PROGRESS.md
+- Mettre à jour CLAUDE.md si changement majeur
 ```
 
 ---
 
-## 📊 CONTEXTE ACTUEL — V15.2 Cytology
+## 📋 ÉTAPES À FAIRE (Section 9 de V15_2_PIPELINE_PROGRESS.md)
 
-### État du Projet
+### 9.1 Court Terme (Production)
 
-| Phase | Status | Description |
-|-------|--------|-------------|
-| **V14 (Legacy)** | ✅ DONE | POC SIPaKMeD, CellPose validé sur APCData |
-| **V15.2 Phase 0** | ⏳ À FAIRE | Benchmark 5 encoders (7-10 jours) |
-| **V15.2 Phase 1-3** | ⏳ PENDING | Architecture complète (12 semaines) |
+- [x] ~~Intégrer Cell Triage + MultiHead dans pipeline d'inférence unifié~~ → `11_unified_inference.py`
+- [ ] **Ajouter visualisation des prédictions sur les images** ← **PROCHAINE ÉTAPE**
+- [ ] Créer API REST pour intégration clinique
 
-### Dataset POC
+### 9.2 Moyen Terme (Amélioration)
 
-**APCData uniquement:** 425 images, 3,619 cellules (Bethesda 6 classes)
+- [ ] Augmenter le dataset pour ASCH et SCC
+- [ ] Tester data augmentation (rotations, color jitter)
+- [ ] Optimiser threshold Severity pour meilleur recall high-grade
 
-| Aspect | Valeur |
-|--------|--------|
-| Format | LBC (Liquid-Based Cytology) |
-| Annotations | Bounding boxes + Points nucleus |
-| Classes | NILM, ASCUS, ASCH, LSIL, HSIL, SCC |
+### 9.3 Long Terme (R&D)
 
----
-
-## 🎯 PROCHAINE ÉTAPE IMMÉDIATE
-
-### Phase 0: Benchmark Encoder (7-10 jours)
-
-**Objectif:** Sélection data-driven de l'encoder (pas de dogme)
-
-```bash
-python scripts/cytology/benchmark_encoders.py \
-    --dataset apcdata \
-    --encoders h-optimus,uni,phikon-v2,convnext-base,resnet50 \
-    --method linear_probe \
-    --cv_folds 5 \
-    --output_dir reports/encoder_benchmark
-```
-
-### Encoders à tester
-
-| Encoder | Dims | Attendu (littérature) |
-|---------|------|----------------------|
-| ResNet50 | 2048 | 70-80% (baseline) |
-| H-Optimus | 1536 | 75-85% |
-| UNI | 1024 | 78-88% |
-| Phikon-v2 | 768 | 80-90% |
-| ConvNeXt-Base | 1024 | 80-92% |
-
-### Règle de Décision
-
-```
-1. Sélectionner encoder avec meilleure Balanced Accuracy
-2. Si écart frozen vs fine-tuned > 5% → Full fine-tuning
-3. Sinon → LoRA
-```
-
-### Métriques à Collecter
-
-| Métrique | Priorité |
-|----------|----------|
-| **Balanced Accuracy** | 🔴 CRITIQUE |
-| F1-score (macro) | 🔴 CRITIQUE |
-| ASC-H Recall | 🔴 CRITIQUE |
-| HSIL Recall | 🔴 CRITIQUE |
-| ECE (calibration) | 🟡 Important |
+- [ ] Fine-tuning H-Optimus sur données cytologiques
+- [ ] Attention mechanisms pour interprétabilité
+- [ ] Multi-instance learning pour classification WSI complète
 
 ---
 
-## 📁 STRUCTURE DONNÉES
+## 🎯 TÂCHE IMMÉDIATE: Visualisation des Prédictions
 
-```
-data/raw/apcdata/
-├── APCData_YOLO/          # ✅ UTILISER CELUI-CI
-│   ├── images/            # 425 images JPG (2048×1532)
-│   ├── labels/            # Annotations YOLO (.txt)
-│   └── classes.txt        # NILM, ASCUS, ASCH, LSIL, HSIL, SCC
-│
-└── APCData_points/        # ❌ NE PAS UTILISER (noms hashés)
+### Objectif
+Créer un script qui génère une image annotée avec les prédictions du pipeline.
 
-models/cytology/
-└── mlp_classifier_best.pth  # MLP entraîné sur SIPaKMeD (Phase 1)
+### Spécifications
 
-reports/
-├── cellpose_apcdata_validation/  # ✅ Résultats CellPose (complet)
-└── end_to_end_apcdata/           # 📝 À générer (E2E)
+1. **Input:** Image LBC + résultats du pipeline unifié (`11_unified_inference.py`)
+
+2. **Output:** Image avec overlay des patches colorés par sévérité:
+   - 🟢 Vert = NILM (Normal)
+   - 🟡 Jaune = Low-grade (ASCUS, LSIL)
+   - 🔴 Rouge = High-grade (ASCH, HSIL, SCC)
+   - ⬜ Gris/Transparent = Patch vide (filtré par Cell Triage)
+
+3. **Éléments à afficher:**
+   - Rectangles sur les patches avec cellules
+   - Légende avec comptage par classe
+   - Diagnostic final (NORMAL / ABNORMAL Low-grade / ABNORMAL High-grade)
+   - Recommandation clinique
+
+### Script de référence
+`scripts/cytology/11_unified_inference.py` contient:
+- `UnifiedInferencePipeline` — pipeline complet
+- `PatchResult` — résultat par patch (x, y, class_name, severity, etc.)
+- `ImageDiagnosis` — diagnostic agrégé
+
+### Pattern suggéré
+```python
+# Utiliser OpenCV pour dessiner
+import cv2
+
+# Couleurs BGR
+COLORS = {
+    "Normal": (0, 255, 0),      # Vert
+    "Low-grade": (0, 255, 255), # Jaune
+    "High-grade": (0, 0, 255),  # Rouge
+    "Empty": (128, 128, 128)    # Gris
+}
+
+# Dessiner rectangle pour chaque patch
+for patch in diagnosis.patch_results:
+    if patch.has_cells:
+        color = COLORS[patch.severity]
+        cv2.rectangle(image, (patch.x, patch.y),
+                     (patch.x + 224, patch.y + 224), color, 2)
 ```
 
 ---
 
 ## 🔧 CONSTANTES IMPORTANTES
 
-### H-Optimus-0
 ```python
+# H-Optimus-0
 HOPTIMUS_MEAN = (0.707223, 0.578729, 0.703617)
 HOPTIMUS_STD = (0.211883, 0.230117, 0.177517)
 HOPTIMUS_INPUT_SIZE = 224
-# Output: CLS token (1536) + 256 patches (ignorés pour cytologie)
-```
 
-### MLP Architecture
-```python
-# Input: 1556 dims (1536 CLS + 20 morphometry)
-# Hidden: [512, 256, 128]
-# Output: 7 classes SIPaKMeD
-# Dropout: 0.3, BatchNorm: True
-```
+# Bethesda classes
+BETHESDA_CLASSES = {
+    0: "NILM", 1: "ASCUS", 2: "ASCH",
+    3: "LSIL", 4: "HSIL", 5: "SCC"
+}
 
-### Mapping Classes
-
-**SIPaKMeD (MLP output):**
-```python
-SIPAKMED_CLASSES = [
-    'normal_columnar',      # 0 → Normal
-    'normal_intermediate',  # 1 → Normal
-    'normal_superficiel',   # 2 → Normal
-    'light_dysplastic',     # 3 → Abnormal
-    'moderate_dysplastic',  # 4 → Abnormal
-    'severe_dysplastic',    # 5 → Abnormal
-    'carcinoma_in_situ'     # 6 → Abnormal
-]
-```
-
-**Bethesda (APCData GT):**
-```python
-BETHESDA_CLASSES = ['NILM', 'ASCUS', 'ASCH', 'LSIL', 'HSIL', 'SCC']
-# NILM → Normal
-# Tous les autres → Abnormal
+# Severity mapping
+SEVERITY_MAPPING = {
+    0: "Normal",     # NILM
+    1: "Low-grade",  # ASCUS
+    2: "High-grade", # ASCH
+    3: "Low-grade",  # LSIL
+    4: "High-grade", # HSIL
+    5: "High-grade"  # SCC
+}
 ```
 
 ---
 
-## 📚 DOCUMENTATION CLÉ
+## 📁 STRUCTURE DONNÉES
 
-| Document | Description |
-|----------|-------------|
-| `CLAUDE.md` | **LIRE EN PREMIER** — Contexte projet complet |
-| `docs/cytology/V14_PRODUCTION_PIPELINE.md` | Pipeline production avec params validés |
-| `docs/cytology/V14_CYTOLOGY_BRANCH.md` | Specs complètes V14 |
-| `scripts/cytology/README.md` | Guide scripts avec commandes |
-
----
-
-## ⚠️ POINTS D'ATTENTION CRITIQUES
-
-### 1. APCData_YOLO vs APCData_points
 ```
-APCData_YOLO: Images avec noms descriptifs → UTILISER
-APCData_points: Images avec noms hashés → NE PAS UTILISER
-```
+models/cytology/
+├── cell_triage.pt                    # ✅ Cell Triage (96.28% recall)
+└── multihead_bethesda_combined.pt    # ✅ MultiHead (96.88% binary)
 
-### 2. Précision basse = NORMAL
-```
-La précision CellPose (~7%) est ATTENDUE car:
-- APCData annote seulement un sous-ensemble de cellules
-- CellPose détecte TOUTES les cellules (correctement)
-- Le classifieur MLP filtrera les cellules normales
+data/raw/apcdata/APCData_YOLO/
+├── train/images/                     # Images d'entraînement
+├── val/images/                       # Images de validation
+└── cache_cells/                      # Features H-Optimus cachées
 
-Métrique importante: ABNORMAL DETECTION RATE (90.8%)
-```
-
-### 3. Safety First
-```
-JAMAIS rater un cancer > Éviter faux positifs
-Sensibilité > Précision
-Target: Sensibilité ≥98%
-```
-
-### 4. CellPose sur cellules isolées
-```
-CellPose = optimisé pour GROUPES cellulaires (tissus)
-Sur cellules isolées (SIPaKMeD) → sur-segmentation
-Solution Phase 1: Masques GT
-Solution Phase 2: CellPose sur lames réelles ✅
+results/unified_inference/
+└── diagnosis_summary.json            # Résultats du pipeline
 ```
 
 ---
 
-## 🔄 COMMITS RÉCENTS (Session 2026-01-21)
+## ⚠️ POINTS D'ATTENTION
+
+1. **Threshold Cell Triage = 0.01** (très bas pour maximiser recall)
+2. **Threshold Binary = 0.3** (pour haute sensibilité)
+3. **Threshold Severity = 0.4** (équilibré)
+4. **Stride = 112** (50% overlap entre patches)
+5. **Tile size = 224** (input H-Optimus)
+
+---
+
+## 🔄 COMMITS RÉCENTS
 
 ```
-e207425 docs(v14-cyto): Update README with validated CellPose params and e2e script
-77440c6 feat(v14-cyto): Add end-to-end pipeline validation script for APCData
-344ccbd docs(v14-cyto): Update CellPose config with validated parameters
-d316cc5 feat(v14-cyto): Add abnormal detection rate metric (Safety First)
-c25c046 feat(v14-cyto): Add area-based filtering to CellPose validation
+94626e6 feat(v15.2): Add unified inference pipeline (Cell Triage + MultiHead Bethesda)
+0be4d41 docs(v15.2): Add peer-reviewed literature comparison and combined results
+b08d1b9 feat(v15.2): Add SIPaKMeD integration for combined training
+5b15728 docs(v15.2): Add benchmark comparison with state-of-the-art
 ```
 
 ---
 
-## 🎯 RÉSUMÉ POUR NOUVELLE SESSION
+## ✅ CHECKLIST NOUVELLE SESSION
 
-**Situation actuelle:**
-1. ✅ V15.2 Architecture documentée (consensus final)
-2. ✅ Dataset POC défini: APCData uniquement
-3. ⏳ Phase 0 (Benchmark Encoder) **À DÉMARRER**
-
-**Action immédiate:**
-- Lancer benchmark encoders sur APCData
-- Collecter Balanced Accuracy pour 5 encoders
-- Décision data-driven sur encoder final
-
-**Objectif V15.2 POC:**
-- Démontrer architecture fonctionne
-- Sensibilité ≥98% sur cellules anormales
-- Pipeline: Image → YOLO → HoVerNet-lite → Encoder → GFF → MLP → Sécurité
-
-**Documents clés:**
-- `docs/cytology/V15_ARCHITECTURE_SPEC.md` — Specs complètes
-- `docs/cytology/datasets/APCDATA.md` — Dataset POC
-- `scripts/cytology/benchmark_encoders.py` — Script benchmark
+1. [ ] Lire `docs/cytology/V15_2_PIPELINE_PROGRESS.md` section 9
+2. [ ] Vérifier les scripts existants dans `scripts/cytology/`
+3. [ ] Utiliser `11_unified_inference.py` comme base
+4. [ ] Créer la visualisation (étape 9.1.2)
+5. [ ] Mettre à jour la doc après complétion
+6. [ ] Commit et push
 
 ---
 
-**Dernière mise à jour:** 2026-01-22
-**Session actuelle:** Documentation V15.2 finalisée, consensus établi
+**Dernière mise à jour:** 2026-01-23
+**Prochaine action:** Ajouter visualisation des prédictions sur les images
