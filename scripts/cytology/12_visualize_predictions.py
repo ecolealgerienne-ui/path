@@ -215,22 +215,22 @@ def create_comparison_image(
     # Left side: Ground Truth
     gt_image = draw_ground_truth(image.copy(), annotations, border_width=3)
 
-    # Add GT label
+    # Add GT label (Cell-Level)
     cv2.putText(
         gt_image,
-        "GROUND TRUTH",
+        "GROUND TRUTH (Cell-Level)",
         (10, 30),
         cv2.FONT_HERSHEY_SIMPLEX,
-        1.0,
+        0.8,
         (255, 255, 255),
         3
     )
     cv2.putText(
         gt_image,
-        "GROUND TRUTH",
+        "GROUND TRUTH (Cell-Level)",
         (10, 30),
         cv2.FONT_HERSHEY_SIMPLEX,
-        1.0,
+        0.8,
         (0, 0, 0),
         2
     )
@@ -240,7 +240,7 @@ def create_comparison_image(
     for _, class_name, _, _, _, _ in annotations:
         gt_counts[class_name] = gt_counts.get(class_name, 0) + 1
 
-    gt_text = f"Cells: {len(annotations)}"
+    gt_text = f"Annotated Cells: {len(annotations)}"
     cv2.putText(gt_image, gt_text, (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
     cv2.putText(gt_image, gt_text, (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 1)
 
@@ -251,27 +251,27 @@ def create_comparison_image(
         show_empty=False, color_mode="class"
     )
 
-    # Add Prediction label
+    # Add Prediction label (Patch-Level)
     cv2.putText(
         pred_image,
-        "PREDICTIONS",
+        "PREDICTIONS (Patch-Level)",
         (10, 30),
         cv2.FONT_HERSHEY_SIMPLEX,
-        1.0,
+        0.8,
         (255, 255, 255),
         3
     )
     cv2.putText(
         pred_image,
-        "PREDICTIONS",
+        "PREDICTIONS (Patch-Level)",
         (10, 30),
         cv2.FONT_HERSHEY_SIMPLEX,
-        1.0,
+        0.8,
         (0, 0, 0),
         2
     )
 
-    pred_text = f"Patches: {diagnosis.patches_with_cells}"
+    pred_text = f"Patches with cells: {diagnosis.patches_with_cells}"
     cv2.putText(pred_image, pred_text, (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
     cv2.putText(pred_image, pred_text, (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 1)
 

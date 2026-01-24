@@ -384,21 +384,66 @@ python scripts/cytology/06_sliding_window_inference.py \
 
 ---
 
-## 9. Prochaines Etapes
+## 9. Architecture et Granularite (IMPORTANT)
 
-### 9.1 Court Terme (Production)
+### 9.1 Deux Niveaux de Granularite
+
+Le pipeline V15.2 opere a deux niveaux differents qu'il ne faut **PAS confondre**:
+
+| Niveau | Description | Utilisation |
+|--------|-------------|-------------|
+| **PATCH-LEVEL** | Region 224×224 pixels | Inference (Sliding Window) |
+| **CELL-LEVEL** | Bounding box d'une cellule | Annotations GT (APCData) |
+
+### 9.2 Pourquoi Cette Difference?
+
+**Training:**
+- **Cell Triage**: Entraine sur tuiles APCData (multi-cellules) → OK pour patches
+- **MultiHead Bethesda**: Entraine sur crops de cellules individuelles (APCData bbox + SIPaKMeD)
+
+**Inference:**
+- Sliding Window 224×224 → patches contenant potentiellement N cellules
+- Le MultiHead classifie chaque **patch**, pas chaque **cellule**
+
+### 9.3 Implication pour la Visualisation
+
+```
+GT APCData:     1 annotation = 1 cellule (bounding box)
+Predictions:    1 patch = region 224×224 (peut contenir 0-N cellules)
+```
+
+**C'est NORMAL que:**
+- Le nombre de patches predits >> nombre de cellules GT
+- Les patches couvrent des regions plus larges que les bbox GT
+- La comparaison visuelle montre des granularites differentes
+
+### 9.4 Ce que Mesure le Pipeline
+
+| Metrique | Ce qu'elle mesure |
+|----------|-------------------|
+| Binary Recall | % de patches anormaux detectes |
+| Severity Recall | % de patches high-grade detectes |
+| Diagnostic Final | Agregation de tous les patches de l'image |
+
+**Le diagnostic final (NORMAL/ABNORMAL/HIGH-GRADE) est fiable** car il agregue les predictions de tous les patches.
+
+---
+
+## 10. Prochaines Etapes
+
+### 10.1 Court Terme (Production)
 
 - [x] Integrer Cell Triage + MultiHead dans pipeline d'inference unifie → `11_unified_inference.py`
 - [x] Ajouter visualisation des predictions sur les images → `12_visualize_predictions.py`
 - [ ] Creer API REST pour integration clinique
 
-### 9.2 Moyen Terme (Amelioration)
+### 10.2 Moyen Terme (Amelioration)
 
 - [ ] Augmenter le dataset pour ASCH et SCC
 - [ ] Tester data augmentation (rotations, color jitter)
 - [ ] Optimiser threshold Severity pour meilleur recall high-grade
 
-### 9.3 Long Terme (R&D)
+### 10.3 Long Terme (R&D)
 
 - [ ] Fine-tuning H-Optimus sur donnees cytologiques
 - [ ] Attention mechanisms pour interpretabilite
@@ -406,9 +451,9 @@ python scripts/cytology/06_sliding_window_inference.py \
 
 ---
 
-## 10. Lecons Apprises
+## 11. Lecons Apprises
 
-### 10.1 Foundation Models > Detection Models
+### 11.1 Foundation Models > Detection Models
 
 | Aspect | Detection (YOLO) | Foundation (H-Optimus) |
 |--------|------------------|------------------------|
@@ -417,14 +462,14 @@ python scripts/cytology/06_sliding_window_inference.py \
 | **Transferabilite** | Limitee | **Excellente** |
 | **Temps dev** | Semaines | **Heures** |
 
-### 10.2 Hierarchie > Classification Plate
+### 11.2 Hierarchie > Classification Plate
 
 L'architecture multi-head permet:
 1. **Triage binaire rapide** — Alerter sur toute anomalie
 2. **Priorisation severite** — Orienter vers colposcopie urgente
 3. **Classification detaillee** — Support au diagnostic
 
-### 10.3 Sensibilite > Specificite
+### 11.3 Sensibilite > Specificite
 
 En screening medical:
 - **Faux negatif = Cancer rate** → Inacceptable
@@ -449,4 +494,5 @@ D'ou les poids de classe asymetriques: `[0.3, 1.0]` pour privilegier la detectio
 |------|---------|-------------|
 | 2026-01-23 | v1.0 | Creation initiale, Cell Triage 96% |
 | 2026-01-23 | v2.0 | MultiHead Bethesda trained, 97.1% binary recall |
-| 2026-01-24 | **v2.1** | **Visualisation des predictions (12_visualize_predictions.py)** |
+| 2026-01-24 | v2.1 | Visualisation des predictions (12_visualize_predictions.py) |
+| 2026-01-24 | **v2.2** | **Clarification architecture patch-level vs cell-level** |
