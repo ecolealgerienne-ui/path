@@ -306,21 +306,42 @@ class UnifiedInferencePipeline:
         self,
         image: np.ndarray,
         tile_size: int = 224,
-        stride: int = 112
+        stride: int = 112,
+        cover_edges: bool = True
     ) -> List[Tuple[np.ndarray, int, int]]:
-        """Génère patches sliding window"""
+        """Génère patches sliding window
+
+        Args:
+            image: Input image
+            tile_size: Size of each patch
+            stride: Step between patches
+            cover_edges: If True, add extra patches to cover image edges
+        """
         h, w = image.shape[:2]
         patches = []
 
-        # Pad if needed
+        # Pad if needed (image smaller than tile)
         pad_h = max(0, tile_size - h)
         pad_w = max(0, tile_size - w)
         if pad_h > 0 or pad_w > 0:
             image = np.pad(image, ((0, pad_h), (0, pad_w), (0, 0)), mode='constant', constant_values=255)
             h, w = image.shape[:2]
 
-        for y in range(0, h - tile_size + 1, stride):
-            for x in range(0, w - tile_size + 1, stride):
+        # Generate regular grid
+        y_positions = list(range(0, h - tile_size + 1, stride))
+        x_positions = list(range(0, w - tile_size + 1, stride))
+
+        # Add edge positions to cover the entire image
+        if cover_edges:
+            # Add right edge if not already covered
+            if x_positions[-1] + tile_size < w:
+                x_positions.append(w - tile_size)
+            # Add bottom edge if not already covered
+            if y_positions[-1] + tile_size < h:
+                y_positions.append(h - tile_size)
+
+        for y in y_positions:
+            for x in x_positions:
                 patch = image[y:y+tile_size, x:x+tile_size]
                 patches.append((patch, x, y))
 
