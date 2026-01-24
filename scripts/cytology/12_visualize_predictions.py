@@ -1321,18 +1321,52 @@ Examples:
                 label_path = labels_dir / f"{image_path.stem}.txt"
                 annotations = load_yolo_annotations(label_path, img_w, img_h)
 
-                # Create comparison image
-                comparison = create_comparison_image(
-                    image, diagnosis, annotations,
-                    tile_size=args.tile_size, alpha=args.alpha
-                )
+                if args.heatmap:
+                    # Heatmap comparison: GT (left) | Heatmap (right)
+                    # Left side: Ground Truth annotations
+                    gt_image = draw_ground_truth(image.copy(), annotations, border_width=3)
+                    cv2.putText(gt_image, "GROUND TRUTH", (10, 30),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 3)
+                    cv2.putText(gt_image, "GROUND TRUTH", (10, 30),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 0), 2)
+
+                    # Right side: Heatmap predictions
+                    heatmap_img, stats = draw_heatmap_overlay(
+                        image, diagnosis,
+                        tile_size=args.tile_size,
+                        blur_kernel=71,
+                        alpha=0.6
+                    )
+                    heatmap_img = draw_heatmap_legend(heatmap_img, stats)
+                    cv2.putText(heatmap_img, "PREDICTION", (10, 30),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 3)
+                    cv2.putText(heatmap_img, "PREDICTION", (10, 30),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 0), 2)
+
+                    # Separator
+                    separator = np.ones((img_h, 3, 3), dtype=np.uint8) * 40
+
+                    # Combine
+                    comparison = np.hstack([gt_image, separator, heatmap_img])
+
+                    # Add banner at bottom
+                    comparison = draw_diagnosis_banner(comparison, diagnosis)
+
+                    print(f"    GT cells: {len(annotations)}")
+                    print(f"    Suspicious zones: {stats['suspicious_patches']}")
+                else:
+                    # Original comparison (patch rectangles)
+                    comparison = create_comparison_image(
+                        image, diagnosis, annotations,
+                        tile_size=args.tile_size, alpha=args.alpha
+                    )
+                    print(f"    GT cells: {len(annotations)}")
 
                 # Save comparison
                 output_filename = f"{image_path.stem}_comparison.jpg"
                 output_path = output_dir / output_filename
                 cv2.imwrite(str(output_path), cv2.cvtColor(comparison, cv2.COLOR_RGB2BGR))
 
-                print(f"    GT cells: {len(annotations)}")
                 print(f"    Result: {diagnosis.binary_result} - {diagnosis.severity_result}")
                 print(f"    Patches: {diagnosis.patches_with_cells}/{diagnosis.total_patches} with cells")
                 print(f"    Saved: {output_path}")
