@@ -77,6 +77,209 @@ LEGEND_LINE_HEIGHT = 25
 LEGEND_MARGIN = 10
 LEGEND_BOX_SIZE = 15
 
+# YOLO class mapping (from APCData)
+YOLO_CLASSES = {
+    0: "NILM",
+    1: "ASCUS",
+    2: "ASCH",
+    3: "LSIL",
+    4: "HSIL",
+    5: "SCC"
+}
+
+
+# =============================================================================
+#  GROUND TRUTH FUNCTIONS
+# =============================================================================
+
+def load_yolo_annotations(label_path: Path, img_width: int, img_height: int):
+    """
+    Load YOLO format annotations and convert to pixel coordinates.
+
+    Args:
+        label_path: Path to .txt label file
+        img_width: Image width in pixels
+        img_height: Image height in pixels
+
+    Returns:
+        List of (class_id, class_name, x1, y1, x2, y2) tuples
+    """
+    annotations = []
+
+    if not label_path.exists():
+        return annotations
+
+    with open(label_path, 'r') as f:
+        for line in f:
+            parts = line.strip().split()
+            if len(parts) >= 5:
+                class_id = int(parts[0])
+                x_center = float(parts[1]) * img_width
+                y_center = float(parts[2]) * img_height
+                width = float(parts[3]) * img_width
+                height = float(parts[4]) * img_height
+
+                x1 = int(x_center - width / 2)
+                y1 = int(y_center - height / 2)
+                x2 = int(x_center + width / 2)
+                y2 = int(y_center + height / 2)
+
+                class_name = YOLO_CLASSES.get(class_id, f"Class_{class_id}")
+                annotations.append((class_id, class_name, x1, y1, x2, y2))
+
+    return annotations
+
+
+def draw_ground_truth(
+    image: np.ndarray,
+    annotations: list,
+    border_width: int = 2,
+    show_labels: bool = True
+) -> np.ndarray:
+    """
+    Draw ground truth bounding boxes on image.
+
+    Args:
+        image: Image to annotate (RGB)
+        annotations: List from load_yolo_annotations
+        border_width: Line thickness
+        show_labels: Show class labels on boxes
+
+    Returns:
+        Annotated image
+    """
+    annotated = image.copy()
+
+    for class_id, class_name, x1, y1, x2, y2 in annotations:
+        # Get color for this class
+        color = CLASS_COLORS.get(class_name, (200, 200, 200))
+        color_bgr = (color[2], color[1], color[0])
+
+        # Draw rectangle
+        cv2.rectangle(annotated, (x1, y1), (x2, y2), color_bgr, border_width)
+
+        # Draw label
+        if show_labels:
+            label = class_name
+            font_scale = 0.4
+            thickness = 1
+            (text_width, text_height), baseline = cv2.getTextSize(
+                label, cv2.FONT_HERSHEY_SIMPLEX, font_scale, thickness
+            )
+
+            # Background for text
+            cv2.rectangle(
+                annotated,
+                (x1, y1 - text_height - 4),
+                (x1 + text_width + 4, y1),
+                color_bgr,
+                -1
+            )
+
+            # Text
+            cv2.putText(
+                annotated,
+                label,
+                (x1 + 2, y1 - 2),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                font_scale,
+                (255, 255, 255),
+                thickness
+            )
+
+    return annotated
+
+
+def create_comparison_image(
+    image: np.ndarray,
+    diagnosis: ImageDiagnosis,
+    annotations: list,
+    tile_size: int = 224,
+    alpha: float = 0.25
+) -> np.ndarray:
+    """
+    Create side-by-side comparison: GT (left) vs Predictions (right).
+
+    Args:
+        image: Original image (RGB)
+        diagnosis: Predictions from pipeline
+        annotations: Ground truth annotations
+        tile_size: Patch size
+        alpha: Overlay transparency
+
+    Returns:
+        Combined comparison image
+    """
+    h, w = image.shape[:2]
+
+    # Left side: Ground Truth
+    gt_image = draw_ground_truth(image.copy(), annotations, border_width=3)
+
+    # Add GT label
+    cv2.putText(
+        gt_image,
+        "GROUND TRUTH",
+        (10, 30),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        1.0,
+        (255, 255, 255),
+        3
+    )
+    cv2.putText(
+        gt_image,
+        "GROUND TRUTH",
+        (10, 30),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        1.0,
+        (0, 0, 0),
+        2
+    )
+
+    # Count GT by class
+    gt_counts = {}
+    for _, class_name, _, _, _, _ in annotations:
+        gt_counts[class_name] = gt_counts.get(class_name, 0) + 1
+
+    gt_text = f"Cells: {len(annotations)}"
+    cv2.putText(gt_image, gt_text, (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+    cv2.putText(gt_image, gt_text, (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 1)
+
+    # Right side: Predictions
+    pred_image = draw_patch_overlay(
+        image.copy(), diagnosis,
+        tile_size=tile_size, alpha=alpha,
+        show_empty=False, color_mode="class"
+    )
+
+    # Add Prediction label
+    cv2.putText(
+        pred_image,
+        "PREDICTIONS",
+        (10, 30),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        1.0,
+        (255, 255, 255),
+        3
+    )
+    cv2.putText(
+        pred_image,
+        "PREDICTIONS",
+        (10, 30),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        1.0,
+        (0, 0, 0),
+        2
+    )
+
+    pred_text = f"Patches: {diagnosis.patches_with_cells}"
+    cv2.putText(pred_image, pred_text, (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+    cv2.putText(pred_image, pred_text, (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 1)
+
+    # Combine side by side
+    combined = np.hstack([gt_image, pred_image])
+
+    return combined
+
 
 # =============================================================================
 #  VISUALIZATION FUNCTIONS
@@ -437,6 +640,13 @@ Examples:
         --output results/visualizations/ \\
         --max_images 10
 
+    # Compare with ground truth (side-by-side)
+    python scripts/cytology/12_visualize_predictions.py \\
+        --input_dir data/raw/apcdata/APCData_YOLO/val/images \\
+        --output results/visualizations/ \\
+        --compare_gt \\
+        --max_images 5
+
     # Fine-grained class colors
     python scripts/cytology/12_visualize_predictions.py \\
         --image path/to/image.jpg \\
@@ -481,6 +691,12 @@ Examples:
     parser.add_argument("--batch_size", type=int, default=16)
     parser.add_argument("--triage_threshold", type=float, default=0.01)
     parser.add_argument("--device", type=str, default="cuda")
+
+    # Ground truth comparison
+    parser.add_argument("--compare_gt", action="store_true",
+                        help="Show side-by-side comparison with ground truth")
+    parser.add_argument("--labels_dir", type=str, default=None,
+                        help="Path to YOLO labels directory (auto-detected if not specified)")
 
     args = parser.parse_args()
 
@@ -560,21 +776,59 @@ Examples:
             output_filename = f"{image_path.stem}_annotated.jpg"
             output_path = output_dir / output_filename
 
-            visualize_diagnosis(
-                str(image_path),
-                diagnosis,
-                str(output_path),
-                tile_size=args.tile_size,
-                alpha=args.alpha,
-                color_mode=args.color_mode,
-                show_empty=args.show_empty,
-                show_legend=not args.no_legend,
-                show_banner=not args.no_banner
-            )
+            # Load image for comparison
+            image = cv2.imread(str(image_path))
+            image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+            img_h, img_w = image.shape[:2]
 
-            print(f"    Result: {diagnosis.binary_result} - {diagnosis.severity_result}")
-            print(f"    Patches: {diagnosis.patches_with_cells}/{diagnosis.total_patches} with cells")
-            print(f"    Saved: {output_path}")
+            # Check for ground truth comparison
+            if args.compare_gt:
+                # Auto-detect labels directory if not specified
+                if args.labels_dir:
+                    labels_dir = Path(args.labels_dir)
+                else:
+                    # Try to find labels/ sibling to images/
+                    if image_path.parent.name == "images":
+                        labels_dir = image_path.parent.parent / "labels"
+                    else:
+                        labels_dir = image_path.parent / "labels"
+
+                # Load ground truth annotations
+                label_path = labels_dir / f"{image_path.stem}.txt"
+                annotations = load_yolo_annotations(label_path, img_w, img_h)
+
+                # Create comparison image
+                comparison = create_comparison_image(
+                    image, diagnosis, annotations,
+                    tile_size=args.tile_size, alpha=args.alpha
+                )
+
+                # Save comparison
+                output_filename = f"{image_path.stem}_comparison.jpg"
+                output_path = output_dir / output_filename
+                cv2.imwrite(str(output_path), cv2.cvtColor(comparison, cv2.COLOR_RGB2BGR))
+
+                print(f"    GT cells: {len(annotations)}")
+                print(f"    Result: {diagnosis.binary_result} - {diagnosis.severity_result}")
+                print(f"    Patches: {diagnosis.patches_with_cells}/{diagnosis.total_patches} with cells")
+                print(f"    Saved: {output_path}")
+            else:
+                # Standard visualization
+                visualize_diagnosis(
+                    str(image_path),
+                    diagnosis,
+                    str(output_path),
+                    tile_size=args.tile_size,
+                    alpha=args.alpha,
+                    color_mode=args.color_mode,
+                    show_empty=args.show_empty,
+                    show_legend=not args.no_legend,
+                    show_banner=not args.no_banner
+                )
+
+                print(f"    Result: {diagnosis.binary_result} - {diagnosis.severity_result}")
+                print(f"    Patches: {diagnosis.patches_with_cells}/{diagnosis.total_patches} with cells")
+                print(f"    Saved: {output_path}")
 
             results_summary.append({
                 "image": image_path.name,
