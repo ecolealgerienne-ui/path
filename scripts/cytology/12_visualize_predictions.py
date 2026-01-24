@@ -1057,7 +1057,7 @@ def visualize_diagnosis(
 
     if heatmap:
         # Heatmap visualization (suspicious areas only)
-        annotated, stats = draw_heatmap_overlay(
+        heatmap_img, stats = draw_heatmap_overlay(
             image, diagnosis,
             tile_size=tile_size,
             blur_kernel=71,  # Large blur for smooth transitions
@@ -1066,9 +1066,30 @@ def visualize_diagnosis(
 
         result['suspicious_patches'] = stats['suspicious_patches']
 
-        # Add heatmap legend
+        # Add heatmap legend to heatmap side
         if show_legend:
-            annotated = draw_heatmap_legend(annotated, stats)
+            heatmap_img = draw_heatmap_legend(heatmap_img, stats)
+
+        # Create side-by-side: Original (left) | Heatmap (right)
+        h, w = image.shape[:2]
+
+        # Add labels to each side
+        original_with_label = image.copy()
+        cv2.putText(original_with_label, "ORIGINAL", (10, 30),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 3)
+        cv2.putText(original_with_label, "ORIGINAL", (10, 30),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 0), 2)
+
+        cv2.putText(heatmap_img, "ANALYSE", (10, 30),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 3)
+        cv2.putText(heatmap_img, "ANALYSE", (10, 30),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 0), 2)
+
+        # Add thin separator line
+        separator = np.ones((h, 3, 3), dtype=np.uint8) * 40  # Dark gray line
+
+        # Combine horizontally
+        annotated = np.hstack([original_with_label, separator, heatmap_img])
 
     elif cell_level:
         # V15.3: Cell-level visualization with nuclei contours
