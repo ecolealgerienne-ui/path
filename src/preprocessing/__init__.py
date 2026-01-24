@@ -43,6 +43,24 @@ from .stain_separation import (
     RUIFROK_DAB_VECTOR
 )
 
+# Import H-Channel functions for V15.3 Cytology
+from .h_channel import (
+    # Constants
+    MIN_NUCLEUS_AREA,
+    MAX_NUCLEUS_AREA,
+    BETHESDA_COLORS,
+    # Data classes
+    NucleusInfo,
+    HChannelStats,
+    # Main functions
+    extract_h_channel_ruifrok as extract_h_channel_cytology,
+    compute_h_stats,
+    compute_h_stats_batch,
+    detect_nuclei_for_visualization,
+    apply_confidence_boosting,
+    render_nuclei_overlay,
+)
+
 __all__ = [
     'HOPTIMUS_MEAN',
     'HOPTIMUS_STD',
@@ -62,6 +80,18 @@ __all__ = [
     'RUIFROK_H_VECTOR',
     'RUIFROK_E_VECTOR',
     'RUIFROK_DAB_VECTOR',
+    # H-Channel for V15.3 Cytology
+    'MIN_NUCLEUS_AREA',
+    'MAX_NUCLEUS_AREA',
+    'BETHESDA_COLORS',
+    'NucleusInfo',
+    'HChannelStats',
+    'extract_h_channel_cytology',
+    'compute_h_stats',
+    'compute_h_stats_batch',
+    'detect_nuclei_for_visualization',
+    'apply_confidence_boosting',
+    'render_nuclei_overlay',
 ]
 
 # ============================================================================
