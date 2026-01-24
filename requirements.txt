@@ -6,6 +6,9 @@ timm
 transformers
 huggingface_hub
 
+# YOLO Detection (V15 Cytology)
+ultralytics>=8.3.0  # YOLO26 support
+
 # Data & Processing
 numpy
 pandas

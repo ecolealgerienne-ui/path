@@ -1,17 +1,41 @@
-# V14 Cytology — Documentation
+# Cytology Pipeline — Documentation
 
-> **Version:** 14.0 (Production Ready)
-> **Date:** 2026-01-19
-> **Statut:** ✅ Architecture Validée (Expert)
+> **Version Actuelle:** 15.2-Lite (POC)
+> **Date:** 2026-01-22
+> **Statut:** ✅ Consensus Final (Équipe + Expert)
 
 ---
 
 ## 📋 Vue d'Ensemble
 
-Ce dossier contient **toute la documentation** du système V14 Cytologie (Dubai Edition).
+Ce dossier contient **toute la documentation** des pipelines cytologie:
 
-**Architecture Validée:**
-> *"V14 = CellPose localise + Optimus comprend + Morphométrie quantifie + MLP décide"*
+| Version | Statut | Description |
+|---------|--------|-------------|
+| **V15.2** | 🔄 EN COURS | Architecture industrielle (YOLO + HoVerNet-lite + GFF) |
+| V14 | ✅ Validé | CellPose + H-Optimus + MLP (POC SIPaKMeD) |
+
+---
+
+## 🆕 V15.2 — Architecture Industrielle (POC)
+
+**Document Principal:** [V15_ARCHITECTURE_SPEC.md](./V15_ARCHITECTURE_SPEC.md)
+
+**Architecture:**
+> *"V15.2 = YOLO détecte + HoVerNet-lite segmente + Encoder encode + GFF fusionne + MLP décide"*
+
+**Changements vs V14:**
+- YOLO remplace CellPose (détection)
+- HoVerNet-lite pour clusters (segmentation)
+- Benchmark encoder obligatoire (Phase 0)
+- Gated Feature Fusion (pas concat)
+- Couche sécurité (Conformal + OOD)
+
+**Dataset POC:** APCData uniquement (3,619 cellules)
+
+---
+
+## 📚 V14 — Pipeline Validé (Référence)
 
 ---
 
