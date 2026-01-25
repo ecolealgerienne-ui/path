@@ -1,175 +1,233 @@
-# Prompt Nouvelle Session — V15.2 Cytology Pipeline
+# Prompt Nouvelle Session — CellViT-Optimus V15.3 Cytologie
 
-> **Date:** 2026-01-23
-> **Version:** V15.2 — Production Ready & SOTA Validated
-> **Statut:** ✅ Pipeline complet, visualisation à implémenter
-
----
-
-## 🎯 CONTEXTE ACTUEL
-
-### Résumé V15.2
-
-Le pipeline V15.2 est **fonctionnel et validé SOTA** (comparé à 12 publications peer-reviewed 2020-2025):
-
-| Métrique | Notre Résultat | Littérature | Status |
-|----------|---------------|-------------|--------|
-| Binary Recall (Abnormal) | **96.88%** | 94-97% | ✅ Top-tier |
-| Severity Recall (High-grade) | **85.48%** | 75-83% | ✅ **Au-dessus SOTA** |
-| Fine-grained Balanced Acc | **59.73%** | 55-62% | ✅ SOTA |
-
-> **Important:** 60% sur LBC réel = SOTA. Les scores 93-97% sur SIPaKMeD sont sur cellules isolées (non représentatif cliniquement).
-
-### Scripts Existants (À UTILISER)
-
-```
-scripts/cytology/
-├── 05_tile_apcdata.py              # ✅ Tiling 672×672
-├── 06_sliding_window_inference.py  # ✅ Sliding window + features
-├── 07_train_cell_triage.py         # ✅ Cell Triage (96.28% recall)
-├── 08_train_multihead_bethesda.py  # ✅ MultiHead Bethesda
-├── 09_extract_sipakmed_features.py # ✅ SIPaKMeD integration
-├── 10_train_multihead_combined.py  # ✅ Combined training
-├── 11_unified_inference.py         # ✅ Pipeline unifié complet
-└── 12_visualize_predictions.py     # ✅ Visualisation des prédictions
-```
-
-### Modèles Entraînés
-
-| Modèle | Chemin | Performance |
-|--------|--------|-------------|
-| Cell Triage | `models/cytology/cell_triage.pt` | 96.28% recall @ threshold 0.01 |
-| MultiHead Bethesda | `models/cytology/multihead_bethesda_combined.pt` | 96.88% binary, 85.48% severity, 59.73% fine-grained |
-
-### Documentation Existante
-
-| Fichier | Description |
-|---------|-------------|
-| `docs/cytology/V15_2_PIPELINE_PROGRESS.md` | Rapport final V15.2 (section 9 = TODO) |
-| `docs/cytology/V15_2_LITERATURE_COMPARISON.md` | Comparaison 12 publications peer-reviewed |
-| `CLAUDE.md` | Contexte projet global |
+> **Dernière mise à jour:** 2026-01-25
+> **Session précédente:** `docs/sessions/2026-01-24_v15_3_h_channel_session.md`
 
 ---
 
-## 🚨 RÈGLES CRITIQUES (À RESPECTER ABSOLUMENT)
+## Contexte Projet
 
-### 1. Utilise TOUJOURS l'existant
+Tu travailles sur **CellViT-Optimus**, un système de segmentation et classification de cellules pour la pathologie numérique.
+
+### Deux Branches Principales
+
+| Branche | Version | Objectif | Status |
+|---------|---------|----------|--------|
+| **Histologie** | V13 | Segmentation noyaux (AJI ≥ 0.68) | 1/5 familles validées |
+| **Cytologie** | V15.3 | Classification Bethesda cervicale (>95% recall) | **En cours** |
+
+### Performance Actuelle Pipeline Cytologie V15.2/V15.3
+
+| Composant | Métrique | Valeur | Status |
+|-----------|----------|--------|--------|
+| Cell Triage V1 | Recall | **96.28%** | Production |
+| Binary Head | Recall (Abnormal) | **97.12%** | Production |
+| Severity Head | Recall (High-grade) | **81.53%** | Production |
+| Fine-grained Head | Balanced Accuracy | **60.34%** | Production |
+
+### Architecture V15.3 (Validée)
+
 ```
-- NE JAMAIS créer un nouveau script si un existant peut être modifié
-- VÉRIFIER dans scripts/cytology/ avant de créer quoi que ce soit
-- LIRE les scripts existants pour comprendre le pattern utilisé
-- Les classes CellTriageClassifier et MultiHeadBethesdaClassifier sont dans 11_unified_inference.py
+┌─────────────────────────────────────────────────────────────────────┐
+│              V15.3 ARCHITECTURE (FINALE)                             │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                      │
+│  TRAINING (Deep Learning Only)                                       │
+│  └── H-Optimus-0 CLS Token (1536D) → Cell Triage V1 → MultiHead     │
+│                                                                      │
+│  POST-PROCESSING (H-Channel)                                         │
+│  ├── Confidence Boosting (validation prédictions)                   │
+│  ├── Nuclei Detection (visualisation cell-level)                    │
+│  └── H-Stats (métriques, comptage)                                  │
+│                                                                      │
+└─────────────────────────────────────────────────────────────────────┘
 ```
 
-### 2. On ne réinvente pas la roue
-```
-- Les constantes (HOPTIMUS_MEAN, BETHESDA_CLASSES, etc.) sont dans les scripts existants
-- Les modèles sont chargés via torch.load() avec weights_only=False
-- IMPORTER depuis l'existant, ne pas redéfinir
-```
-
-### 3. Pas d'initiatives sans raison
-```
-- Suivre UNIQUEMENT la section 9 de docs/cytology/V15_2_PIPELINE_PROGRESS.md
-- Ne pas ajouter de fonctionnalités non demandées
-- Ne pas "améliorer" le code existant sans demande explicite
-```
-
-### 4. S'inspirer des scripts existants
-```
-Le pattern utilisé dans V15.2:
-- H-Optimus via timm.create_model("hf-hub:bioptimus/H-optimus-0")
-- Features extraites avec model.forward_features(x)[:, 0, :] (CLS token)
-- Normalisation: HOPTIMUS_MEAN, HOPTIMUS_STD
-- Taille input: 224×224
-```
-
-### 5. Mettre à jour la documentation
-```
-- Après chaque étape terminée, mettre à jour section 9 de V15_2_PIPELINE_PROGRESS.md
-- Mettre à jour CLAUDE.md si changement majeur
-```
+**Principe fondamental validé expérimentalement:**
+> **Training:** Deep Learning (H-Optimus) uniquement
+> **Post-Processing:** H-Channel (Ruifrok) pour validation et visualisation
+> **Ne JAMAIS mélanger** les deux (cause -5.8% recall — "Noise Feature Poisoning")
 
 ---
 
-## 📋 ÉTAPES À FAIRE (Section 9 de V15_2_PIPELINE_PROGRESS.md)
+## Ce Qui a Été Fait (Session 2026-01-24)
 
-### 9.1 Court Terme (Production)
+### Phases Complétées
 
-- [x] ~~Intégrer Cell Triage + MultiHead dans pipeline d'inférence unifié~~ → `11_unified_inference.py`
-- [x] ~~Ajouter visualisation des prédictions sur les images~~ → `12_visualize_predictions.py`
-- [ ] **Créer API REST pour intégration clinique** ← **PROCHAINE ÉTAPE**
+| Phase | Fichiers | Status |
+|-------|----------|--------|
+| **Phase 1** - Module H-Channel | `src/preprocessing/h_channel.py` | 41/41 tests |
+| **Phase 2** - Cell Triage v2 | `07b_train_cell_triage_v2.py` | **ABANDONNÉ** (-5.8%) |
+| **Phase 3** - Confidence Boosting | `apply_confidence_boosting()` | Implémenté |
+| **Phase 4** - Visualisation | `12_visualize_predictions.py` | 5 modes |
 
-### 9.2 Moyen Terme (Amélioration)
-
-- [ ] Augmenter le dataset pour ASCH et SCC
-- [ ] Tester data augmentation (rotations, color jitter)
-- [ ] Optimiser threshold Severity pour meilleur recall high-grade
-
-### 9.3 Long Terme (R&D)
-
-- [ ] Fine-tuning H-Optimus sur données cytologiques
-- [ ] Attention mechanisms pour interprétabilité
-- [ ] Multi-instance learning pour classification WSI complète
-
----
-
-## ✅ TÂCHE COMPLÉTÉE: Visualisation des Prédictions
-
-> **Status:** Implémentée dans `12_visualize_predictions.py`
-
-### Usage
+### Modes de Visualisation Disponibles
 
 ```bash
-# Single image
-python scripts/cytology/12_visualize_predictions.py \
-    --image path/to/image.jpg \
-    --output results/visualizations/
+# Patch-level (défaut V15.2)
+python scripts/cytology/12_visualize_predictions.py --image img.jpg
 
-# Directory of images
-python scripts/cytology/12_visualize_predictions.py \
-    --input_dir data/raw/apcdata/APCData_YOLO/val/images \
-    --output results/visualizations/ \
-    --max_images 10
+# Cell-level (V15.3 - contours noyaux)
+python scripts/cytology/12_visualize_predictions.py --image img.jpg --cell_level
 
-# Fine-grained class colors
-python scripts/cytology/12_visualize_predictions.py \
-    --image path/to/image.jpg \
-    --color_mode class
+# Heatmap (zones suspectes uniquement)
+python scripts/cytology/12_visualize_predictions.py --image img.jpg --heatmap
+
+# Comparaison GT vs Prédictions
+python scripts/cytology/12_visualize_predictions.py --input_dir val/images --compare_gt
+
+# Métriques TP/FP/FN
+python scripts/cytology/12_visualize_predictions.py --input_dir val/images --compare_gt --metrics
 ```
 
-### Fonctionnalités
-- Overlay des patches colorés par sévérité (Vert=NILM, Jaune=Low-grade, Rouge=High-grade)
-- Légende avec comptage par classe
-- Bannière avec diagnostic final et recommandation clinique
-- Mode `--color_mode class` pour afficher les 6 classes Bethesda
+---
+
+## Prochaines Étapes À Faire
+
+### Phase 5: Validation (Priorité Haute)
+
+- [ ] **Benchmark Confidence Boosting vs baseline**
+  - Mesurer la réduction de faux positifs avec `apply_confidence_boosting()`
+  - Script à créer: comparer résultats avec/sans boosting sur dataset val
+
+- [ ] **Validation qualitative visualisation cell-level**
+  - Générer visualisations sur ~20 images représentatives
+  - Vérifier cohérence des contours de noyaux détectés
+
+- [ ] **Mettre à jour CLAUDE.md** avec les résultats finaux V15.3
+
+### Court Terme — Production
+
+- [ ] **API REST pour intégration clinique** (FastAPI)
+  - Endpoint `POST /diagnose` — Upload image, retourne diagnostic
+  - Endpoint `GET /health` — Status de l'API
+  - S'inspirer de `11_unified_inference.py`
+
+### Moyen Terme — Amélioration
+
+- [ ] **Optimiser threshold Severity** pour meilleur recall high-grade
+  - Actuel: 81.53% recall → Objectif: >85%
+
+- [ ] **Data augmentation** pour ASCH et SCC (classes sous-représentées)
+  - ASCH: 33% recall seulement
+  - SCC: 23 exemples dans val
+
+### Long Terme — R&D
+
+- [ ] Fine-tuning H-Optimus sur données cytologiques
+- [ ] Multi-instance learning pour classification WSI complète
+- [ ] Attention mechanisms pour interprétabilité
 
 ---
 
-## 🎯 PROCHAINE TÂCHE: API REST pour Intégration Clinique
+## Fichiers Clés
 
-### Objectif
-Créer une API REST (FastAPI) pour intégration dans systèmes cliniques.
+### Scripts Cytologie
 
-### Spécifications suggérées
-1. **Endpoints:**
-   - `POST /diagnose` — Upload image, retourne diagnostic
-   - `GET /health` — Status de l'API
+| Script | Description |
+|--------|-------------|
+| `07_train_cell_triage.py` | Entraînement Cell Triage V1 (à utiliser) |
+| `08_train_multihead_bethesda.py` | Entraînement MultiHead Bethesda |
+| `10_train_multihead_combined.py` | Training avec APCData + SIPaKMeD |
+| `11_unified_inference.py` | Pipeline d'inférence unifié |
+| `12_visualize_predictions.py` | Visualisation (5 modes) |
 
-2. **Response format:**
-   ```json
-   {
-     "diagnosis": "ABNORMAL",
-     "severity": "High-grade",
-     "recommendation": "Colposcopy recommended",
-     "confidence": 0.95,
-     "patch_count": {"NILM": 45, "HSIL": 3, ...}
-   }
-   ```
+### Modules Partagés
+
+| Module | Fonctions |
+|--------|-----------|
+| `src/preprocessing/h_channel.py` | `extract_h_channel_ruifrok()`, `compute_h_stats()`, `detect_nuclei_for_visualization()`, `apply_confidence_boosting()` |
+| `src/preprocessing/stain_separation.py` | `ruifrok_extract_h_channel()` |
+
+### Modèles (à entraîner par l'utilisateur)
+
+```
+models/cytology/
+├── cell_triage.pt              # Cell Triage V1 (96.28% recall)
+├── multihead_bethesda.pt       # MultiHead Bethesda (APCData seul)
+└── multihead_bethesda_combined.pt  # MultiHead (APCData + SIPaKMeD)
+```
+
+### Documentation
+
+| Document | Description |
+|----------|-------------|
+| `CLAUDE.md` | Instructions projet (À METTRE À JOUR) |
+| `docs/cytology/V15_3_H_CHANNEL_AUGMENTED_SPEC.md` | Spec V15.3 complète |
+| `docs/cytology/V15_2_PIPELINE_PROGRESS.md` | Résultats V15.2 |
+| `docs/sessions/2026-01-24_v15_3_h_channel_session.md` | Session précédente |
 
 ---
 
-## 🔧 CONSTANTES IMPORTANTES
+## Règles CRITIQUES
+
+### 1. Utilise TOUJOURS l'Existant
+
+```python
+# ✅ CORRECT - Importer depuis src/
+from src.preprocessing.h_channel import compute_h_stats, detect_nuclei_for_visualization
+from src.postprocessing import hv_guided_watershed
+
+# ❌ INTERDIT - Copier-coller du code
+def compute_h_stats(...):  # Réimplémentation locale
+```
+
+**Avant de coder, vérifie:**
+```bash
+grep -r "def ma_fonction" src/
+grep -r "MA_CONSTANTE" src/
+```
+
+### 2. Pas d'Initiatives Sans Raison
+
+- Ne modifie **PAS** les scripts existants qui fonctionnent
+- Ne crée **PAS** de nouveaux fichiers sans nécessité
+- Demande **AVANT** de refactorer ou réorganiser
+
+### 3. Inspire-toi des Scripts Existants
+
+Pour créer un nouveau script, regarde d'abord:
+- `07_train_cell_triage.py` — Pattern d'entraînement avec cache features
+- `11_unified_inference.py` — Pattern de pipeline d'inférence
+- `12_visualize_predictions.py` — Pattern de visualisation
+
+### 4. Mettre à Jour CLAUDE.md
+
+Après chaque changement significatif:
+- Ajouter les nouveaux résultats
+- Mettre à jour les prochaines étapes
+- Documenter les décisions architecturales
+
+### 5. Interdictions Absolues
+
+- ❌ `python scripts/...` — Claude ne peut PAS exécuter de code
+- ❌ Modifier l'architecture V15.3 validée
+- ❌ Réintroduire H-Stats dans l'entraînement (régression prouvée -5.8%)
+- ❌ Créer des fichiers sans nécessité absolue
+
+---
+
+## Leçons de la Session Précédente
+
+### Ce qui Fonctionne
+
+| Approche | Pourquoi |
+|----------|----------|
+| H-Optimus CLS seul pour training | Signal propre, 96%+ recall |
+| H-Channel pour post-processing | Validation, visualisation |
+| Architecture séparée DL/Heuristique | Pas de contamination |
+
+### Ce qui NE Fonctionne PAS
+
+| Approche | Pourquoi |
+|----------|----------|
+| Mélanger DL + H-Stats | "Noise Feature Poisoning" -5.8% |
+| Otsu sur "Empty" bruité | Patches vides contiennent du bruit |
+| Cell Triage v2 | ABANDONNÉ — garder V1 |
+
+---
+
+## Constantes Importantes
 
 ```python
 # H-Optimus-0
@@ -192,59 +250,75 @@ SEVERITY_MAPPING = {
     4: "High-grade", # HSIL
     5: "High-grade"  # SCC
 }
+
+# Thresholds optimaux
+CELL_TRIAGE_THRESHOLD = 0.01  # Très bas pour maximiser recall
+BINARY_THRESHOLD = 0.3        # Haute sensibilité
+SEVERITY_THRESHOLD = 0.4      # Équilibré
 ```
 
 ---
 
-## 📁 STRUCTURE DONNÉES
+## Commandes Utiles
 
-```
-models/cytology/
-├── cell_triage.pt                    # ✅ Cell Triage (96.28% recall)
-└── multihead_bethesda_combined.pt    # ✅ MultiHead (96.88% binary)
+```bash
+# Voir structure du projet
+ls -la scripts/cytology/
+ls -la src/preprocessing/
 
-data/raw/apcdata/APCData_YOLO/
-├── train/images/                     # Images d'entraînement
-├── val/images/                       # Images de validation
-└── cache_cells/                      # Features H-Optimus cachées
+# Chercher une fonction existante
+grep -r "def fonction_name" src/
 
-results/unified_inference/
-└── diagnosis_summary.json            # Résultats du pipeline
-```
+# Voir les tests
+python -m pytest tests/unit/test_h_channel.py -v
 
----
+# Visualiser des prédictions (5 modes)
+python scripts/cytology/12_visualize_predictions.py \
+    --input_dir data/raw/apcdata/APCData_YOLO/val/images \
+    --output results/visualizations/ \
+    --max_images 5
 
-## ⚠️ POINTS D'ATTENTION
+# Mode cell-level (contours noyaux)
+python scripts/cytology/12_visualize_predictions.py \
+    --image img.jpg --cell_level
 
-1. **Threshold Cell Triage = 0.01** (très bas pour maximiser recall)
-2. **Threshold Binary = 0.3** (pour haute sensibilité)
-3. **Threshold Severity = 0.4** (équilibré)
-4. **Stride = 112** (50% overlap entre patches)
-5. **Tile size = 224** (input H-Optimus)
+# Mode heatmap (zones suspectes)
+python scripts/cytology/12_visualize_predictions.py \
+    --image img.jpg --heatmap
 
----
-
-## 🔄 COMMITS RÉCENTS
-
-```
-94626e6 feat(v15.2): Add unified inference pipeline (Cell Triage + MultiHead Bethesda)
-0be4d41 docs(v15.2): Add peer-reviewed literature comparison and combined results
-b08d1b9 feat(v15.2): Add SIPaKMeD integration for combined training
-5b15728 docs(v15.2): Add benchmark comparison with state-of-the-art
+# Mode métriques TP/FP/FN
+python scripts/cytology/12_visualize_predictions.py \
+    --input_dir val/images --compare_gt --metrics
 ```
 
 ---
 
-## ✅ CHECKLIST NOUVELLE SESSION
+## Checklist Début de Session
 
-1. [x] Lire `docs/cytology/V15_2_PIPELINE_PROGRESS.md` section 9
-2. [x] Vérifier les scripts existants dans `scripts/cytology/`
-3. [x] Utiliser `11_unified_inference.py` comme base
-4. [x] Créer la visualisation (étape 9.1.2) → `12_visualize_predictions.py`
-5. [x] Mettre à jour la doc après complétion
-6. [ ] Commit et push
+1. [ ] **Lire** ce prompt en entier
+2. [ ] **Consulter** `CLAUDE.md` pour le contexte global
+3. [ ] **Vérifier** `docs/cytology/V15_3_H_CHANNEL_AUGMENTED_SPEC.md` pour l'état actuel
+4. [ ] **Demander** à l'utilisateur quelle tâche prioriser parmi les "Prochaines Étapes"
+5. [ ] **Utiliser** les scripts et modules existants
+6. [ ] **Documenter** les changements dans `docs/sessions/` à la fin
 
 ---
 
-**Dernière mise à jour:** 2026-01-24
-**Prochaine action:** Créer API REST pour intégration clinique
+## Résumé des Commits Récents
+
+```
+d8be129 feat(cytology): Add script to extract patches for histology module testing
+3a38191 feat(v15.3): Add TP/FP/FN metrics visualization mode
+8719f63 feat(v15.3): Add GT vs Heatmap comparison mode
+2adaea8 feat(v15.3): Add side-by-side original/heatmap comparison view
+e5f97dd feat(v15.3): Add heatmap visualization mode for suspicious areas
+d94d3a4 fix(v15.3): Rewrite nuclei detection for Pap-stained cytology
+8178694 feat(v15.3): Add cell-level visualization mode (Phase 4)
+bf4a881 docs(v15.3): Document Cell Triage V2 experiment and finalize architecture
+d77d1c0 feat(v15.3): Add Cell Triage v2 with H-Channel augmentation (Phase 2)
+37ea97a feat(v15.3): Implement H-Channel extraction module (Phase 1)
+```
+
+---
+
+**Bonne session !**
