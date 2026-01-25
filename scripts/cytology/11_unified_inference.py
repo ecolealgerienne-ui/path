@@ -25,8 +25,8 @@ Usage:
         --bethesda models/cytology/multihead_bethesda_combined.pt \
         --output results/
 
-Author: V15.2 Cytology Branch
-Date: 2026-01-23
+Author: V15.2 Cytology Branch (V15.3 update: Cell Triage v2 support)
+Date: 2026-01-23 (updated 2026-01-24)
 """
 
 import os
@@ -43,6 +43,9 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from tqdm import tqdm
+
+# Import H-Channel module for Cell Triage v2
+from src.preprocessing.h_channel import compute_h_stats
 
 
 # =============================================================================
@@ -252,14 +255,23 @@ class UnifiedInferencePipeline:
 
         print("  [INFO] Loading Cell Triage model...")
         checkpoint = torch.load(cell_triage_path, map_location=self.device, weights_only=False)
+
+        # Detect version (v1 or v2)
+        self.cell_triage_version = checkpoint.get('version', 'v1')
+        input_dim = checkpoint.get('input_dim', 1536)
+
         self.cell_triage = CellTriageClassifier(
-            input_dim=checkpoint.get('input_dim', 1536),
+            input_dim=input_dim,
             hidden_dims=checkpoint.get('hidden_dims', (256, 64))
         )
         self.cell_triage.load_state_dict(checkpoint['model_state_dict'])
         self.cell_triage = self.cell_triage.to(self.device)
         self.cell_triage.eval()
-        print(f"  [OK] Cell Triage loaded")
+
+        version_info = f"{self.cell_triage_version} (input_dim={input_dim})"
+        if self.cell_triage_version == 'v2':
+            version_info += " [CLS + H-Stats]"
+        print(f"  [OK] Cell Triage loaded - {version_info}")
 
         print("  [INFO] Loading MultiHead Bethesda model...")
         checkpoint = torch.load(bethesda_path, map_location=self.device, weights_only=False)
@@ -278,7 +290,9 @@ class UnifiedInferencePipeline:
             image = cv2.resize(image, (HOPTIMUS_INPUT_SIZE, HOPTIMUS_INPUT_SIZE))
 
         image = image.astype(np.float32) / 255.0
-        image = (image - np.array(HOPTIMUS_MEAN)) / np.array(HOPTIMUS_STD)
+        mean = np.array(HOPTIMUS_MEAN, dtype=np.float32)
+        std = np.array(HOPTIMUS_STD, dtype=np.float32)
+        image = (image - mean) / std
         tensor = torch.from_numpy(image).permute(2, 0, 1).unsqueeze(0)
         return tensor.to(self.device)
 
@@ -304,21 +318,42 @@ class UnifiedInferencePipeline:
         self,
         image: np.ndarray,
         tile_size: int = 224,
-        stride: int = 112
+        stride: int = 112,
+        cover_edges: bool = True
     ) -> List[Tuple[np.ndarray, int, int]]:
-        """Génère patches sliding window"""
+        """Génère patches sliding window
+
+        Args:
+            image: Input image
+            tile_size: Size of each patch
+            stride: Step between patches
+            cover_edges: If True, add extra patches to cover image edges
+        """
         h, w = image.shape[:2]
         patches = []
 
-        # Pad if needed
+        # Pad if needed (image smaller than tile)
         pad_h = max(0, tile_size - h)
         pad_w = max(0, tile_size - w)
         if pad_h > 0 or pad_w > 0:
             image = np.pad(image, ((0, pad_h), (0, pad_w), (0, 0)), mode='constant', constant_values=255)
             h, w = image.shape[:2]
 
-        for y in range(0, h - tile_size + 1, stride):
-            for x in range(0, w - tile_size + 1, stride):
+        # Generate regular grid
+        y_positions = list(range(0, h - tile_size + 1, stride))
+        x_positions = list(range(0, w - tile_size + 1, stride))
+
+        # Add edge positions to cover the entire image
+        if cover_edges:
+            # Add right edge if not already covered
+            if x_positions[-1] + tile_size < w:
+                x_positions.append(w - tile_size)
+            # Add bottom edge if not already covered
+            if y_positions[-1] + tile_size < h:
+                y_positions.append(h - tile_size)
+
+        for y in y_positions:
+            for x in x_positions:
                 patch = image[y:y+tile_size, x:x+tile_size]
                 patches.append((patch, x, y))
 
@@ -347,11 +382,24 @@ class UnifiedInferencePipeline:
         patches = self._generate_patches(image, tile_size, stride)
         patch_images = [p[0] for p in patches]
 
-        # Extract features
-        features = self._extract_features(patch_images, batch_size)
+        # Extract CLS features
+        cls_features = self._extract_features(patch_images, batch_size)
+
+        # Prepare features for Cell Triage
+        if self.cell_triage_version == 'v2':
+            # V2: Augment with H-Stats (CLS 1536D + H-Stats 4D = 1540D)
+            h_stats_list = []
+            for patch_img in patch_images:
+                stats = compute_h_stats(patch_img)
+                h_stats_list.append(stats.to_features())
+            h_stats_tensor = torch.from_numpy(np.stack(h_stats_list)).to(self.device)
+            triage_features = torch.cat([cls_features, h_stats_tensor], dim=1)
+        else:
+            # V1: CLS only (1536D)
+            triage_features = cls_features
 
         # Step 1: Cell Triage
-        triage_preds, triage_probs = self.cell_triage.predict(features, threshold=self.triage_threshold)
+        triage_preds, triage_probs = self.cell_triage.predict(triage_features, threshold=self.triage_threshold)
         cell_mask = triage_preds == 1  # Has cells
 
         # Step 2: Bethesda classification (only for patches with cells)
@@ -366,8 +414,8 @@ class UnifiedInferencePipeline:
             cell_conf = cell_prob.item()
 
             if has_cells_bool:
-                # Classify this patch
-                patch_features = features[idx:idx+1]
+                # Classify this patch (Bethesda uses CLS features only)
+                patch_features = cls_features[idx:idx+1]
                 beth_preds = self.bethesda.predict(
                     patch_features,
                     binary_threshold=self.binary_threshold,

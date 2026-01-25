@@ -656,6 +656,8 @@ python scripts/training/train_hovernet_family_v13_smart_crops.py \
 | **[docs/cytology/V14_MASTER_SLAVE_ARCHITECTURE.md](./docs/cytology/V14_MASTER_SLAVE_ARCHITECTURE.md)** | **Architecture Maître/Esclave** — CellPose dual-model, KPIs, Business model |
 | **[docs/cytology/V14_PIPELINE_EXECUTION_ORDER.md](./docs/cytology/V14_PIPELINE_EXECUTION_ORDER.md)** | **🔥 Pipeline V14 Ordre d'Exécution** — Clarification CRITIQUE: Séquentiel PUIS Parallèle |
 | **[docs/cytology/V14_MACENKO_STRATEGY.md](./docs/cytology/V14_MACENKO_STRATEGY.md)** | **Normalisation Macenko** — Router-Dependent (Cyto ON / Histo OFF) |
+| **[docs/cytology/V15_2_PIPELINE_PROGRESS.md](./docs/cytology/V15_2_PIPELINE_PROGRESS.md)** | **V15.2 Pipeline Cytologie** — Cell Triage + MultiHead Bethesda (97% recall) |
+| **[docs/cytology/V15_3_H_CHANNEL_AUGMENTED_SPEC.md](./docs/cytology/V15_3_H_CHANNEL_AUGMENTED_SPEC.md)** | **🔥 V15.3 Spec** — Architecture Hybride CLS + H-Channel, Visualisation Cell-Level |
 
 ---
 
