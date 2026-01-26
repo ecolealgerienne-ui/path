@@ -1,7 +1,7 @@
 # CellViT-Optimus — Contexte Projet
 
 > **Version:** V13 Smart Crops + FPN Chimique (Raw Images)
-> **Date:** 2025-12-30
+> **Date:** 2026-01-26
 > **Objectif:** AJI ≥ 0.68
 
 ---
@@ -652,6 +652,7 @@ python scripts/training/train_hovernet_family_v13_smart_crops.py \
 | [docs/sessions/2025-12-29_respiratory_v13_smart_crops_results.md](./docs/sessions/2025-12-29_respiratory_v13_smart_crops_results.md) | Résultats Respiratory |
 | [docs/UI_COCKPIT.md](./docs/UI_COCKPIT.md) | **R&D Cockpit (IHM Gradio)** — Architecture, API, Phases |
 | [docs/specs/V14_WSI_TRIAGE_SPEC.md](./docs/specs/V14_WSI_TRIAGE_SPEC.md) | **Spec v14.0** — Triage WSI pyramidal (< 2 min/lame) |
+| **[docs/specs/WSI_INDUSTRIAL_PIPELINE_SPEC.md](./docs/specs/WSI_INDUSTRIAL_PIPELINE_SPEC.md)** | **🏭 WSI Industriel** — Standards DICOM/CAP, Architecture, Roadmap |
 | **[docs/cytology/V14_CYTOLOGY_BRANCH.md](./docs/cytology/V14_CYTOLOGY_BRANCH.md)** | **Spec v14.0 Cytologie** — Architecture en Y, Router, Métriques |
 | **[docs/cytology/V14_MASTER_SLAVE_ARCHITECTURE.md](./docs/cytology/V14_MASTER_SLAVE_ARCHITECTURE.md)** | **Architecture Maître/Esclave** — CellPose dual-model, KPIs, Business model |
 | **[docs/cytology/V14_PIPELINE_EXECUTION_ORDER.md](./docs/cytology/V14_PIPELINE_EXECUTION_ORDER.md)** | **🔥 Pipeline V14 Ordre d'Exécution** — Clarification CRITIQUE: Séquentiel PUIS Parallèle |
