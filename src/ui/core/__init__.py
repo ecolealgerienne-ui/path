@@ -11,6 +11,7 @@ Principe: La logique est unique, seul l'affichage diffère.
 from .engine_ops import (
     UIState,
     state,
+    AnalysisOutput,  # Dataclass résultat d'analyse
     preload_backbone_core,  # Précharge backbone au démarrage
     load_engine_core,
     run_analysis_core,  # Fonction partagée (sans visualisations)
@@ -30,6 +31,7 @@ __all__ = [
     # State
     "UIState",
     "state",
+    "AnalysisOutput",  # Dataclass résultat
     # Engine operations
     "preload_backbone_core",  # Précharge backbone au démarrage
     "load_engine_core",
