@@ -1,22 +1,21 @@
 #!/usr/bin/env python3
 """
-CellViT-Optimus — Navigation Grille Multi-Patches.
+CellViT-Optimus — Navigation Grille Multi-Patches (Simulation WSI).
 
-Interface de simulation WSI utilisant des patches PanNuke (256×256 ou 224×224)
-pour préparer la navigation sur lames entières.
+Interface de simulation WSI utilisant des images PanNuke (256×256).
+Extraction automatique de 4 patches 224×224 (grille 2×2 avec chevauchement).
 
-Fonctionnalités:
-- Chargement multiple d'images (dossier ou fichiers)
-- Vue grille avec miniatures
-- Clic pour sélectionner et analyser un patch
-- Métriques agrégées multi-patches
+Workflow:
+1. Upload d'une image 256×256
+2. Extraction automatique → 4 patches 224×224
+3. Analyse automatique des 4 patches
+4. Affichage grille 4 miniatures cliquables
+5. Clic → Détails du patch sélectionné
+6. Métriques WSI agrégées toujours visibles
 
 Usage:
     python -m src.ui.app_grid --organ Lung
-    # ou
     python src/ui/app_grid.py --organ Breast --port 7861
-
-Note: Préparation pour la navigation WSI réelle.
 """
 
 import gradio as gr
@@ -47,14 +46,30 @@ from src.ui.core import (
 
 # Imports: Moteur et configuration
 from src.ui.inference_engine import ORGAN_CHOICES, AnalysisResult
-from src.ui.organ_config import get_model_for_organ
 
 # Imports: Visualisations
 from src.ui.visualizations import (
     create_segmentation_overlay,
-    create_contour_overlay,
-    create_type_distribution_chart,
 )
+
+# ==============================================================================
+# CONSTANTES
+# ==============================================================================
+
+PANNUKE_SIZE = 256
+PATCH_SIZE = 224
+OFFSET = PANNUKE_SIZE - PATCH_SIZE  # 32 pixels
+
+# Positions des 4 patches (grille 2×2 avec chevauchement)
+PATCH_POSITIONS = [
+    (0, 0),           # Top-Left
+    (OFFSET, 0),      # Top-Right
+    (0, OFFSET),      # Bottom-Left
+    (OFFSET, OFFSET), # Bottom-Right
+]
+
+PATCH_NAMES = ["Haut-Gauche", "Haut-Droite", "Bas-Gauche", "Bas-Droite"]
+
 
 # ==============================================================================
 # ÉTAT GRILLE (SIMULATION WSI)
@@ -62,41 +77,30 @@ from src.ui.visualizations import (
 
 @dataclass
 class PatchInfo:
-    """Information sur un patch chargé."""
+    """Information sur un patch extrait."""
     index: int
-    filename: str
-    image: np.ndarray  # Image originale (256×256 ou 224×224)
-    preprocessed: Optional[np.ndarray] = None  # Image après preprocessing (224×224)
+    name: str
+    position: Tuple[int, int]  # (x, y) offset
+    image: np.ndarray  # Patch 224×224
     result: Optional[AnalysisResult] = None
     overlay: Optional[np.ndarray] = None
     is_analyzed: bool = False
 
 
 @dataclass
-class GridState:
-    """État global de la grille multi-patches."""
+class WSIState:
+    """État de la simulation WSI (une image source)."""
+    source_image: Optional[np.ndarray] = None  # Image originale 256×256
+    source_filename: str = ""
     patches: List[PatchInfo] = field(default_factory=list)
-    selected_index: int = -1
-    page: int = 0
-    patches_per_page: int = 16  # Grille 4×4
+    selected_index: int = 0
 
     def clear(self):
         """Réinitialise l'état."""
+        self.source_image = None
+        self.source_filename = ""
         self.patches = []
-        self.selected_index = -1
-        self.page = 0
-
-    def total_pages(self) -> int:
-        """Nombre total de pages."""
-        if not self.patches:
-            return 1
-        return (len(self.patches) - 1) // self.patches_per_page + 1
-
-    def current_page_patches(self) -> List[PatchInfo]:
-        """Retourne les patches de la page courante."""
-        start = self.page * self.patches_per_page
-        end = start + self.patches_per_page
-        return self.patches[start:end]
+        self.selected_index = 0
 
     def get_selected(self) -> Optional[PatchInfo]:
         """Retourne le patch sélectionné."""
@@ -104,12 +108,12 @@ class GridState:
             return self.patches[self.selected_index]
         return None
 
-    def analyzed_count(self) -> int:
-        """Nombre de patches analysés."""
-        return sum(1 for p in self.patches if p.is_analyzed)
+    def all_analyzed(self) -> bool:
+        """Vérifie si tous les patches sont analysés."""
+        return all(p.is_analyzed for p in self.patches)
 
     def get_aggregated_metrics(self) -> Dict[str, Any]:
-        """Calcule les métriques agrégées sur tous les patches analysés."""
+        """Calcule les métriques agrégées sur tous les patches."""
         analyzed = [p for p in self.patches if p.is_analyzed and p.result]
 
         if not analyzed:
@@ -139,177 +143,99 @@ class GridState:
 
 
 # Instance globale
-grid_state = GridState()
+wsi_state = WSIState()
 
 
 # ==============================================================================
-# FONCTIONS DE CHARGEMENT
+# EXTRACTION DE PATCHES
 # ==============================================================================
 
-def load_images_from_folder(folder_path: str) -> Tuple[List[Tuple[np.ndarray, str]], str]:
+def extract_patches_2x2(image: np.ndarray) -> List[np.ndarray]:
     """
-    Charge les images PNG/JPG d'un dossier.
+    Extrait 4 patches 224×224 d'une image 256×256 (grille 2×2 avec chevauchement).
+
+    Args:
+        image: Image source 256×256 RGB
 
     Returns:
-        (list of (thumbnail, label), status_message)
+        Liste de 4 patches 224×224
     """
-    grid_state.clear()
+    h, w = image.shape[:2]
+    if h != PANNUKE_SIZE or w != PANNUKE_SIZE:
+        raise ValueError(f"Image doit être {PANNUKE_SIZE}×{PANNUKE_SIZE}, reçu {w}×{h}")
 
-    if not folder_path:
-        return [], "❌ Aucun dossier spécifié"
+    patches = []
+    for x, y in PATCH_POSITIONS:
+        patch = image[y:y + PATCH_SIZE, x:x + PATCH_SIZE].copy()
+        patches.append(patch)
 
-    folder = Path(folder_path)
-    if not folder.exists():
-        return [], f"❌ Dossier non trouvé: {folder_path}"
-
-    # Extensions supportées
-    extensions = {".png", ".jpg", ".jpeg"}
-    image_files = [f for f in folder.iterdir() if f.suffix.lower() in extensions]
-
-    if not image_files:
-        return [], f"❌ Aucune image trouvée dans {folder_path}"
-
-    # Charger les images
-    gallery_items = []
-    for i, img_path in enumerate(sorted(image_files)):
-        img = cv2.imread(str(img_path))
-        if img is None:
-            continue
-        img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-
-        # Créer PatchInfo
-        patch = PatchInfo(
-            index=i,
-            filename=img_path.name,
-            image=img_rgb,
-        )
-        grid_state.patches.append(patch)
-
-        # Créer miniature pour galerie (64×64)
-        thumb = cv2.resize(img_rgb, (64, 64))
-        gallery_items.append((thumb, img_path.stem))
-
-    n_loaded = len(grid_state.patches)
-    return gallery_items, f"✅ {n_loaded} images chargées depuis {folder.name}/"
-
-
-def load_images_from_files(files: List[Any]) -> Tuple[List[Tuple[np.ndarray, str]], str]:
-    """
-    Charge les images depuis une liste de fichiers uploadés.
-
-    Returns:
-        (list of (thumbnail, label), status_message)
-    """
-    grid_state.clear()
-
-    if not files:
-        return [], "❌ Aucun fichier sélectionné"
-
-    gallery_items = []
-    for i, file in enumerate(files):
-        # Gradio file upload: file.name contient le chemin temporaire
-        if hasattr(file, 'name'):
-            img_path = file.name
-        else:
-            img_path = str(file)
-
-        img = cv2.imread(img_path)
-        if img is None:
-            continue
-        img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-
-        # Créer PatchInfo
-        filename = Path(img_path).name
-        patch = PatchInfo(
-            index=i,
-            filename=filename,
-            image=img_rgb,
-        )
-        grid_state.patches.append(patch)
-
-        # Créer miniature pour galerie
-        thumb = cv2.resize(img_rgb, (64, 64))
-        gallery_items.append((thumb, filename[:20]))  # Tronquer nom long
-
-    n_loaded = len(grid_state.patches)
-    return gallery_items, f"✅ {n_loaded} images chargées"
+    return patches
 
 
 # ==============================================================================
 # FONCTIONS D'ANALYSE
 # ==============================================================================
 
-def analyze_selected_patch() -> Tuple[np.ndarray, np.ndarray, str, str]:
+def process_uploaded_image(image: np.ndarray) -> Tuple[
+    List[Tuple[np.ndarray, str]],  # gallery items
+    np.ndarray,  # selected patch
+    np.ndarray,  # overlay
+    str,  # patch metrics
+    str,  # wsi metrics
+    str,  # status
+]:
     """
-    Analyse le patch sélectionné.
+    Traite une image uploadée: extraction + analyse automatique des 4 patches.
 
     Returns:
-        (image_preprocessed, overlay, metrics_text, status)
+        (gallery, selected_patch, overlay, patch_metrics, wsi_metrics, status)
     """
-    empty = np.zeros((224, 224, 3), dtype=np.uint8)
+    empty = np.zeros((PATCH_SIZE, PATCH_SIZE, 3), dtype=np.uint8)
 
-    patch = grid_state.get_selected()
-    if patch is None:
-        return empty, empty, "", "❌ Aucun patch sélectionné"
-
+    # Vérifier que le moteur est chargé
     if state.engine is None:
-        return empty, empty, "", "❌ Moteur non chargé (sélectionner un organe)"
+        return [], empty, empty, "", "", "❌ Moteur non chargé — Sélectionner un organe d'abord"
 
-    # Analyse via core
-    result, preprocessed, error = run_analysis_core(patch.image, use_auto_params=True)
+    # Vérifier la taille de l'image
+    if image is None:
+        return [], empty, empty, "", "", "❌ Aucune image"
 
-    if error:
-        return empty, empty, "", f"❌ {error}"
+    h, w = image.shape[:2]
+    if h != PANNUKE_SIZE or w != PANNUKE_SIZE:
+        return [], empty, empty, "", "", f"❌ Taille invalide: {w}×{h} (attendu: {PANNUKE_SIZE}×{PANNUKE_SIZE})"
 
-    # Stocker résultats
-    patch.result = result
-    patch.preprocessed = preprocessed
-    patch.is_analyzed = True
+    # Réinitialiser l'état
+    wsi_state.clear()
+    wsi_state.source_image = image
+    wsi_state.source_filename = "uploaded_image.png"
 
-    # Créer overlay
-    overlay = create_segmentation_overlay(
-        result.image_rgb,
-        result.instance_map,
-        result.type_map,
-        alpha=0.4,
-    )
-    patch.overlay = overlay
+    # Extraire les 4 patches
+    logger.info(f"Extraction de 4 patches {PATCH_SIZE}×{PATCH_SIZE} (grille 2×2)")
+    patch_images = extract_patches_2x2(image)
 
-    # Formater métriques
-    metrics = format_patch_metrics(patch)
+    # Créer les PatchInfo
+    for i, (patch_img, pos, name) in enumerate(zip(patch_images, PATCH_POSITIONS, PATCH_NAMES)):
+        patch = PatchInfo(
+            index=i,
+            name=name,
+            position=pos,
+            image=patch_img,
+        )
+        wsi_state.patches.append(patch)
 
-    return preprocessed, overlay, metrics, f"✅ Patch analysé: {patch.filename}"
+    # Analyser tous les patches automatiquement
+    logger.info("Analyse automatique des 4 patches...")
+    n_success = 0
 
-
-def analyze_all_patches() -> Tuple[str, str]:
-    """
-    Analyse tous les patches non analysés.
-
-    Returns:
-        (aggregated_metrics, status)
-    """
-    if state.engine is None:
-        return "", "❌ Moteur non chargé"
-
-    if not grid_state.patches:
-        return "", "❌ Aucun patch chargé"
-
-    # Analyser les patches non analysés
-    n_analyzed = 0
-    n_errors = 0
-
-    for patch in grid_state.patches:
-        if patch.is_analyzed:
-            continue
-
+    for patch in wsi_state.patches:
+        # run_analysis_core attend du 224×224 (InputRouter va le passer directement)
         result, preprocessed, error = run_analysis_core(patch.image, use_auto_params=True)
 
         if error:
-            n_errors += 1
+            logger.warning(f"Erreur patch {patch.name}: {error}")
             continue
 
         patch.result = result
-        patch.preprocessed = preprocessed
         patch.is_analyzed = True
 
         # Créer overlay
@@ -320,69 +246,83 @@ def analyze_all_patches() -> Tuple[str, str]:
             alpha=0.4,
         )
         patch.overlay = overlay
-        n_analyzed += 1
+        n_success += 1
 
-    # Métriques agrégées
-    agg_metrics = format_aggregated_metrics()
+    # Construire la galerie
+    gallery_items = []
+    for p in wsi_state.patches:
+        # Miniature avec indicateur de statut
+        thumb = cv2.resize(p.image, (112, 112))
+        label = f"{p.name}"
+        if p.is_analyzed:
+            label = f"✅ {label}"
+        gallery_items.append((thumb, label))
 
-    status = f"✅ {n_analyzed} patches analysés"
-    if n_errors > 0:
-        status += f" ({n_errors} erreurs)"
+    # Sélectionner le premier patch
+    wsi_state.selected_index = 0
+    selected = wsi_state.get_selected()
 
-    return agg_metrics, status
+    # Métriques
+    patch_md = format_patch_metrics(selected) if selected else ""
+    wsi_md = format_wsi_metrics()
+
+    status = f"✅ {n_success}/4 patches analysés"
+
+    return (
+        gallery_items,
+        selected.image if selected else empty,
+        selected.overlay if selected and selected.overlay is not None else empty,
+        patch_md,
+        wsi_md,
+        status,
+    )
 
 
-def on_gallery_select(evt: gr.SelectData) -> Tuple[np.ndarray, np.ndarray, str, str]:
+def on_patch_select(evt: gr.SelectData) -> Tuple[np.ndarray, np.ndarray, str]:
     """
-    Gère la sélection d'un patch dans la galerie.
+    Gère le clic sur un patch dans la galerie.
 
     Returns:
-        (selected_image, overlay_or_empty, patch_info, status)
+        (patch_image, overlay, patch_metrics)
     """
-    empty = np.zeros((224, 224, 3), dtype=np.uint8)
+    empty = np.zeros((PATCH_SIZE, PATCH_SIZE, 3), dtype=np.uint8)
 
     index = evt.index
-    if index < 0 or index >= len(grid_state.patches):
-        return empty, empty, "", "❌ Index invalide"
+    if index < 0 or index >= len(wsi_state.patches):
+        return empty, empty, "❌ Index invalide"
 
-    grid_state.selected_index = index
-    patch = grid_state.patches[index]
+    wsi_state.selected_index = index
+    patch = wsi_state.patches[index]
 
-    # Si déjà analysé, retourner les résultats
-    if patch.is_analyzed and patch.preprocessed is not None:
-        metrics = format_patch_metrics(patch)
-        return patch.preprocessed, patch.overlay, metrics, f"✅ {patch.filename} (analysé)"
+    if patch.is_analyzed and patch.overlay is not None:
+        return patch.image, patch.overlay, format_patch_metrics(patch)
 
-    # Sinon retourner l'image originale
-    # Resize pour affichage si nécessaire
-    h, w = patch.image.shape[:2]
-    if h != 224 or w != 224:
-        display_img = cv2.resize(patch.image, (224, 224))
-    else:
-        display_img = patch.image
-
-    return display_img, empty, f"**{patch.filename}**\nTaille: {w}×{h}\n\n*Non analysé*", f"Sélectionné: {patch.filename}"
+    return patch.image, empty, format_patch_metrics(patch)
 
 
 # ==============================================================================
 # FORMATAGE
 # ==============================================================================
 
-def format_patch_metrics(patch: PatchInfo) -> str:
+def format_patch_metrics(patch: Optional[PatchInfo]) -> str:
     """Formate les métriques d'un patch."""
+    if patch is None:
+        return "*Aucun patch sélectionné*"
+
     if not patch.is_analyzed or patch.result is None:
-        return f"**{patch.filename}**\n\n*Non analysé*"
+        return f"### {patch.name}\n\n*Non analysé*"
 
     r = patch.result
     lines = [
-        f"### {patch.filename}",
+        f"### Patch: {patch.name}",
+        f"*Position: ({patch.position[0]}, {patch.position[1]})*",
         "",
     ]
 
     if r.morphometry:
         m = r.morphometry
         lines.extend([
-            f"**Noyaux détectés:** {m.n_nuclei}",
+            f"**Noyaux:** {m.n_nuclei}",
             f"**Densité:** {m.nuclei_per_mm2:.0f} /mm²",
             "",
             "**Distribution:**",
@@ -394,22 +334,24 @@ def format_patch_metrics(patch: PatchInfo) -> str:
     return "\n".join(lines)
 
 
-def format_aggregated_metrics() -> str:
-    """Formate les métriques agrégées."""
-    agg = grid_state.get_aggregated_metrics()
+def format_wsi_metrics() -> str:
+    """Formate les métriques WSI agrégées."""
+    agg = wsi_state.get_aggregated_metrics()
 
     if agg["analyzed"] == 0:
-        return f"**Patches chargés:** {agg['total_patches']}\n\n*Aucun patch analysé*"
+        return "**Patches:** 0 analysés\n\n*En attente d'analyse...*"
 
     lines = [
-        "## Métriques Agrégées (Simulation WSI)",
+        "## Métriques WSI Globales",
         "",
+        f"**Source:** {wsi_state.source_filename}",
         f"**Patches:** {agg['analyzed']} / {agg['total_patches']} analysés",
-        f"**Noyaux totaux:** {agg['total_nuclei']}",
-        f"**Moyenne par patch:** {agg['avg_nuclei_per_patch']:.1f}",
+        "",
+        f"### Total Noyaux: {agg['total_nuclei']}",
+        f"**Moyenne/patch:** {agg['avg_nuclei_per_patch']:.1f}",
         f"**Surface totale:** {agg['total_area_um2']:.0f} µm²",
         "",
-        "### Distribution globale",
+        "### Distribution Globale",
     ]
 
     type_counts = agg.get("type_counts", {})
@@ -420,43 +362,6 @@ def format_aggregated_metrics() -> str:
         lines.append(f"- **{cell_type}:** {count} ({pct:.1f}%)")
 
     return "\n".join(lines)
-
-
-# ==============================================================================
-# NAVIGATION PAGES
-# ==============================================================================
-
-def prev_page() -> List[Tuple[np.ndarray, str]]:
-    """Page précédente."""
-    if grid_state.page > 0:
-        grid_state.page -= 1
-    return get_gallery_items()
-
-
-def next_page() -> List[Tuple[np.ndarray, str]]:
-    """Page suivante."""
-    if grid_state.page < grid_state.total_pages() - 1:
-        grid_state.page += 1
-    return get_gallery_items()
-
-
-def get_gallery_items() -> List[Tuple[np.ndarray, str]]:
-    """Retourne les miniatures de la page courante."""
-    patches = grid_state.current_page_patches()
-    items = []
-    for p in patches:
-        thumb = cv2.resize(p.image, (64, 64))
-        # Ajouter indicateur si analysé
-        label = p.filename[:15]
-        if p.is_analyzed:
-            label = f"✅ {label}"
-        items.append((thumb, label))
-    return items
-
-
-def get_page_info() -> str:
-    """Retourne info de pagination."""
-    return f"Page {grid_state.page + 1} / {grid_state.total_pages()}"
 
 
 # ==============================================================================
@@ -476,28 +381,28 @@ def load_engine_for_grid(organ: str) -> str:
 # ==============================================================================
 
 def create_grid_ui():
-    """Crée l'interface de navigation grille."""
+    """Crée l'interface de navigation grille WSI."""
 
     with gr.Blocks(
-        title="CellViT-Optimus — Navigation Grille",
+        title="CellViT-Optimus — Simulation WSI",
         theme=gr.themes.Soft(),
     ) as app:
 
         gr.Markdown("""
-        # 🔬 CellViT-Optimus — Navigation Grille Multi-Patches
+        # 🔬 CellViT-Optimus — Simulation WSI (PanNuke 256×256)
 
-        **Simulation WSI** — Testez la navigation sur plusieurs patches avant le déploiement sur lames entières.
-
-        1. **Sélectionner un organe** pour charger le modèle
-        2. **Charger des images** (dossier ou fichiers)
-        3. **Cliquer sur un patch** pour l'analyser
-        4. Ou **Analyser tout** pour traitement batch
+        **Workflow automatique:**
+        1. Sélectionner un **organe** → Charger le modèle
+        2. **Uploader** une image PanNuke (256×256)
+        3. Extraction automatique de **4 patches** 224×224 (grille 2×2)
+        4. **Analyse automatique** des 4 patches
+        5. **Cliquer** sur un patch pour voir les détails
         """)
 
         with gr.Row():
-            # === COLONNE GAUCHE: Contrôles et Grille ===
+            # === COLONNE GAUCHE: Config + Grille ===
             with gr.Column(scale=1):
-                gr.Markdown("### Configuration")
+                gr.Markdown("### 1. Configuration")
 
                 organ_dropdown = gr.Dropdown(
                     choices=ORGAN_CHOICES,
@@ -507,70 +412,52 @@ def create_grid_ui():
                 load_btn = gr.Button("🚀 Charger Modèle", variant="primary")
                 model_status = gr.Textbox(label="Status Modèle", interactive=False)
 
-                gr.Markdown("### Chargement Images")
+                gr.Markdown("### 2. Image Source (256×256)")
 
-                folder_input = gr.Textbox(
-                    label="Chemin dossier",
-                    placeholder="data/samples/",
-                )
-                load_folder_btn = gr.Button("📁 Charger Dossier")
-
-                file_input = gr.File(
-                    label="Ou uploader des fichiers",
-                    file_count="multiple",
-                    file_types=["image"],
+                input_image = gr.Image(
+                    label="Upload PanNuke 256×256",
+                    type="numpy",
+                    height=200,
                 )
 
-                load_status = gr.Textbox(label="Status Chargement", interactive=False)
+                analysis_status = gr.Textbox(label="Status Analyse", interactive=False)
 
-                gr.Markdown("### Grille Patches")
+                gr.Markdown("### 3. Grille Patches (2×2)")
 
                 gallery = gr.Gallery(
-                    label="Patches",
-                    columns=4,
-                    rows=4,
-                    height=400,
+                    label="4 Patches 224×224 — Cliquer pour sélectionner",
+                    columns=2,
+                    rows=2,
+                    height=280,
                     object_fit="contain",
                     allow_preview=False,
                 )
 
-                with gr.Row():
-                    prev_btn = gr.Button("◀ Précédent")
-                    page_info = gr.Textbox(value="Page 1 / 1", interactive=False, scale=2)
-                    next_btn = gr.Button("Suivant ▶")
-
-                analyze_all_btn = gr.Button("⚡ Analyser Tous", variant="secondary")
-
             # === COLONNE DROITE: Visualisation ===
             with gr.Column(scale=2):
-                gr.Markdown("### Patch Sélectionné")
+                gr.Markdown("### 4. Patch Sélectionné")
 
                 with gr.Row():
                     selected_image = gr.Image(
-                        label="Image (224×224)",
-                        height=300,
-                        width=300,
+                        label="Patch Original (224×224)",
+                        height=280,
+                        width=280,
                     )
                     overlay_image = gr.Image(
                         label="Segmentation",
-                        height=300,
-                        width=300,
+                        height=280,
+                        width=280,
                     )
-
-                with gr.Row():
-                    analyze_btn = gr.Button("🔬 Analyser ce Patch", variant="primary")
-                    analysis_status = gr.Textbox(label="Status", interactive=False)
 
                 patch_metrics = gr.Markdown(
                     value="*Sélectionnez un patch dans la grille*",
-                    label="Métriques Patch",
                 )
 
                 gr.Markdown("---")
-                gr.Markdown("### Métriques Agrégées (Multi-Patches)")
+                gr.Markdown("### 5. Métriques WSI Globales")
 
-                aggregated_metrics = gr.Markdown(
-                    value="*Aucun patch analysé*",
+                wsi_metrics = gr.Markdown(
+                    value="*Uploader une image pour commencer*",
                 )
 
         # === ÉVÉNEMENTS ===
@@ -582,47 +469,17 @@ def create_grid_ui():
             outputs=[model_status],
         )
 
-        # Chargement images depuis dossier
-        load_folder_btn.click(
-            fn=load_images_from_folder,
-            inputs=[folder_input],
-            outputs=[gallery, load_status],
+        # Upload image → Extraction + Analyse automatique
+        input_image.upload(
+            fn=process_uploaded_image,
+            inputs=[input_image],
+            outputs=[gallery, selected_image, overlay_image, patch_metrics, wsi_metrics, analysis_status],
         )
 
-        # Chargement images depuis fichiers uploadés
-        file_input.change(
-            fn=load_images_from_files,
-            inputs=[file_input],
-            outputs=[gallery, load_status],
-        )
-
-        # Sélection dans galerie
+        # Clic sur patch dans galerie
         gallery.select(
-            fn=on_gallery_select,
-            outputs=[selected_image, overlay_image, patch_metrics, analysis_status],
-        )
-
-        # Analyse patch sélectionné
-        analyze_btn.click(
-            fn=analyze_selected_patch,
-            outputs=[selected_image, overlay_image, patch_metrics, analysis_status],
-        )
-
-        # Analyse tous les patches
-        analyze_all_btn.click(
-            fn=analyze_all_patches,
-            outputs=[aggregated_metrics, analysis_status],
-        ).then(
-            fn=get_gallery_items,
-            outputs=[gallery],
-        )
-
-        # Navigation pages
-        prev_btn.click(fn=prev_page, outputs=[gallery]).then(
-            fn=get_page_info, outputs=[page_info]
-        )
-        next_btn.click(fn=next_page, outputs=[gallery]).then(
-            fn=get_page_info, outputs=[page_info]
+            fn=on_patch_select,
+            outputs=[selected_image, overlay_image, patch_metrics],
         )
 
     return app
@@ -635,7 +492,7 @@ def create_grid_ui():
 def main():
     import argparse
 
-    parser = argparse.ArgumentParser(description="CellViT-Optimus Navigation Grille")
+    parser = argparse.ArgumentParser(description="CellViT-Optimus Simulation WSI")
     parser.add_argument("--organ", type=str, default=None,
                         help="Organe à précharger (ex: Lung, Breast)")
     parser.add_argument("--port", type=int, default=7861,
