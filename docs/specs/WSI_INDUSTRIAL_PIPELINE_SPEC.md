@@ -202,17 +202,19 @@ Scanner (Leica/Aperio) → Sectra EI → Epic Beaker LIS
 
 ### 2.2 Composants Détaillés
 
-| Composant | Responsabilité | Technologie |
-|-----------|----------------|-------------|
-| **WSI Loader** | Lecture multi-format, métadonnées | OpenSlide + tiffslide fallback |
-| **Tissue Mask** | Détection tissu, exclusion fond | Otsu HSV (existant) |
-| **Tile Extract** | Découpage 224×224, filtrage QC | tile_extraction.py (existant) |
-| **Feature Cache** | Cache features H-Optimus-0 | .pt / .npz (existant) |
-| **Inference V13** | Segmentation nucléaire | HoVerNet + FPN Chimique (existant) |
-| **Aggregation** | Stats slide-level, heatmap | Nouveau |
-| **Report Generator** | JSON structuré, export | Nouveau |
+| Composant | Responsabilité | Technologie | Standard |
+|-----------|----------------|-------------|----------|
+| **WSI Loader** | Lecture multi-format, métadonnées | OpenSlide + tiffslide | - |
+| **Tissue Segmentation** | Segmentation tissu HSV | CLAM pipeline | **CLAM** |
+| **QC Artefacts** | Détection pen/blur/folds/bubbles | HistoQC | **HistoQC** |
+| **Content Filter** | Exclusion adipose/stroma/low-entropy | H-Channel + Entropie | **HistoROI** |
+| **Tile Extract** | Découpage 224×224 sur ROIs filtrés | tile_extraction.py | **CLAM** |
+| **Feature Cache** | Cache features H-Optimus-0 | .pt / .npz | - |
+| **Inference V13** | Segmentation nucléaire | HoVerNet + FPN Chimique | - |
+| **Aggregation** | Stats slide-level, heatmap | ABMIL style | **CLAM** |
+| **Report Generator** | JSON structuré, export | Custom | - |
 
-### 2.3 Flux de Données
+### 2.3 Flux de Données (avec Filtrage CLAM/HistoQC)
 
 ```
 WSI File (.svs/.ndpi/.mrxs)
@@ -227,20 +229,42 @@ WSI File (.svs/.ndpi/.mrxs)
     │
     ▼
 ┌───────────────────────────────────────┐
-│ TISSUE MASK (niveau 5× ou 10×)        │
-│ • Conversion HSV                      │
-│ • Otsu sur saturation                 │
-│ • Morphologie (opening/closing)       │
-│ • Contours ROI                        │
+│ NIVEAU 1: TISSUE SEGMENTATION (CLAM)  │
+│ • Downscale niveau 5× ou 10×          │
+│ • Conversion HSV → canal Saturation   │
+│ • Otsu thresholding (sthresh=8)       │
+│ • Median filter (mthresh=7)           │
+│ • Morphological closing (close=4)     │
+│ • Extraction contours (four_pt)       │
+│ • Élimine ~50-60% (fond blanc)        │
+└───────────────────────────────────────┘
+    │
+    ▼
+┌───────────────────────────────────────┐
+│ NIVEAU 2: QC ARTEFACTS (HistoQC)      │
+│ • Détection pen markers (HSV color)   │
+│ • Détection tissue folds (gradient)   │
+│ • Détection air bubbles (circular)    │
+│ • Détection blur (Laplacian var)      │
+│ • Élimine ~10-20% (artefacts)         │
+└───────────────────────────────────────┘
+    │
+    ▼
+┌───────────────────────────────────────┐
+│ NIVEAU 3: CONTENT FILTER (HistoROI)   │
+│ • Exclusion adipose tissue            │
+│ • Exclusion low entropy (<4.0)        │
+│ • Exclusion no nuclei (H-channel<5%)  │
+│ • Élimine ~10-15% (non informatif)    │
 └───────────────────────────────────────┘
     │
     ▼
 ┌───────────────────────────────────────┐
 │ TILE EXTRACTION (niveau 40× / 0.5MPP) │
-│ • Grille 224×224 sur ROIs             │
-│ • Filtrage : tissue_ratio > 50%       │
-│ • Filtrage : blur detection           │
+│ • Grille 224×224 sur ROIs filtrés     │
+│ • ~20-30% des tiles initiaux gardés   │
 │ • Sauvegarde tiles + coordonnées      │
+│ • Metadata filtrage par tile          │
 └───────────────────────────────────────┘
     │
     ▼
@@ -269,6 +293,168 @@ WSI File (.svs/.ndpi/.mrxs)
 │ • JSON structuré + audit trail        │
 └───────────────────────────────────────┘
 ```
+
+### 2.4 Preprocessing & Filtrage Intelligent (Standards CLAM/HistoQC)
+
+> **Référence industrielle :** [CLAM - Mahmood Lab (Harvard)](https://github.com/mahmoodlab/CLAM) + [HistoQC](https://pmc.ncbi.nlm.nih.gov/articles/PMC6552675/)
+>
+> Ces outils sont le standard de facto pour le preprocessing WSI en pathologie computationnelle.
+
+#### Pipeline de Filtrage Multi-Niveau
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│              PIPELINE FILTRAGE INTELLIGENT (STANDARDS INDUSTRIELS)          │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│  EXTRACTION BRUTE                                                           │
+│  └── ~10,000 tiles potentiels (lame 2GB @ 40×)                              │
+│                                                                             │
+│         │                                                                   │
+│         ▼                                                                   │
+│  ┌─────────────────────────────────────────────────────────────────────┐   │
+│  │  NIVEAU 1 : TISSUE SEGMENTATION (CLAM Standard)                     │   │
+│  │  ───────────────────────────────────────────────                    │   │
+│  │  Méthode : Binary thresholding canal Saturation HSV @ basse résol.  │   │
+│  │                                                                      │   │
+│  │  Paramètres CLAM :                                                   │   │
+│  │  • seg_level: -1 (auto, typiquement niveau 5× ou 10×)               │   │
+│  │  • sthresh: 8 (seuil saturation, plus haut = moins de foreground)   │   │
+│  │  • mthresh: 7 (median filter pour lisser)                           │   │
+│  │  • close: 4 (morphological closing)                                  │   │
+│  │  • contour_fn: 'four_pt' (4 points autour du centre dans contour)   │   │
+│  │                                                                      │   │
+│  │  Élimine : ~50-60% (fond blanc, verre, zones hors tissu)            │   │
+│  └─────────────────────────────────────────────────────────────────────┘   │
+│         │                                                                   │
+│         ▼                                                                   │
+│  ┌─────────────────────────────────────────────────────────────────────┐   │
+│  │  NIVEAU 2 : QUALITY CONTROL (HistoQC Standard)                      │   │
+│  │  ───────────────────────────────────────────────                    │   │
+│  │  Détection et exclusion des artefacts :                              │   │
+│  │                                                                      │   │
+│  │  • Pen markers     : Détection couleur (bleu, vert, rouge, noir)    │   │
+│  │  • Tissue folds    : Détection gradient + texture anormale          │   │
+│  │  • Air bubbles     : Détection zones circulaires claires            │   │
+│  │  • Blur/Focus      : Variance Laplacien < seuil                     │   │
+│  │  • Coverslip edge  : Détection bords artefactuels                   │   │
+│  │                                                                      │   │
+│  │  Métriques calculées :                                               │   │
+│  │  • Color histograms (détection batch effects)                       │   │
+│  │  • Brightness/Contrast                                               │   │
+│  │  • Edge density                                                      │   │
+│  │                                                                      │   │
+│  │  Élimine : ~10-20% supplémentaires (artefacts, zones défocalisées)  │   │
+│  └─────────────────────────────────────────────────────────────────────┘   │
+│         │                                                                   │
+│         ▼                                                                   │
+│  ┌─────────────────────────────────────────────────────────────────────┐   │
+│  │  NIVEAU 3 : CONTENT FILTERING (HistoROI / Domain-specific)          │   │
+│  │  ───────────────────────────────────────────────────────            │   │
+│  │  Filtrage basé sur le contenu tissulaire :                          │   │
+│  │                                                                      │   │
+│  │  • Adipose tissue  : Exclusion zones graisseuses (blanc + texture)  │   │
+│  │  • Necrosis        : Détection zones nécrotiques (si non pertinent) │   │
+│  │  • Mucin           : Détection mucine (optionnel selon application) │   │
+│  │  • Stroma only     : Exclusion stroma pur sans cellules épithéliales│   │
+│  │                                                                      │   │
+│  │  Méthodes :                                                          │   │
+│  │  • Entropie Shannon < 4.0 → zone homogène, exclure                  │   │
+│  │  • H-Channel density < 5% → pas de noyaux visibles, exclure         │   │
+│  │                                                                      │   │
+│  │  Élimine : ~10-15% supplémentaires (tissus non informatifs)         │   │
+│  └─────────────────────────────────────────────────────────────────────┘   │
+│         │                                                                   │
+│         ▼                                                                   │
+│  ┌─────────────────────────────────────────────────────────────────────┐   │
+│  │  TILES FILTRÉS → INFERENCE V13                                      │   │
+│  │  ─────────────────────────────────                                  │   │
+│  │  ~20-30% des tiles initiaux (2,000-3,000 sur 10,000)                │   │
+│  │                                                                      │   │
+│  │  Gain performance : 3-5× plus rapide                                 │   │
+│  │  Gain qualité : Moins de bruit, meilleure agrégation                │   │
+│  └─────────────────────────────────────────────────────────────────────┘   │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+#### Paramètres CLAM Recommandés
+
+| Paramètre | Valeur | Description |
+|-----------|--------|-------------|
+| `seg_level` | -1 (auto) | Niveau de downsampling pour segmentation |
+| `sthresh` | 8 | Seuil saturation HSV (8 = standard) |
+| `mthresh` | 7 | Taille filtre médian |
+| `close` | 4 | Kernel morphological closing |
+| `use_otsu` | True | Utiliser Otsu au lieu de seuil fixe |
+| `contour_fn` | 'four_pt' | Vérifier 4 points autour du centre |
+| `area_thresh` | 16 | Aire minimale contour (pixels²) |
+
+#### Artefacts HistoQC Détectés
+
+| Artefact | Méthode de Détection | Action |
+|----------|---------------------|--------|
+| **Pen markers** | Couleur HSV (bleu H:100-130, vert H:35-85) | Exclure région |
+| **Tissue folds** | Gradient magnitude élevé + texture anormale | Exclure région |
+| **Air bubbles** | Contours circulaires + haute luminosité | Exclure région |
+| **Blur** | Variance Laplacien < 100 | Exclure tile |
+| **Coverslip crack** | Lignes droites + faible saturation | Exclure région |
+| **Thick section** | Saturation très élevée uniformément | Warning QC |
+
+#### Métriques de Filtrage (Output)
+
+```json
+{
+  "filtering_stats": {
+    "level_1_tissue_segmentation": {
+      "tiles_input": 10234,
+      "tiles_output": 4521,
+      "filtered_ratio": 0.558,
+      "method": "CLAM_HSV_saturation"
+    },
+    "level_2_quality_control": {
+      "tiles_input": 4521,
+      "tiles_output": 3890,
+      "filtered_ratio": 0.140,
+      "artifacts_detected": {
+        "pen_marker": 23,
+        "blur": 456,
+        "fold": 89,
+        "bubble": 63
+      },
+      "method": "HistoQC"
+    },
+    "level_3_content_filtering": {
+      "tiles_input": 3890,
+      "tiles_output": 2845,
+      "filtered_ratio": 0.269,
+      "content_excluded": {
+        "adipose": 567,
+        "low_entropy": 234,
+        "no_nuclei": 244
+      },
+      "method": "H-Channel_entropy"
+    },
+    "total": {
+      "tiles_initial": 10234,
+      "tiles_final": 2845,
+      "overall_filtered_ratio": 0.722,
+      "speedup_factor": 3.6
+    }
+  }
+}
+```
+
+#### Intégration avec Outils Existants
+
+| Outil | Intégration | Usage |
+|-------|-------------|-------|
+| **CLAM** | Natif Python | Tissue segmentation + tiling |
+| **HistoQC** | Via PySlyde ou direct | Artifact detection |
+| **PySlyde** | Package Python 2025 | Wrapper unifié (supporte H-Optimus) |
+| **TRIDENT** | Mahmood Lab 2025 | Feature extraction + MIL |
+
+**Note :** PySlyde (Nov 2025) intègre nativement la détection de tissu compatible CLAM et le support des artefacts via HistoQC, tout en supportant H-Optimus-0 pour l'extraction de features.
 
 ---
 
