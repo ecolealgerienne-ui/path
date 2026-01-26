@@ -93,7 +93,7 @@ def analyze_image(
     empty = np.zeros((224, 224, 3), dtype=np.uint8)
 
     # Analyse via fonction partagée (use_auto_params=True par défaut)
-    result, error = run_analysis_core(image, use_auto_params=True)
+    result, preprocessed_image, error = run_analysis_core(image, use_auto_params=True)
 
     if error:
         return empty, error, "", "", empty, ""

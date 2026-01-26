@@ -93,7 +93,7 @@ def analyze_image(
     beta: float,
     min_distance: int,
     use_auto_params: bool = True,
-) -> Tuple[np.ndarray, np.ndarray, str, str, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, str, str, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """
     Analyse une image et retourne les visualisations (wrapper UI).
 
@@ -102,7 +102,10 @@ def analyze_image(
                          Si False, utilise les valeurs des sliders
 
     Returns:
-        (overlay, contours, metrics_text, alerts_text, chart, debug, anomaly_overlay, phase3_overlay, phase3_debug)
+        (preprocessed_image, overlay, contours, metrics_text, alerts_text, chart, debug, anomaly_overlay, phase3_overlay, phase3_debug)
+
+    Note: preprocessed_image est l'image 224×224 après preprocessing (crop si 256×256).
+          Permet de synchroniser l'affichage input/output.
     """
     empty = np.zeros((224, 224, 3), dtype=np.uint8)
     empty_debug = np.zeros((100, 400, 3), dtype=np.uint8)
@@ -113,8 +116,10 @@ def analyze_image(
 
     if not output.success:
         error_msg = output.error or "Erreur inconnue"
+        # En cas d'erreur, retourner l'image originale (ou empty si None)
+        input_img = image if image is not None else empty
         return (
-            output.overlay, output.contours, error_msg, "",
+            input_img, output.overlay, output.contours, error_msg, "",
             output.chart, output.debug, output.anomaly_overlay,
             output.phase3_overlay, output.phase3_debug
         )
@@ -128,7 +133,7 @@ def analyze_image(
     alerts_text = format_alerts_rnd(output.result)
 
     return (
-        output.overlay, output.contours, metrics_text, alerts_text,
+        output.preprocessed_image, output.overlay, output.contours, metrics_text, alerts_text,
         output.chart, output.debug, output.anomaly_overlay,
         output.phase3_overlay, output.phase3_debug
     )
@@ -612,18 +617,20 @@ def create_ui():
             outputs=[status_text],
         )
 
-        # Analyser l'image (9 outputs: overlay, contours, metrics, alerts, chart, debug, anomaly, phase3_overlay, phase3_debug)
+        # Analyser l'image (10 outputs: preprocessed_input, overlay, contours, metrics, alerts, chart, debug, anomaly, phase3_overlay, phase3_debug)
+        # Note: input_image est mis à jour avec l'image preprocessée (224×224) pour synchroniser l'affichage
         analyze_btn.click(
             fn=analyze_image,
             inputs=[input_image, np_threshold, min_size, beta, min_distance, use_auto_params],
-            outputs=[output_image, output_image, metrics_md, alerts_md, type_chart, debug_panel, anomaly_image, phase3_overlay_image, phase3_debug_panel],
+            outputs=[input_image, output_image, output_image, metrics_md, alerts_md, type_chart, debug_panel, anomaly_image, phase3_overlay_image, phase3_debug_panel],
         )
 
-        # Auto-analyse quand image uploadée
-        input_image.change(
+        # Auto-analyse quand image uploadée (sans mise à jour de input_image pour éviter boucle infinie)
+        # L'image preprocessée sera affichée lors du clic sur "Analyser"
+        input_image.upload(
             fn=analyze_image,
             inputs=[input_image, np_threshold, min_size, beta, min_distance, use_auto_params],
-            outputs=[output_image, output_image, metrics_md, alerts_md, type_chart, debug_panel, anomaly_image, phase3_overlay_image, phase3_debug_panel],
+            outputs=[input_image, output_image, output_image, metrics_md, alerts_md, type_chart, debug_panel, anomaly_image, phase3_overlay_image, phase3_debug_panel],
         )
 
         # Export Phase 4

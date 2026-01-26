@@ -210,6 +210,7 @@ class AnalysisOutput:
     """Résultat d'analyse avec visualisations."""
     success: bool
     result: Optional[AnalysisResult] = None
+    preprocessed_image: Optional[np.ndarray] = None  # Image après preprocessing (224×224)
     overlay: Optional[np.ndarray] = None
     contours: Optional[np.ndarray] = None
     chart: Optional[np.ndarray] = None
@@ -228,7 +229,7 @@ def run_analysis_core(
     image: np.ndarray,
     use_auto_params: bool = True,
     watershed_params: Optional[Dict] = None,
-) -> Tuple[Optional[AnalysisResult], Optional[str]]:
+) -> Tuple[Optional[AnalysisResult], Optional[np.ndarray], Optional[str]]:
     """
     Exécute l'analyse d'image et retourne le résultat brut.
 
@@ -245,14 +246,14 @@ def run_analysis_core(
         watershed_params: Params manuels (ignorés si use_auto_params=True)
 
     Returns:
-        (AnalysisResult, None) si succès
-        (None, error_message) si erreur
+        (AnalysisResult, preprocessed_image, None) si succès
+        (None, None, error_message) si erreur
     """
     if state.engine is None:
-        return None, "Moteur non chargé"
+        return None, None, "Moteur non chargé"
 
     if image is None:
-        return None, "Aucune image"
+        return None, None, "Aucune image"
 
     # === PREPROCESSING ADAPTATIF (InputRouter Integration) ===
     h, w = image.shape[:2]
@@ -269,7 +270,7 @@ def run_analysis_core(
 
     else:
         # Taille non supportée
-        return None, f"Image {w}×{h} — Tailles acceptées: 224×224 ou 256×256 (PanNuke)"
+        return None, None, f"Image {w}×{h} — Tailles acceptées: 224×224 ou 256×256 (PanNuke)"
 
     try:
         # Paramètres watershed
@@ -284,11 +285,11 @@ def run_analysis_core(
         )
 
         state.current_result = result
-        return result, None
+        return result, image, None
 
     except Exception as e:
         logger.error(f"Erreur analyse: {e}")
-        return None, f"Erreur: {e}"
+        return None, None, f"Erreur: {e}"
 
 
 def analyze_image_core(
@@ -332,12 +333,13 @@ def analyze_image_core(
         }
 
     # Analyse via fonction partagée
-    result, error = run_analysis_core(image, use_auto_params, watershed_params)
+    result, preprocessed_image, error = run_analysis_core(image, use_auto_params, watershed_params)
 
     if error:
         return AnalysisOutput(
             success=False,
             error=error,
+            preprocessed_image=None,
             overlay=empty,
             contours=empty,
             chart=empty,
@@ -414,6 +416,7 @@ def analyze_image_core(
         return AnalysisOutput(
             success=True,
             result=result,
+            preprocessed_image=preprocessed_image,
             overlay=overlay,
             contours=contours,
             chart=chart,
@@ -429,6 +432,7 @@ def analyze_image_core(
         traceback.print_exc()
         return AnalysisOutput(
             success=False,
+            preprocessed_image=None,
             error=str(e),
             overlay=empty,
             contours=empty,
