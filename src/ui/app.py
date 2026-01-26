@@ -435,7 +435,7 @@ def create_ui():
                 # Image input/output
                 with gr.Row():
                     input_image = gr.Image(
-                        label="Image H&E (224×224)",
+                        label="Image H&E (224×224 ou 256×256 PanNuke)",
                         type="numpy",
                         height=300,
                     )

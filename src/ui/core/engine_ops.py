@@ -9,6 +9,10 @@ Ce module contient la logique métier partagée pour:
 
 Les fonctions retournent des données brutes (pas de formatage).
 Le formatage est géré par src/ui/formatters/.
+
+Note: Intégration InputRouter (2026-01-26)
+    - Supporte automatiquement les images 256×256 (PanNuke) → center crop 224×224
+    - Les images 224×224 passent directement (aucune transformation)
 """
 
 import numpy as np
@@ -18,6 +22,7 @@ from typing import Dict, List, Optional, Tuple, Any
 
 from src.ui.inference_engine import CellVitEngine, AnalysisResult
 from src.ui.organ_config import get_model_for_organ
+from src.wsi import transform_pannuke_to_224, TARGET_SIZE, PANNUKE_SIZE
 from src.ui.visualizations import (
     create_segmentation_overlay,
     create_contour_overlay,
@@ -230,6 +235,10 @@ def run_analysis_core(
     Fonction partagée entre les deux UIs (R&D et Pathologiste).
     Ne génère PAS de visualisations - chaque UI crée les siennes.
 
+    Tailles acceptées:
+        - 224×224: Direct (aucune transformation)
+        - 256×256: PanNuke → Center crop automatique vers 224×224
+
     Args:
         image: Image RGB (H, W, 3)
         use_auto_params: Si True, utilise les params de organ_config.py
@@ -245,10 +254,22 @@ def run_analysis_core(
     if image is None:
         return None, "Aucune image"
 
-    # Vérification taille 224×224
+    # === PREPROCESSING ADAPTATIF (InputRouter Integration) ===
     h, w = image.shape[:2]
-    if h != 224 or w != 224:
-        return None, f"Image {w}×{h} — Requis: 224×224"
+
+    if h == PANNUKE_SIZE and w == PANNUKE_SIZE:
+        # PanNuke 256×256 → Center crop 224×224
+        logger.info(f"InputRouter: PanNuke {PANNUKE_SIZE}×{PANNUKE_SIZE} → center crop {TARGET_SIZE}×{TARGET_SIZE}")
+        image = transform_pannuke_to_224(image, method="center_crop")
+        h, w = image.shape[:2]
+
+    elif h == TARGET_SIZE and w == TARGET_SIZE:
+        # Déjà 224×224 → Direct
+        pass
+
+    else:
+        # Taille non supportée
+        return None, f"Image {w}×{h} — Tailles acceptées: 224×224 ou 256×256 (PanNuke)"
 
     try:
         # Paramètres watershed

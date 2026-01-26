@@ -29,21 +29,39 @@ See Also:
 """
 
 from .input_router import (
+    # Constants
+    TARGET_SIZE,
+    PANNUKE_SIZE,
+    # Enums
     InputType,
+    # Data classes
     InputMetadata,
     ProcessedTile,
+    # Main class
     InputRouter,
+    # Functions
     detect_input_type,
     transform_pannuke_to_224,
+    transform_masks_pannuke_to_224,
+    process_pannuke_batch,
 )
 
 __all__ = [
+    # Constants
+    'TARGET_SIZE',
+    'PANNUKE_SIZE',
+    # Enums
     'InputType',
+    # Data classes
     'InputMetadata',
     'ProcessedTile',
+    # Main class
     'InputRouter',
+    # Functions
     'detect_input_type',
     'transform_pannuke_to_224',
+    'transform_masks_pannuke_to_224',
+    'process_pannuke_batch',
 ]
 
 __version__ = "1.0.0"
