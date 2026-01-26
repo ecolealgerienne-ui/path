@@ -200,6 +200,154 @@ Scanner (Leica/Aperio) → Sectra EI → Epic Beaker LIS
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
+### 2.1b Input Router Adaptatif (Multi-Format)
+
+> **Principe :** Le système détecte automatiquement le type d'input et adapte le preprocessing.
+> Le moteur V13 reste unique (224×224 obligatoire).
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                         INPUT ROUTER ADAPTATIF                              │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│  INPUT FILE                                                                 │
+│      │                                                                      │
+│      ▼                                                                      │
+│  ┌─────────────────────────────────────┐                                   │
+│  │ DÉTECTION AUTOMATIQUE               │                                   │
+│  │ • Extension (.svs, .png, .npy, etc) │                                   │
+│  │ • Dimensions (256×256 vs 50000+)    │                                   │
+│  │ • Métadonnées (MPP si disponible)   │                                   │
+│  └─────────────────────────────────────┘                                   │
+│      │                                                                      │
+│      ├───────────────┬────────────────┬────────────────┐                   │
+│      ▼               ▼                ▼                ▼                   │
+│  ┌────────┐     ┌────────┐      ┌────────┐      ┌────────────┐            │
+│  │ PATCH  │     │ TILE   │      │ IMAGE  │      │    WSI     │            │
+│  │ PanNuke│     │ 224×224│      │ Grande │      │ .svs/.ndpi │            │
+│  │ 256×256│     │        │      │ <10000 │      │  >10000px  │            │
+│  └────┬───┘     └────┬───┘      └────┬───┘      └─────┬──────┘            │
+│       │              │               │                │                    │
+│       ▼              ▼               ▼                ▼                    │
+│  ┌──────────┐  ┌──────────┐   ┌─────────────┐  ┌─────────────────┐        │
+│  │ Resize   │  │ Direct   │   │ Tile 224×224│  │ CLAM + HistoQC  │        │
+│  │ 256→224  │  │ (aucun)  │   │ + Filtrage  │  │ + Tile + Filter │        │
+│  │ Center   │  │          │   │ basique     │  │ complet         │        │
+│  │ Crop     │  │          │   │             │  │                 │        │
+│  └────┬─────┘  └────┬─────┘   └──────┬──────┘  └────────┬────────┘        │
+│       │              │               │                   │                 │
+│       └──────────────┴───────────────┴───────────────────┘                 │
+│                              │                                              │
+│                              ▼                                              │
+│               ┌──────────────────────────────┐                             │
+│               │  TILES 224×224 NORMALISÉS    │                             │
+│               │  (format unique pour V13)    │                             │
+│               └──────────────────────────────┘                             │
+│                              │                                              │
+│                              ▼                                              │
+│               ┌──────────────────────────────┐                             │
+│               │      INFERENCE V13           │                             │
+│               │      (moteur unique)         │                             │
+│               └──────────────────────────────┘                             │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+#### Types d'Input Supportés
+
+| Type | Extensions | Dimensions | Preprocessing | Cas d'usage |
+|------|------------|------------|---------------|-------------|
+| **PATCH** | .npy, .npz, .png | 256×256 | **Resize 256→224** (center crop) | PanNuke, CoNSeP |
+| **TILE** | .png, .jpg | 224×224 | Aucun (direct) | Tiles pré-extraits |
+| **IMAGE** | .png, .jpg, .tif | 500-10000px | Tiling 224×224 + filtre basique | Photo biopsie |
+| **WSI** | .svs, .ndpi, .mrxs | >10000px | CLAM + HistoQC + Tiling | Lame scanner |
+
+#### Transformation PanNuke 256→224
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                    TRANSFORMATION PANNUKE 256×256 → 224×224                 │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│  Option A : CENTER CROP (recommandé)                                        │
+│  ───────────────────────────────────                                        │
+│  • Découpe centrale : offset = (256-224)/2 = 16 pixels                     │
+│  • Crop : image[16:240, 16:240]                                            │
+│  • Perte : bordures 16px (acceptable, noyaux souvent centrés)              │
+│                                                                             │
+│      256×256                    224×224                                     │
+│    ┌──────────┐               ┌────────┐                                   │
+│    │░░░░░░░░░░│               │        │                                   │
+│    │░┌──────┐░│     →         │ CROP   │                                   │
+│    │░│      │░│               │        │                                   │
+│    │░│ 224  │░│               └────────┘                                   │
+│    │░│      │░│                                                            │
+│    │░└──────┘░│                                                            │
+│    │░░░░░░░░░░│  ░ = zone perdue (16px)                                    │
+│    └──────────┘                                                            │
+│                                                                             │
+│  Option B : RESIZE (alternative)                                            │
+│  ──────────────────────────────                                            │
+│  • Resize bilinéaire : 256→224                                             │
+│  • Ratio : 0.875 (légère réduction)                                        │
+│  • Avantage : garde tout le contenu                                        │
+│  • Inconvénient : légère déformation des noyaux                            │
+│                                                                             │
+│  Recommandation : CENTER CROP (préserve les proportions des noyaux)        │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+#### Détection Automatique du Type
+
+```python
+def detect_input_type(path: Path) -> str:
+    """Détecte automatiquement le type d'input."""
+
+    ext = path.suffix.lower()
+
+    # WSI formats
+    if ext in ['.svs', '.ndpi', '.mrxs', '.scn', '.vms', '.bif']:
+        return 'WSI'
+
+    # Array formats (PanNuke style)
+    if ext in ['.npy', '.npz']:
+        return 'PATCH'
+
+    # Image formats - check dimensions
+    if ext in ['.png', '.jpg', '.jpeg', '.tif', '.tiff']:
+        img = load_image(path)
+        h, w = img.shape[:2]
+
+        if h == 256 and w == 256:
+            return 'PATCH'      # PanNuke
+        elif h == 224 and w == 224:
+            return 'TILE'       # Pre-extracted tile
+        elif max(h, w) > 10000:
+            return 'WSI'        # Large image (treat as WSI)
+        else:
+            return 'IMAGE'      # Medium image
+
+    return 'UNKNOWN'
+```
+
+#### Pipeline par Type
+
+| Type | Étapes | Temps estimé |
+|------|--------|--------------|
+| **PATCH** | Crop 256→224 → V13 | ~50ms |
+| **TILE** | Direct → V13 | ~50ms |
+| **IMAGE** | Tile + Filter → V13 (×N) | ~1-5s |
+| **WSI** | CLAM + HistoQC + Tile + V13 (×N) | ~5-15min |
+
+#### Validation par Phase
+
+| Phase | Input Type | Dataset | Objectif |
+|-------|------------|---------|----------|
+| **Phase 1** | PATCH | PanNuke (256×256) | Valider pipeline + IHM |
+| **Phase 2** | IMAGE | CRAG, DigestPath | Valider tiling simple |
+| **Phase 3** | WSI | CAMELYON, TCGA | Valider CLAM + HistoQC |
+
 ### 2.2 Composants Détaillés
 
 | Composant | Responsabilité | Technologie | Standard |
