@@ -98,19 +98,28 @@ python -m src.ui.app --preload --organ Breast  # ★ modèle dédié
 
 | Critère | Valeur | Raison |
 |---------|--------|--------|
-| **Taille** | 224×224 pixels **exactement** | Entrée native H-optimus-0 |
+| **Taille** | **224×224** ou **256×256** (PanNuke) | InputRouter auto-détecte |
 | **Format** | PNG, JPG, TIFF | RGB 3 canaux |
 | **Résolution** | 0.5 MPP | Calibration PanNuke |
 
-### Validation en amont
+### Preprocessing Adaptatif (InputRouter)
 
 ```python
-# Dans app.py - Rejet automatique si ≠ 224×224
-if h != 224 or w != 224:
-    return error_message("Image {w}×{h} non acceptée. Requis: 224×224")
+# Dans engine_ops.py - InputRouter Integration (2026-01-26)
+from src.wsi import transform_pannuke_to_224, TARGET_SIZE, PANNUKE_SIZE
+
+# Détection automatique et transformation
+if h == 256 and w == 256:
+    # PanNuke 256×256 → Center crop 224×224
+    image = transform_pannuke_to_224(image, method="center_crop")
+elif h == 224 and w == 224:
+    # Déjà 224×224 → Direct
+    pass
+else:
+    return error("Tailles acceptées: 224×224 ou 256×256")
 ```
 
-**Note:** Les images PanNuke sources sont 256×256. Les Smart Crops 224×224 sont extraits lors du preprocessing (voir `prepare_v13_smart_crops.py`).
+**Note:** L'InputRouter effectue un **center crop** (offset=16) pour transformer 256×256 → 224×224. Cette méthode préserve les proportions des noyaux (recommandé vs resize).
 
 ---
 
