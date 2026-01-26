@@ -123,10 +123,10 @@ class GridState:
         for p in analyzed:
             r = p.result
             if r.morphometry:
-                total_nuclei += r.morphometry.total_nuclei
+                total_nuclei += r.morphometry.n_nuclei
                 for cell_type, count in r.morphometry.type_counts.items():
                     type_counts[cell_type] = type_counts.get(cell_type, 0) + count
-                total_area += r.morphometry.total_area_um2
+                total_area += r.morphometry.patch_area_mm2 * 1_000_000  # mm² → µm²
 
         return {
             "total_patches": len(self.patches),
@@ -382,13 +382,13 @@ def format_patch_metrics(patch: PatchInfo) -> str:
     if r.morphometry:
         m = r.morphometry
         lines.extend([
-            f"**Noyaux détectés:** {m.total_nuclei}",
-            f"**Densité:** {m.density_per_mm2:.0f} /mm²",
+            f"**Noyaux détectés:** {m.n_nuclei}",
+            f"**Densité:** {m.nuclei_per_mm2:.0f} /mm²",
             "",
             "**Distribution:**",
         ])
         for cell_type, count in sorted(m.type_counts.items(), key=lambda x: -x[1]):
-            pct = 100 * count / m.total_nuclei if m.total_nuclei > 0 else 0
+            pct = 100 * count / m.n_nuclei if m.n_nuclei > 0 else 0
             lines.append(f"- {cell_type}: {count} ({pct:.1f}%)")
 
     return "\n".join(lines)
