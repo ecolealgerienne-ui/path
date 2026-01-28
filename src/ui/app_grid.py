@@ -57,6 +57,15 @@ from src.ui.visualizations import (
     create_segmentation_overlay,
 )
 
+# Imports: Classification locale (pour consistance WSI)
+from src.classification import (
+    LocalNucleusClassifier,
+    extract_all_nuclei_features,
+)
+
+# Instance globale du classificateur local
+local_classifier = LocalNucleusClassifier()
+
 # ==============================================================================
 # CONSTANTES
 # ==============================================================================
@@ -119,8 +128,9 @@ class NucleusInfo:
     id: int  # ID dans le patch
     centroid_patch: Tuple[int, int]  # (y, x) en coordonnées patch
     centroid_image: Tuple[int, int]  # (y, x) en coordonnées image 256×256
-    cell_type: int
-    area_pixels: int
+    cell_type: int  # Type from HoVer-Net (context-dependent)
+    local_type: int = 0  # Type from local classifier (context-independent)
+    area_pixels: int = 0
     in_valid_zone: bool = False
 
 
@@ -150,6 +160,8 @@ class WSIState:
     stitched_instance_map: Optional[np.ndarray] = None  # 256×256
     stitched_type_map: Optional[np.ndarray] = None  # 256×256
     stitched_overlay: Optional[np.ndarray] = None  # 256×256 RGB
+    # Local classification mode
+    use_local_classification: bool = True  # Use morphological classifier for visualization
 
     def clear(self):
         """Réinitialise l'état."""
@@ -276,6 +288,7 @@ def extract_nuclei_info(
             centroid_patch=(cy_patch, cx_patch),
             centroid_image=(cy_image, cx_image),
             cell_type=cell_type,
+            local_type=cell_type,  # Default to HoVer-Net type, updated later
             area_pixels=area,
             in_valid_zone=in_valid,
         ))
@@ -283,10 +296,49 @@ def extract_nuclei_info(
     return nuclei
 
 
-def stitch_segmentation_maps() -> Tuple[np.ndarray, np.ndarray]:
+def compute_local_types(
+    image_rgb: np.ndarray,
+    instance_map: np.ndarray,
+    nuclei: List[NucleusInfo],
+) -> None:
+    """
+    Compute local (context-independent) types for all nuclei using morphological classifier.
+    Updates the local_type field of each NucleusInfo in place.
+
+    Args:
+        image_rgb: RGB image of the patch
+        instance_map: Instance segmentation map
+        nuclei: List of NucleusInfo to update
+    """
+    if not nuclei:
+        return
+
+    # Extract features for all nuclei
+    nucleus_ids, features = extract_all_nuclei_features(image_rgb, instance_map)
+
+    if len(features) == 0:
+        return
+
+    # Classify all nuclei
+    local_types = local_classifier.classify_batch(features)
+
+    # Create ID to local_type mapping
+    id_to_type = {nid: lt for nid, lt in zip(nucleus_ids, local_types)}
+
+    # Update nuclei
+    for nucleus in nuclei:
+        if nucleus.id in id_to_type:
+            nucleus.local_type = id_to_type[nucleus.id]
+
+
+def stitch_segmentation_maps(use_local_types: bool = True) -> Tuple[np.ndarray, np.ndarray]:
     """
     Reconstruit les cartes de segmentation 256×256 à partir des 4 patches.
     Utilise uniquement les noyaux dans les zones valides.
+
+    Args:
+        use_local_types: If True, use local (morphological) classification for consistency.
+                        If False, use HoVer-Net context-dependent classification.
 
     Returns:
         (instance_map_256, type_map_256)
@@ -301,11 +353,7 @@ def stitch_segmentation_maps() -> Tuple[np.ndarray, np.ndarray]:
             continue
 
         patch_offset_x, patch_offset_y = patch.position
-        valid_zone = VALID_ZONES_PATCH[patch.index]
-        y_min, y_max, x_min, x_max = valid_zone
-
         patch_inst = patch.result.instance_map
-        patch_type = patch.result.type_map
 
         # Pour chaque noyau valide
         for nucleus in patch.nuclei:
@@ -320,6 +368,9 @@ def stitch_segmentation_maps() -> Tuple[np.ndarray, np.ndarray]:
             if len(coords[0]) == 0:
                 continue
 
+            # Choisir le type: local (consistant) ou context (HoVer-Net)
+            nucleus_type = nucleus.local_type if use_local_types else nucleus.cell_type
+
             # Transférer vers l'image 256×256
             for py, px in zip(coords[0], coords[1]):
                 iy = py + patch_offset_y
@@ -327,7 +378,7 @@ def stitch_segmentation_maps() -> Tuple[np.ndarray, np.ndarray]:
 
                 if 0 <= iy < PANNUKE_SIZE and 0 <= ix < PANNUKE_SIZE:
                     instance_map[iy, ix] = global_id
-                    type_map[iy, ix] = nucleus.cell_type
+                    type_map[iy, ix] = nucleus_type
 
             global_id += 1
 
@@ -428,12 +479,20 @@ def process_uploaded_image(image: np.ndarray) -> Tuple[
         )
         patch.valid_nuclei_count = sum(1 for n in patch.nuclei if n.in_valid_zone)
 
+        # Calculer les types locaux (classification morphologique)
+        compute_local_types(
+            result.image_rgb,
+            result.instance_map,
+            patch.nuclei,
+        )
+
         logger.info(f"  {patch.name}: {len(patch.nuclei)} noyaux, {patch.valid_nuclei_count} dans zone valide")
         n_success += 1
 
-    # === STITCHING ===
-    logger.info("Stitching des segmentations...")
-    stitched_inst, stitched_type = stitch_segmentation_maps()
+    # === STITCHING avec classification locale ===
+    use_local = wsi_state.use_local_classification
+    logger.info(f"Stitching des segmentations (local_classification={use_local})...")
+    stitched_inst, stitched_type = stitch_segmentation_maps(use_local_types=use_local)
     wsi_state.stitched_instance_map = stitched_inst
     wsi_state.stitched_type_map = stitched_type
 
@@ -462,7 +521,8 @@ def process_uploaded_image(image: np.ndarray) -> Tuple[
     patch_md = format_patch_metrics(selected) if selected else ""
     wsi_md = format_wsi_metrics_stitched()
 
-    status = f"✅ {n_success}/4 patches | {total_stitched} noyaux (stitched)"
+    classification_mode = "local" if use_local else "context"
+    status = f"✅ {n_success}/4 patches | {total_stitched} noyaux ({classification_mode})"
 
     return (
         gallery_items,
@@ -575,10 +635,21 @@ def format_wsi_metrics_stitched() -> str:
         pct = 100 * count / total if total > 0 else 0
         lines.append(f"- **{cell_type}:** {count} ({pct:.1f}%)")
 
-    lines.extend([
-        "",
-        "*Stitching: zones valides uniquement (pas de doublon)*",
-    ])
+    # Indiquer le mode de classification
+    if wsi_state.use_local_classification:
+        lines.extend([
+            "",
+            "---",
+            "✅ **Classification locale** (morphologique)",
+            "*Consistance garantie entre patches*",
+        ])
+    else:
+        lines.extend([
+            "",
+            "---",
+            "⚠️ **Classification contextuelle** (HoVer-Net)",
+            "*Peut varier entre patches*",
+        ])
 
     return "\n".join(lines)
 
