@@ -26,7 +26,7 @@ import numpy as np
 from pathlib import Path
 import pickle
 import logging
-from typing import Tuple, List
+from typing import Tuple, List, Dict
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import classification_report, confusion_matrix
@@ -41,6 +41,19 @@ from src.classification.morphological_features import (
     MorphologicalFeatures,
 )
 from src.preprocessing.stain_separation import ruifrok_extract_h_channel
+
+# Import existing preprocessing functions for consistency
+# Using importlib to handle non-package script import
+import importlib.util
+
+_prep_script_path = PROJECT_ROOT / "scripts" / "preprocessing" / "prepare_v13_smart_crops.py"
+_spec = importlib.util.spec_from_file_location("prepare_v13_smart_crops", _prep_script_path)
+_prep_module = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_prep_module)
+
+# Import functions from existing preprocessing pipeline (SINGLE SOURCE OF TRUTH)
+extract_pannuke_instances = _prep_module.extract_pannuke_instances
+normalize_mask_format = _prep_module.normalize_mask_format
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -89,31 +102,38 @@ def create_instance_and_type_maps(masks: np.ndarray) -> Tuple[np.ndarray, np.nda
     """
     Create instance map and type map from PanNuke masks.
 
-    PanNuke masks shape: (256, 256, 6) where each channel is a type
-    Channel 0 = Neoplastic, 1 = Inflammatory, 2 = Connective, 3 = Dead, 4 = Epithelial, 5 = Background
+    IMPORTANT: Uses the SAME convention as the existing V13 pipeline
+    (scripts/preprocessing/prepare_v13_smart_crops.py) for consistency.
+
+    PanNuke masks shape: (256, 256, 6) where:
+    - Channel 0: Multi-type instances (combined)
+    - Channels 1-5: Type-specific instance masks
+        - Channel 1: Neoplastic → type 1
+        - Channel 2: Inflammatory → type 2
+        - Channel 3: Connective → type 3
+        - Channel 4: Dead → type 4
+        - Channel 5: Epithelial → type 5
 
     Returns:
-        (instance_map, type_map)
+        (instance_map, type_map) where type_map uses labels 1-5
     """
-    h, w, n_types = masks.shape
+    masks = normalize_mask_format(masks)
+    h, w = masks.shape[:2]
 
-    instance_map = np.zeros((h, w), dtype=np.int32)
+    # Use existing function for instance map extraction
+    instance_map = extract_pannuke_instances(masks)
+
+    # Build type map following existing pipeline convention
+    # Channels 1-5 contain type-specific instances
     type_map = np.zeros((h, w), dtype=np.int32)
 
-    current_id = 1
-
-    # PanNuke type mapping: channel index + 1 = class ID (1-5)
-    # Channel 5 is background, we skip it
-    for type_idx in range(5):  # 0-4 (Neoplastic to Epithelial)
-        channel = masks[:, :, type_idx]
-        unique_ids = np.unique(channel)
-        unique_ids = unique_ids[unique_ids > 0]
-
-        for uid in unique_ids:
-            mask = channel == uid
-            instance_map[mask] = current_id
-            type_map[mask] = type_idx + 1  # Class ID 1-5
-            current_id += 1
+    for c in range(5):  # c = 0,1,2,3,4
+        channel_mask = masks[:, :, c + 1]  # Channels 1-5
+        # Find pixels with instances in this channel
+        type_mask = channel_mask > 0
+        # Assign type (c + 1) to match local_classifier's PANNUKE_CLASSES:
+        # 1=Neoplastic, 2=Inflammatory, 3=Connective, 4=Dead, 5=Epithelial
+        type_map[type_mask] = c + 1
 
     return instance_map, type_map
 
