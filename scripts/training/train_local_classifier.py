@@ -102,17 +102,15 @@ def create_instance_and_type_maps(masks: np.ndarray) -> Tuple[np.ndarray, np.nda
     """
     Create instance map and type map from PanNuke masks.
 
-    IMPORTANT: Uses the SAME convention as the existing V13 pipeline
-    (scripts/preprocessing/prepare_v13_smart_crops.py) for consistency.
+    Official PanNuke format (masks shape: 256, 256, 6):
+    - Channel 0: Neoplastic → type 1
+    - Channel 1: Inflammatory → type 2
+    - Channel 2: Connective → type 3
+    - Channel 3: Dead → type 4
+    - Channel 4: Epithelial → type 5
+    - Channel 5: Background (always 0)
 
-    PanNuke masks shape: (256, 256, 6) where:
-    - Channel 0: Multi-type instances (combined)
-    - Channels 1-5: Type-specific instance masks
-        - Channel 1: Neoplastic → type 1
-        - Channel 2: Inflammatory → type 2
-        - Channel 3: Connective → type 3
-        - Channel 4: Dead → type 4
-        - Channel 5: Epithelial → type 5
+    This matches compute_np_target which uses channels 0-4 for nuclei.
 
     Returns:
         (instance_map, type_map) where type_map uses labels 1-5
@@ -120,20 +118,25 @@ def create_instance_and_type_maps(masks: np.ndarray) -> Tuple[np.ndarray, np.nda
     masks = normalize_mask_format(masks)
     h, w = masks.shape[:2]
 
-    # Use existing function for instance map extraction
-    instance_map = extract_pannuke_instances(masks)
-
-    # Build type map following existing pipeline convention
-    # Channels 1-5 contain type-specific instances
+    instance_map = np.zeros((h, w), dtype=np.int32)
     type_map = np.zeros((h, w), dtype=np.int32)
 
-    for c in range(5):  # c = 0,1,2,3,4
-        channel_mask = masks[:, :, c + 1]  # Channels 1-5
-        # Find pixels with instances in this channel
-        type_mask = channel_mask > 0
-        # Assign type (c + 1) to match local_classifier's PANNUKE_CLASSES:
-        # 1=Neoplastic, 2=Inflammatory, 3=Connective, 4=Dead, 5=Epithelial
-        type_map[type_mask] = c + 1
+    current_id = 1
+
+    # Official PanNuke: channels 0-4 are cell types (Neoplastic to Epithelial)
+    for type_idx in range(5):  # 0, 1, 2, 3, 4
+        channel = masks[:, :, type_idx]
+        unique_ids = np.unique(channel)
+        unique_ids = unique_ids[unique_ids > 0]
+
+        for uid in unique_ids:
+            mask = channel == uid
+            # Only assign if not already assigned (avoid overlap issues)
+            new_mask = mask & (instance_map == 0)
+            if new_mask.sum() > 0:
+                instance_map[new_mask] = current_id
+                type_map[new_mask] = type_idx + 1  # Labels 1-5
+                current_id += 1
 
     return instance_map, type_map
 
