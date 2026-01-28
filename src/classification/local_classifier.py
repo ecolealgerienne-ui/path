@@ -94,7 +94,7 @@ class LocalNucleusClassifier:
         Classify a single nucleus.
 
         Args:
-            features: Feature vector (6,) from MorphologicalFeatures.to_vector()
+            features: Feature vector (13,) from MorphologicalFeatures.to_vector()
 
         Returns:
             Class ID (1-5)
@@ -109,7 +109,7 @@ class LocalNucleusClassifier:
         Classify multiple nuclei.
 
         Args:
-            features: Feature matrix (N, 6)
+            features: Feature matrix (N, 13)
 
         Returns:
             Class IDs array (N,)
@@ -129,7 +129,7 @@ class LocalNucleusClassifier:
         Classify with probability estimates.
 
         Args:
-            features: Feature matrix (N, 6)
+            features: Feature matrix (N, 13)
 
         Returns:
             (class_ids, probabilities) where probabilities is (N, 5)
@@ -153,53 +153,82 @@ class LocalNucleusClassifier:
         """
         Rule-based classification using expert thresholds.
 
-        Features order: [area_norm, circularity, eccentricity, solidity, h_mean_norm, h_std_norm]
+        Features order (13 total):
+        [0] area_norm, [1] circularity, [2] eccentricity, [3] solidity,
+        [4] h_mean_norm, [5] h_std_norm, [6] h_skewness_norm, [7] h_kurtosis_norm,
+        [8] rgb_r_norm, [9] rgb_g_norm, [10] rgb_b_norm,
+        [11] boundary_ratio, [12] intensity_range_norm
 
         Rules based on biological characteristics:
-        - Inflammatory: small, round (high circularity)
-        - Neoplastic: large, irregular (low circularity), high chromatin
-        - Connective: elongated (high eccentricity)
-        - Epithelial: medium size, regular shape
-        - Dead: low chromatin intensity, irregular
+        - Inflammatory: small, round (high circularity), dense chromatin
+        - Neoplastic: large, irregular (low circularity), high chromatin, heterogeneous
+        - Connective: elongated (high eccentricity), pale
+        - Epithelial: medium size, regular shape, moderate chromatin
+        - Dead: low chromatin intensity, irregular, high intensity range
 
         Args:
-            features: Normalized feature vector (6,)
+            features: Normalized feature vector (13,)
 
         Returns:
             Class ID (1-5)
         """
+        # Geometry features
         area_norm = features[0]       # Normalized area (/ 1000)
         circularity = features[1]     # 0-1
         eccentricity = features[2]    # 0-1
         solidity = features[3]        # 0-1
+
+        # H-channel features
         h_mean_norm = features[4]     # 0-1 (H-channel intensity)
         h_std_norm = features[5]      # 0-1 (H-channel variability)
+        h_skewness = features[6]      # Normalized skewness
+        h_kurtosis = features[7]      # Normalized kurtosis
+
+        # RGB features
+        rgb_r_norm = features[8]
+        rgb_g_norm = features[9]
+        rgb_b_norm = features[10]
+
+        # Texture features
+        boundary_ratio = features[11]
+        intensity_range = features[12]
 
         # Convert normalized area back to approximate pixel area
         area_px = area_norm * 1000
 
+        # Compute eosinophilia (red/pink staining = high R, low B)
+        eosinophilia = rgb_r_norm - rgb_b_norm
+
         # === INFLAMMATORY (2) ===
         # Small, round nuclei (lymphocytes, macrophages)
+        # High chromatin density, low intensity range (homogeneous)
         if area_px < 300 and circularity > 0.7 and h_mean_norm > 0.5:
             return 2  # Inflammatory
 
         # === CONNECTIVE (3) ===
         # Elongated nuclei (fibroblasts, myofibroblasts)
-        if eccentricity > 0.7 and area_px < 600:
+        # Often pale (lower h_mean), high eccentricity
+        if eccentricity > 0.7 and area_px < 600 and h_mean_norm < 0.6:
             return 3  # Connective
 
         # === DEAD (4) ===
         # Low chromatin, irregular shape (apoptotic, necrotic)
-        if h_mean_norm < 0.3 or (solidity < 0.7 and h_std_norm > 0.4):
+        # High intensity range (heterogeneous), low solidity
+        if h_mean_norm < 0.25 or (solidity < 0.65 and intensity_range > 0.5):
             return 4  # Dead
 
         # === NEOPLASTIC (1) ===
-        # Large, irregular, high chromatin
-        if area_px > 500 and (circularity < 0.6 or h_mean_norm > 0.6):
+        # Large, irregular, high chromatin, heterogeneous texture
+        # High h_std indicates chromatin clumping (malignancy marker)
+        if area_px > 500 and (circularity < 0.55 or h_mean_norm > 0.65 or h_std_norm > 0.4):
+            return 1  # Neoplastic
+
+        # Also check for high chromatin heterogeneity (h_kurtosis)
+        if h_kurtosis > 0.3 and h_std_norm > 0.35 and area_px > 400:
             return 1  # Neoplastic
 
         # === EPITHELIAL (5) - Default ===
-        # Medium size, regular shape
+        # Medium size, regular shape, moderate chromatin
         return 5  # Epithelial
 
     def get_feature_importance(self) -> Optional[Dict[str, float]]:
