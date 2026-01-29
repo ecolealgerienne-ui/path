@@ -1,24 +1,19 @@
 #!/usr/bin/env python3
 """
-CellViT-Optimus — Navigation Grille Multi-Patches (Simulation WSI).
+CellViT-Optimus — Interface Unifiée (Patches + WSI).
 
-Interface de simulation WSI utilisant des images PanNuke (256×256).
-Extraction automatique de 4 patches 224×224 (grille 2×2 avec chevauchement).
+Deux modes de fonctionnement:
+1. **Mode Patch** (256×256): Simulation WSI avec images PanNuke
+2. **Mode WSI** (réel): Traitement de lames entières (.svs, .ndpi, etc.)
 
-**STITCHING WSI STANDARD:**
-- Chaque patch a une zone valide (sans chevauchement)
-- Seuls les noyaux dont le centroïde est dans la zone valide sont comptés
-- Reconstruction de la segmentation 256×256 sans doublons
-
-Workflow:
-1. Upload d'une image 256×256
-2. Extraction automatique → 4 patches 224×224
-3. Analyse automatique des 4 patches
-4. Stitching: filtrage par zone valide + reconstruction
-5. Affichage: grille cliquable + vue stitchée WSI
+**Mode WSI:**
+- Parcourir un dossier de lames
+- Afficher le thumbnail de la lame sélectionnée
+- Lancer le traitement avec timer
+- Afficher les résultats diagnostiques
 
 Usage:
-    python -m src.ui.app_grid --organ Lung
+    python -m src.ui.app_grid --organ Lung --wsi_dir data/wsi_test
     python src/ui/app_grid.py --organ Breast --port 7861
 """
 
@@ -31,6 +26,7 @@ from typing import Optional, Tuple, List, Dict, Any
 from dataclasses import dataclass, field
 from scipy import ndimage
 import sys
+import time
 
 # Configuration logging
 logging.basicConfig(level=logging.INFO)
@@ -57,9 +53,18 @@ from src.ui.visualizations import (
     create_segmentation_overlay,
 )
 
+# Imports: WSI support
+from src.wsi.input_router import InputRouter, get_input_metadata, InputType
+
 # ==============================================================================
 # CONSTANTES
 # ==============================================================================
+
+# WSI Extensions supportées
+WSI_EXTENSIONS = {'.svs', '.ndpi', '.mrxs', '.scn', '.tiff', '.tif', '.bif'}
+
+# Dossier WSI par défaut
+DEFAULT_WSI_DIR = "data/wsi_test"
 
 PANNUKE_SIZE = 256
 PATCH_SIZE = 224
@@ -203,6 +208,217 @@ class WSIState:
 
 # Instance globale
 wsi_state = WSIState()
+
+
+# ==============================================================================
+# ÉTAT WSI RÉEL (Lames entières)
+# ==============================================================================
+
+@dataclass
+class RealWSIState:
+    """État pour le traitement de lames WSI réelles."""
+    # Dossier et fichiers
+    wsi_dir: Path = field(default_factory=lambda: Path(DEFAULT_WSI_DIR))
+    available_files: List[str] = field(default_factory=list)
+    selected_file: Optional[str] = None
+
+    # Métadonnées de la lame
+    slide_dimensions: Tuple[int, int] = (0, 0)  # (width, height)
+    slide_mpp: Optional[float] = None
+    slide_levels: int = 0
+    thumbnail: Optional[np.ndarray] = None
+
+    # Traitement
+    is_processing: bool = False
+    processing_start_time: float = 0.0
+    processing_elapsed: float = 0.0
+    tiles_total: int = 0
+    tiles_processed: int = 0
+
+    # Résultats
+    results: Dict[str, Any] = field(default_factory=dict)
+    total_nuclei: int = 0
+    type_counts: Dict[int, int] = field(default_factory=dict)
+
+    def clear_results(self):
+        """Réinitialise les résultats."""
+        self.is_processing = False
+        self.processing_start_time = 0.0
+        self.processing_elapsed = 0.0
+        self.tiles_total = 0
+        self.tiles_processed = 0
+        self.results = {}
+        self.total_nuclei = 0
+        self.type_counts = {}
+
+    def scan_wsi_folder(self) -> List[str]:
+        """Scanne le dossier WSI et retourne la liste des fichiers."""
+        self.available_files = []
+
+        if not self.wsi_dir.exists():
+            logger.warning(f"Dossier WSI non trouvé: {self.wsi_dir}")
+            return []
+
+        for ext in WSI_EXTENSIONS:
+            self.available_files.extend([f.name for f in self.wsi_dir.glob(f"*{ext}")])
+            self.available_files.extend([f.name for f in self.wsi_dir.glob(f"*{ext.upper()}")])
+
+        self.available_files = sorted(set(self.available_files))
+        logger.info(f"Trouvé {len(self.available_files)} fichiers WSI dans {self.wsi_dir}")
+        return self.available_files
+
+
+# Instance globale pour WSI réel
+real_wsi_state = RealWSIState()
+
+
+# ==============================================================================
+# FONCTIONS WSI RÉEL
+# ==============================================================================
+
+def get_wsi_thumbnail(slide_path: Path, max_size: int = 512) -> Optional[np.ndarray]:
+    """
+    Extrait le thumbnail d'une lame WSI.
+
+    Args:
+        slide_path: Chemin vers la lame
+        max_size: Taille maximale du thumbnail (défaut: 512px)
+
+    Returns:
+        Image RGB numpy array ou None si erreur
+    """
+    try:
+        import openslide
+        slide = openslide.OpenSlide(str(slide_path))
+
+        # Calculer le ratio pour le thumbnail
+        w, h = slide.dimensions
+        ratio = max_size / max(w, h)
+        thumb_size = (int(w * ratio), int(h * ratio))
+
+        # Extraire le thumbnail
+        thumbnail = slide.get_thumbnail(thumb_size)
+        thumbnail = np.array(thumbnail.convert('RGB'))
+
+        slide.close()
+        return thumbnail
+
+    except ImportError:
+        logger.error("OpenSlide non installé. pip install openslide-python openslide-bin")
+        return None
+    except Exception as e:
+        logger.error(f"Erreur lecture thumbnail: {e}")
+        return None
+
+
+def get_wsi_metadata(slide_path: Path) -> Dict[str, Any]:
+    """Extrait les métadonnées d'une lame WSI."""
+    try:
+        import openslide
+        slide = openslide.OpenSlide(str(slide_path))
+
+        metadata = {
+            "dimensions": slide.dimensions,
+            "levels": slide.level_count,
+            "level_dimensions": slide.level_dimensions,
+            "mpp_x": slide.properties.get('openslide.mpp-x'),
+            "mpp_y": slide.properties.get('openslide.mpp-y'),
+            "vendor": slide.properties.get('openslide.vendor', 'unknown'),
+            "objective": slide.properties.get('openslide.objective-power'),
+        }
+
+        slide.close()
+        return metadata
+
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def process_wsi_slide(
+    slide_path: Path,
+    max_tiles: int = 100,
+    progress_callback=None,
+) -> Dict[str, Any]:
+    """
+    Traite une lame WSI complète.
+
+    Args:
+        slide_path: Chemin vers la lame
+        max_tiles: Nombre maximum de tiles à traiter
+        progress_callback: Fonction de callback pour mise à jour progress
+
+    Returns:
+        Dictionnaire avec résultats
+    """
+    start_time = time.time()
+
+    results = {
+        "success": False,
+        "tiles_processed": 0,
+        "total_nuclei": 0,
+        "type_counts": {},
+        "elapsed_seconds": 0.0,
+        "tiles_per_second": 0.0,
+        "error": None,
+    }
+
+    # Vérifier que le moteur est chargé
+    if state.engine is None:
+        results["error"] = "Moteur non chargé - sélectionner un organe d'abord"
+        return results
+
+    try:
+        # Initialiser le router
+        router = InputRouter(filter_tiles=True)
+
+        # Traiter les tiles
+        tiles_processed = 0
+        total_nuclei = 0
+        type_counts = {}
+
+        for tile in router.process(slide_path, max_tiles=max_tiles):
+            # Analyser le tile
+            result, preprocessed, error = run_analysis_core(tile.image, use_auto_params=True)
+
+            if error:
+                logger.warning(f"Erreur tile ({tile.x}, {tile.y}): {error}")
+                continue
+
+            # Compter les noyaux
+            instance_map = result.instance_map
+            type_map = result.type_map
+
+            unique_ids = np.unique(instance_map)
+            unique_ids = unique_ids[unique_ids > 0]
+
+            for nid in unique_ids:
+                mask = instance_map == nid
+                cell_type = int(np.median(type_map[mask]))
+                type_counts[cell_type] = type_counts.get(cell_type, 0) + 1
+                total_nuclei += 1
+
+            tiles_processed += 1
+
+            # Callback de progression
+            if progress_callback:
+                progress_callback(tiles_processed, max_tiles, time.time() - start_time)
+
+        elapsed = time.time() - start_time
+
+        results.update({
+            "success": True,
+            "tiles_processed": tiles_processed,
+            "total_nuclei": total_nuclei,
+            "type_counts": type_counts,
+            "elapsed_seconds": elapsed,
+            "tiles_per_second": tiles_processed / elapsed if elapsed > 0 else 0,
+        })
+
+    except Exception as e:
+        results["error"] = str(e)
+        logger.exception(f"Erreur traitement WSI: {e}")
+
+    return results
 
 
 # ==============================================================================
@@ -590,120 +806,394 @@ def load_engine_for_grid(organ: str) -> str:
 
 
 # ==============================================================================
+# FONCTIONS GRADIO - MODE WSI RÉEL
+# ==============================================================================
+
+def refresh_wsi_list(wsi_dir: str) -> Tuple[gr.Dropdown, str]:
+    """Rafraîchit la liste des fichiers WSI."""
+    real_wsi_state.wsi_dir = Path(wsi_dir)
+    files = real_wsi_state.scan_wsi_folder()
+
+    if not files:
+        return gr.Dropdown(choices=[], value=None), f"❌ Aucun fichier WSI trouvé dans {wsi_dir}"
+
+    return gr.Dropdown(choices=files, value=files[0]), f"✅ {len(files)} fichiers WSI trouvés"
+
+
+def on_wsi_selected(filename: str) -> Tuple[np.ndarray, str]:
+    """Appelé quand un fichier WSI est sélectionné."""
+    empty_thumb = np.zeros((512, 512, 3), dtype=np.uint8)
+
+    if not filename:
+        return empty_thumb, "*Sélectionnez un fichier*"
+
+    slide_path = real_wsi_state.wsi_dir / filename
+    real_wsi_state.selected_file = filename
+
+    # Récupérer le thumbnail
+    thumbnail = get_wsi_thumbnail(slide_path, max_size=512)
+    if thumbnail is None:
+        return empty_thumb, f"❌ Erreur lecture thumbnail: {filename}"
+
+    real_wsi_state.thumbnail = thumbnail
+
+    # Récupérer les métadonnées
+    metadata = get_wsi_metadata(slide_path)
+    if "error" in metadata:
+        return thumbnail, f"❌ Erreur métadonnées: {metadata['error']}"
+
+    real_wsi_state.slide_dimensions = metadata["dimensions"]
+    real_wsi_state.slide_mpp = float(metadata["mpp_x"]) if metadata["mpp_x"] else None
+    real_wsi_state.slide_levels = metadata["levels"]
+
+    # Formatage des infos
+    w, h = metadata["dimensions"]
+    mpp = f"{float(metadata['mpp_x']):.3f}" if metadata["mpp_x"] else "N/A"
+
+    info_lines = [
+        f"### {filename}",
+        "",
+        f"**Dimensions:** {w:,} × {h:,} pixels",
+        f"**MPP:** {mpp} µm/px",
+        f"**Niveaux:** {metadata['levels']}",
+        f"**Vendor:** {metadata['vendor']}",
+        f"**Objectif:** {metadata['objective']}x" if metadata['objective'] else "",
+        "",
+        f"**Tiles estimés:** ~{int(w/224 * h/224 * 0.3):,} (avec ~30% tissu)",
+    ]
+
+    return thumbnail, "\n".join(info_lines)
+
+
+def run_wsi_analysis(max_tiles: int) -> Tuple[str, str, str]:
+    """
+    Lance l'analyse WSI et retourne les résultats formatés.
+
+    Returns:
+        (status, timer_display, results_markdown)
+    """
+    if real_wsi_state.selected_file is None:
+        return "❌ Aucun fichier sélectionné", "00:00", "*Sélectionnez un fichier WSI*"
+
+    if state.engine is None:
+        return "❌ Moteur non chargé", "00:00", "*Chargez un modèle d'abord*"
+
+    slide_path = real_wsi_state.wsi_dir / real_wsi_state.selected_file
+
+    # Lancer le traitement
+    real_wsi_state.clear_results()
+    real_wsi_state.is_processing = True
+    real_wsi_state.processing_start_time = time.time()
+
+    results = process_wsi_slide(slide_path, max_tiles=int(max_tiles))
+
+    real_wsi_state.is_processing = False
+    real_wsi_state.processing_elapsed = results.get("elapsed_seconds", 0)
+    real_wsi_state.results = results
+
+    # Formatter le temps
+    elapsed = results.get("elapsed_seconds", 0)
+    minutes = int(elapsed // 60)
+    seconds = int(elapsed % 60)
+    timer_str = f"{minutes:02d}:{seconds:02d}"
+
+    if not results.get("success"):
+        return f"❌ Erreur: {results.get('error')}", timer_str, "*Erreur de traitement*"
+
+    # Formatter les résultats
+    results_md = format_wsi_results(results)
+    status = f"✅ Terminé: {results['tiles_processed']} tiles, {results['total_nuclei']} noyaux"
+
+    return status, timer_str, results_md
+
+
+def format_wsi_results(results: Dict[str, Any]) -> str:
+    """Formate les résultats WSI pour affichage."""
+    if not results.get("success"):
+        return f"**Erreur:** {results.get('error', 'Inconnue')}"
+
+    lines = [
+        "## 📊 Résultats Diagnostic",
+        "",
+        f"**Tiles analysés:** {results['tiles_processed']}",
+        f"**Temps total:** {results['elapsed_seconds']:.1f}s",
+        f"**Vitesse:** {results['tiles_per_second']:.1f} tiles/s",
+        "",
+        f"### 🔬 Total Noyaux: {results['total_nuclei']:,}",
+        "",
+        "### Distribution par Type",
+    ]
+
+    type_counts = results.get("type_counts", {})
+    total = sum(type_counts.values()) if type_counts else 0
+
+    # Trier par fréquence
+    sorted_types = sorted(type_counts.items(), key=lambda x: -x[1])
+
+    for type_idx, count in sorted_types:
+        name = TYPE_NAMES.get(type_idx, f"Type{type_idx}")
+        pct = 100 * count / total if total > 0 else 0
+
+        # Indicateur visuel pour les types importants
+        indicator = ""
+        if name == "Neoplastic" and pct > 10:
+            indicator = " ⚠️"
+        elif name == "Neoplastic" and pct > 30:
+            indicator = " 🔴"
+
+        lines.append(f"- **{name}:** {count:,} ({pct:.1f}%){indicator}")
+
+    # Ratio diagnostic simple
+    neoplastic = type_counts.get(1, 0)
+    if total > 0:
+        neo_ratio = neoplastic / total
+        lines.extend([
+            "",
+            "---",
+            "### 🎯 Indicateurs",
+            f"**Ratio Néoplasique:** {neo_ratio*100:.1f}%",
+        ])
+        if neo_ratio > 0.3:
+            lines.append("**⚠️ Attention:** Ratio néoplasique élevé")
+        elif neo_ratio < 0.05:
+            lines.append("**✅ Normal:** Ratio néoplasique bas")
+
+    return "\n".join(lines)
+
+
+# ==============================================================================
 # INTERFACE GRADIO
 # ==============================================================================
 
-def create_grid_ui():
-    """Crée l'interface de navigation grille WSI avec stitching."""
+def create_grid_ui(wsi_dir: str = DEFAULT_WSI_DIR):
+    """Crée l'interface unifiée avec onglets Patch et WSI."""
+
+    # Initialiser le dossier WSI
+    real_wsi_state.wsi_dir = Path(wsi_dir)
+    real_wsi_state.scan_wsi_folder()
 
     with gr.Blocks(
-        title="CellViT-Optimus — Simulation WSI",
+        title="CellViT-Optimus — Diagnostic WSI",
         theme=gr.themes.Soft(),
+        css="""
+        .timer-display {
+            font-size: 2em;
+            font-weight: bold;
+            text-align: center;
+            padding: 10px;
+            background: #f0f0f0;
+            border-radius: 8px;
+        }
+        """
     ) as app:
 
         gr.Markdown("""
-        # 🔬 CellViT-Optimus — Simulation WSI (Stitching)
+        # 🔬 CellViT-Optimus — Diagnostic Histopathologique
 
-        **Workflow automatique avec stitching industriel:**
-        1. Sélectionner un **organe** → Charger le modèle
-        2. **Uploader** une image PanNuke (256×256)
-        3. Extraction de **4 patches** 224×224 (grille 2×2 avec overlap)
-        4. Analyse + **Stitching** (zones valides, pas de doublon)
-        5. Visualisation: **patches individuels** + **WSI reconstituée**
+        Analyse de noyaux cellulaires par segmentation HoVer-Net.
         """)
 
+        # === CONFIGURATION COMMUNE ===
         with gr.Row():
-            # === COLONNE GAUCHE: Config + Grille + WSI Stitched ===
-            with gr.Column(scale=1):
-                gr.Markdown("### 1. Configuration")
-
+            with gr.Column(scale=2):
                 organ_dropdown = gr.Dropdown(
                     choices=ORGAN_CHOICES,
                     value="Lung",
-                    label="Organe",
+                    label="🏥 Organe",
                 )
+            with gr.Column(scale=1):
                 load_btn = gr.Button("🚀 Charger Modèle", variant="primary")
-                model_status = gr.Textbox(label="Status Modèle", interactive=False)
-
-                gr.Markdown("### 2. Image Source (256×256)")
-
-                input_image = gr.Image(
-                    label="Upload PanNuke 256×256",
-                    type="numpy",
-                    height=180,
+            with gr.Column(scale=2):
+                model_status = gr.Textbox(
+                    label="Status Moteur",
+                    interactive=False,
+                    value="⏳ Aucun modèle chargé",
                 )
 
-                analysis_status = gr.Textbox(label="Status", interactive=False)
+        # === ONGLETS ===
+        with gr.Tabs():
 
-                gr.Markdown("### 3. Grille Patches (2×2)")
+            # =================================================================
+            # ONGLET 1: MODE WSI RÉEL
+            # =================================================================
+            with gr.TabItem("🔬 Lames WSI", id="wsi_tab"):
+                gr.Markdown(f"""
+                ### Traitement de Lames Entières
+                Dossier: `{wsi_dir}`
+                """)
 
-                gallery = gr.Gallery(
-                    label="Cliquer pour sélectionner",
-                    columns=2,
-                    rows=2,
-                    height=240,
-                    object_fit="contain",
-                    allow_preview=False,
+                with gr.Row():
+                    # --- Colonne gauche: Sélection fichier ---
+                    with gr.Column(scale=1):
+                        gr.Markdown("#### 1. Sélection Lame")
+
+                        wsi_dir_input = gr.Textbox(
+                            label="Dossier WSI",
+                            value=str(wsi_dir),
+                            interactive=True,
+                        )
+                        refresh_btn = gr.Button("🔄 Rafraîchir", size="sm")
+                        wsi_file_dropdown = gr.Dropdown(
+                            choices=real_wsi_state.available_files,
+                            value=real_wsi_state.available_files[0] if real_wsi_state.available_files else None,
+                            label="Fichier WSI",
+                            interactive=True,
+                        )
+                        wsi_scan_status = gr.Textbox(
+                            label="Status",
+                            interactive=False,
+                            value=f"✅ {len(real_wsi_state.available_files)} fichiers" if real_wsi_state.available_files else "❌ Aucun fichier",
+                        )
+
+                        gr.Markdown("#### 2. Paramètres")
+                        max_tiles_slider = gr.Slider(
+                            minimum=10,
+                            maximum=500,
+                            value=50,
+                            step=10,
+                            label="Nombre max de tiles",
+                            info="Plus de tiles = plus précis mais plus lent",
+                        )
+
+                        run_wsi_btn = gr.Button(
+                            "▶️ Lancer Analyse",
+                            variant="primary",
+                            size="lg",
+                        )
+
+                        gr.Markdown("#### ⏱️ Timer")
+                        timer_display = gr.Textbox(
+                            value="00:00",
+                            label="Temps écoulé",
+                            interactive=False,
+                            elem_classes=["timer-display"],
+                        )
+                        wsi_analysis_status = gr.Textbox(
+                            label="Status Analyse",
+                            interactive=False,
+                        )
+
+                    # --- Colonne centrale: Thumbnail ---
+                    with gr.Column(scale=1):
+                        gr.Markdown("#### Aperçu Lame")
+                        wsi_thumbnail = gr.Image(
+                            label="Thumbnail",
+                            height=400,
+                        )
+                        wsi_info = gr.Markdown(
+                            value="*Sélectionnez un fichier WSI*",
+                        )
+
+                    # --- Colonne droite: Résultats ---
+                    with gr.Column(scale=1):
+                        gr.Markdown("#### 📊 Résultats Diagnostic")
+                        wsi_results = gr.Markdown(
+                            value="*Lancez une analyse pour voir les résultats*",
+                        )
+
+                # === ÉVÉNEMENTS WSI ===
+                refresh_btn.click(
+                    fn=refresh_wsi_list,
+                    inputs=[wsi_dir_input],
+                    outputs=[wsi_file_dropdown, wsi_scan_status],
                 )
 
-            # === COLONNE CENTRALE: Patch sélectionné ===
-            with gr.Column(scale=1):
-                gr.Markdown("### 4. Patch Sélectionné (224×224)")
-
-                selected_image = gr.Image(
-                    label="Original",
-                    height=224,
-                )
-                patch_overlay = gr.Image(
-                    label="Segmentation Patch",
-                    height=224,
+                wsi_file_dropdown.change(
+                    fn=on_wsi_selected,
+                    inputs=[wsi_file_dropdown],
+                    outputs=[wsi_thumbnail, wsi_info],
                 )
 
-                patch_metrics = gr.Markdown(
-                    value="*Sélectionnez un patch*",
+                run_wsi_btn.click(
+                    fn=run_wsi_analysis,
+                    inputs=[max_tiles_slider],
+                    outputs=[wsi_analysis_status, timer_display, wsi_results],
                 )
 
-            # === COLONNE DROITE: WSI Stitched ===
-            with gr.Column(scale=1):
-                gr.Markdown("### 5. WSI Reconstituée (256×256)")
+            # =================================================================
+            # ONGLET 2: MODE PATCH (Simulation)
+            # =================================================================
+            with gr.TabItem("📋 Patches 256×256", id="patch_tab"):
+                gr.Markdown("""
+                ### Mode Simulation (Images PanNuke)
+                Upload d'images 256×256 avec extraction de 4 patches et stitching.
+                """)
 
-                stitched_overlay = gr.Image(
-                    label="Segmentation Stitchée (sans doublons)",
-                    height=280,
+                with gr.Row():
+                    # --- Colonne gauche: Upload + Grille ---
+                    with gr.Column(scale=1):
+                        gr.Markdown("#### Image Source")
+
+                        input_image = gr.Image(
+                            label="Upload PanNuke 256×256",
+                            type="numpy",
+                            height=180,
+                        )
+                        analysis_status = gr.Textbox(label="Status", interactive=False)
+
+                        gr.Markdown("#### Grille Patches (2×2)")
+                        gallery = gr.Gallery(
+                            label="Cliquer pour sélectionner",
+                            columns=2,
+                            rows=2,
+                            height=240,
+                            object_fit="contain",
+                            allow_preview=False,
+                        )
+
+                    # --- Colonne centrale: Patch sélectionné ---
+                    with gr.Column(scale=1):
+                        gr.Markdown("#### Patch Sélectionné")
+
+                        selected_image = gr.Image(
+                            label="Original",
+                            height=224,
+                        )
+                        patch_overlay = gr.Image(
+                            label="Segmentation",
+                            height=224,
+                        )
+                        patch_metrics = gr.Markdown(
+                            value="*Sélectionnez un patch*",
+                        )
+
+                    # --- Colonne droite: WSI Stitched ---
+                    with gr.Column(scale=1):
+                        gr.Markdown("#### WSI Reconstituée")
+
+                        stitched_overlay = gr.Image(
+                            label="Segmentation Stitchée",
+                            height=280,
+                        )
+                        wsi_metrics = gr.Markdown(
+                            value="*Uploader une image*",
+                        )
+
+                # === ÉVÉNEMENTS PATCH ===
+                input_image.upload(
+                    fn=process_uploaded_image,
+                    inputs=[input_image],
+                    outputs=[
+                        gallery,
+                        selected_image,
+                        patch_overlay,
+                        patch_metrics,
+                        stitched_overlay,
+                        wsi_metrics,
+                        analysis_status,
+                    ],
                 )
 
-                wsi_metrics = gr.Markdown(
-                    value="*Uploader une image*",
+                gallery.select(
+                    fn=on_patch_select,
+                    outputs=[selected_image, patch_overlay, patch_metrics],
                 )
 
-        # === ÉVÉNEMENTS ===
-
-        # Chargement modèle
+        # === ÉVÉNEMENT COMMUN: Chargement modèle ===
         load_btn.click(
             fn=load_engine_for_grid,
             inputs=[organ_dropdown],
             outputs=[model_status],
-        )
-
-        # Upload image → Extraction + Analyse + Stitching
-        input_image.upload(
-            fn=process_uploaded_image,
-            inputs=[input_image],
-            outputs=[
-                gallery,
-                selected_image,
-                patch_overlay,
-                patch_metrics,
-                stitched_overlay,
-                wsi_metrics,
-                analysis_status,
-            ],
-        )
-
-        # Clic sur patch dans galerie
-        gallery.select(
-            fn=on_patch_select,
-            outputs=[selected_image, patch_overlay, patch_metrics],
         )
 
     return app
@@ -716,7 +1206,7 @@ def create_grid_ui():
 def main():
     import argparse
 
-    parser = argparse.ArgumentParser(description="CellViT-Optimus Simulation WSI")
+    parser = argparse.ArgumentParser(description="CellViT-Optimus Diagnostic WSI")
     parser.add_argument("--organ", type=str, default=None,
                         help="Organe à précharger (ex: Lung, Breast)")
     parser.add_argument("--port", type=int, default=7861,
@@ -725,6 +1215,8 @@ def main():
                         help="Créer un lien public Gradio")
     parser.add_argument("--preload", action="store_true",
                         help="Précharger le backbone au démarrage")
+    parser.add_argument("--wsi_dir", type=str, default=DEFAULT_WSI_DIR,
+                        help=f"Dossier contenant les lames WSI (défaut: {DEFAULT_WSI_DIR})")
     args = parser.parse_args()
 
     # Préchargement optionnel
@@ -738,7 +1230,8 @@ def main():
         load_engine_core(args.organ, device="cuda")
 
     # Lancer l'interface
-    app = create_grid_ui()
+    logger.info(f"Dossier WSI: {args.wsi_dir}")
+    app = create_grid_ui(wsi_dir=args.wsi_dir)
     app.launch(
         server_name="0.0.0.0",
         server_port=args.port,
