@@ -865,20 +865,27 @@ def on_wsi_selected(filename: str) -> Tuple[np.ndarray, str]:
     return thumbnail, "\n".join(info_lines)
 
 
-def run_wsi_analysis(max_tiles: int) -> Tuple[str, str, str]:
+def run_wsi_analysis(filename: str, max_tiles: int) -> Tuple[str, str, str]:
     """
     Lance l'analyse WSI et retourne les résultats formatés.
+
+    Args:
+        filename: Nom du fichier WSI sélectionné
+        max_tiles: Nombre maximum de tiles à traiter
 
     Returns:
         (status, timer_display, results_markdown)
     """
-    if real_wsi_state.selected_file is None:
+    if not filename:
         return "❌ Aucun fichier sélectionné", "00:00", "*Sélectionnez un fichier WSI*"
 
     if state.engine is None:
         return "❌ Moteur non chargé", "00:00", "*Chargez un modèle d'abord*"
 
-    slide_path = real_wsi_state.wsi_dir / real_wsi_state.selected_file
+    slide_path = real_wsi_state.wsi_dir / filename
+
+    if not slide_path.exists():
+        return f"❌ Fichier non trouvé: {slide_path}", "00:00", "*Fichier introuvable*"
 
     # Lancer le traitement
     real_wsi_state.clear_results()
@@ -1106,7 +1113,7 @@ def create_grid_ui(wsi_dir: str = DEFAULT_WSI_DIR):
 
                 run_wsi_btn.click(
                     fn=run_wsi_analysis,
-                    inputs=[max_tiles_slider],
+                    inputs=[wsi_file_dropdown, max_tiles_slider],
                     outputs=[wsi_analysis_status, timer_display, wsi_results],
                 )
 
