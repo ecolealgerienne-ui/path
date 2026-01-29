@@ -1117,6 +1117,13 @@ def create_grid_ui(wsi_dir: str = DEFAULT_WSI_DIR):
                     outputs=[wsi_analysis_status, timer_display, wsi_results],
                 )
 
+                # Charger le thumbnail au démarrage si un fichier est sélectionné
+                app.load(
+                    fn=on_wsi_selected,
+                    inputs=[wsi_file_dropdown],
+                    outputs=[wsi_thumbnail, wsi_info],
+                )
+
             # =================================================================
             # ONGLET 2: MODE PATCH (Simulation)
             # =================================================================
