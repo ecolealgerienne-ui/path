@@ -215,6 +215,39 @@ wsi_state = WSIState()
 # ==============================================================================
 
 @dataclass
+class TileResult:
+    """Résultat d'analyse d'un tile avec score de gravité."""
+    index: int
+    x: int  # Coordonnée X dans la lame
+    y: int  # Coordonnée Y dans la lame
+    image: np.ndarray  # Image RGB 224×224
+    overlay: np.ndarray  # Overlay segmentation
+    total_nuclei: int
+    type_counts: Dict[int, int]
+    severity_score: float  # Score de gravité [0-1]
+
+    @property
+    def neoplastic_ratio(self) -> float:
+        """Ratio de cellules néoplasiques."""
+        total = sum(self.type_counts.values())
+        if total == 0:
+            return 0.0
+        return self.type_counts.get(1, 0) / total
+
+    @property
+    def severity_label(self) -> str:
+        """Label de gravité basé sur le score."""
+        if self.severity_score >= 0.5:
+            return "🔴 Élevé"
+        elif self.severity_score >= 0.2:
+            return "🟠 Modéré"
+        elif self.severity_score >= 0.05:
+            return "🟡 Faible"
+        else:
+            return "🟢 Normal"
+
+
+@dataclass
 class RealWSIState:
     """État pour le traitement de lames WSI réelles."""
     # Dossier et fichiers
@@ -240,6 +273,10 @@ class RealWSIState:
     total_nuclei: int = 0
     type_counts: Dict[int, int] = field(default_factory=dict)
 
+    # Tiles analysés (triés par gravité)
+    tile_results: List[TileResult] = field(default_factory=list)
+    selected_tile_index: int = -1
+
     def clear_results(self):
         """Réinitialise les résultats."""
         self.is_processing = False
@@ -250,6 +287,8 @@ class RealWSIState:
         self.results = {}
         self.total_nuclei = 0
         self.type_counts = {}
+        self.tile_results = []
+        self.selected_tile_index = -1
 
     def scan_wsi_folder(self) -> List[str]:
         """Scanne le dossier WSI et retourne la liste des fichiers."""
@@ -334,13 +373,39 @@ def get_wsi_metadata(slide_path: Path) -> Dict[str, Any]:
         return {"error": str(e)}
 
 
+def calculate_severity_score(type_counts: Dict[int, int]) -> float:
+    """
+    Calcule le score de gravité basé sur la distribution des types cellulaires.
+
+    Score = 0.7 * ratio_neoplastic + 0.2 * ratio_dead + 0.1 * density_factor
+
+    Returns:
+        Score entre 0 et 1
+    """
+    total = sum(type_counts.values())
+    if total == 0:
+        return 0.0
+
+    neoplastic = type_counts.get(1, 0)  # Type 1 = Neoplastic
+    dead = type_counts.get(4, 0)  # Type 4 = Dead
+
+    ratio_neo = neoplastic / total
+    ratio_dead = dead / total
+
+    # Density factor: plus de noyaux = plus suspect (normalisé)
+    density_factor = min(total / 100, 1.0)  # Cap à 100 noyaux
+
+    score = 0.7 * ratio_neo + 0.2 * ratio_dead + 0.1 * density_factor
+    return min(score, 1.0)
+
+
 def process_wsi_slide(
     slide_path: Path,
     max_tiles: int = 100,
     progress_callback=None,
 ) -> Dict[str, Any]:
     """
-    Traite une lame WSI complète.
+    Traite une lame WSI complète et stocke les résultats par tile.
 
     Args:
         slide_path: Chemin vers la lame
@@ -367,6 +432,9 @@ def process_wsi_slide(
         results["error"] = "Moteur non chargé - sélectionner un organe d'abord"
         return results
 
+    # Réinitialiser les résultats de tiles
+    real_wsi_state.tile_results = []
+
     try:
         # Initialiser le router
         router = InputRouter(filter_tiles=True)
@@ -384,18 +452,44 @@ def process_wsi_slide(
                 logger.warning(f"Erreur tile ({tile.x}, {tile.y}): {error}")
                 continue
 
-            # Compter les noyaux
+            # Compter les noyaux pour ce tile
             instance_map = result.instance_map
             type_map = result.type_map
 
             unique_ids = np.unique(instance_map)
             unique_ids = unique_ids[unique_ids > 0]
 
+            tile_type_counts = {}
+            tile_nuclei = 0
+
             for nid in unique_ids:
                 mask = instance_map == nid
                 cell_type = int(np.median(type_map[mask]))
+                tile_type_counts[cell_type] = tile_type_counts.get(cell_type, 0) + 1
                 type_counts[cell_type] = type_counts.get(cell_type, 0) + 1
+                tile_nuclei += 1
                 total_nuclei += 1
+
+            # Créer l'overlay pour ce tile
+            overlay = create_segmentation_overlay(
+                tile.image, instance_map, type_map, alpha=0.4
+            )
+
+            # Calculer le score de gravité
+            severity = calculate_severity_score(tile_type_counts)
+
+            # Stocker le résultat du tile
+            tile_result = TileResult(
+                index=tiles_processed,
+                x=tile.x,
+                y=tile.y,
+                image=tile.image.copy(),
+                overlay=overlay,
+                total_nuclei=tile_nuclei,
+                type_counts=tile_type_counts,
+                severity_score=severity,
+            )
+            real_wsi_state.tile_results.append(tile_result)
 
             tiles_processed += 1
 
@@ -404,6 +498,15 @@ def process_wsi_slide(
                 progress_callback(tiles_processed, max_tiles, time.time() - start_time)
 
         elapsed = time.time() - start_time
+
+        # Trier les tiles par score de gravité (décroissant)
+        real_wsi_state.tile_results.sort(key=lambda t: t.severity_score, reverse=True)
+
+        # Réindexer après tri
+        for i, tile in enumerate(real_wsi_state.tile_results):
+            tile.index = i
+
+        logger.info(f"Tiles triés par gravité. Top score: {real_wsi_state.tile_results[0].severity_score:.2f}" if real_wsi_state.tile_results else "Aucun tile")
 
         results.update({
             "success": True,
@@ -865,7 +968,50 @@ def on_wsi_selected(filename: str) -> Tuple[np.ndarray, str]:
     return thumbnail, "\n".join(info_lines)
 
 
-def run_wsi_analysis(filename: str, max_tiles: int) -> Tuple[str, str, str]:
+def build_tile_gallery() -> List[Tuple[np.ndarray, str]]:
+    """Construit la galerie de tiles triés par gravité."""
+    gallery_items = []
+
+    for tile in real_wsi_state.tile_results:
+        # Créer le label avec score et indicateur
+        label = f"{tile.severity_label}\n{tile.severity_score:.0%} | {tile.total_nuclei}n"
+        gallery_items.append((tile.overlay, label))
+
+    return gallery_items
+
+
+def on_tile_select(evt: gr.SelectData) -> Tuple[np.ndarray, np.ndarray, str]:
+    """Gère le clic sur un tile dans la galerie."""
+    empty = np.zeros((PATCH_SIZE, PATCH_SIZE, 3), dtype=np.uint8)
+
+    index = evt.index
+    if index < 0 or index >= len(real_wsi_state.tile_results):
+        return empty, empty, "❌ Index invalide"
+
+    real_wsi_state.selected_tile_index = index
+    tile = real_wsi_state.tile_results[index]
+
+    # Formater les métriques du tile
+    metrics_lines = [
+        f"### Tile #{tile.index + 1}",
+        f"**Position:** ({tile.x:,}, {tile.y:,})",
+        f"**Score gravité:** {tile.severity_score:.1%} {tile.severity_label}",
+        "",
+        f"**Noyaux:** {tile.total_nuclei}",
+        "",
+        "**Distribution:**",
+    ]
+
+    total = sum(tile.type_counts.values())
+    for type_idx, count in sorted(tile.type_counts.items(), key=lambda x: -x[1]):
+        name = TYPE_NAMES.get(type_idx, f"Type{type_idx}")
+        pct = 100 * count / total if total > 0 else 0
+        metrics_lines.append(f"- {name}: {count} ({pct:.1f}%)")
+
+    return tile.image, tile.overlay, "\n".join(metrics_lines)
+
+
+def run_wsi_analysis(filename: str, max_tiles: int):
     """
     Lance l'analyse WSI et retourne les résultats formatés.
 
@@ -874,18 +1020,25 @@ def run_wsi_analysis(filename: str, max_tiles: int) -> Tuple[str, str, str]:
         max_tiles: Nombre maximum de tiles à traiter
 
     Returns:
-        (status, timer_display, results_markdown)
+        (status, timer_display, results_markdown, gallery_items, first_tile_image, first_tile_overlay, first_tile_metrics)
     """
+    empty_tile = np.zeros((PATCH_SIZE, PATCH_SIZE, 3), dtype=np.uint8)
+    empty_gallery = []
+    empty_metrics = "*Aucun tile analysé*"
+
     if not filename:
-        return "❌ Aucun fichier sélectionné", "00:00", "*Sélectionnez un fichier WSI*"
+        return ("❌ Aucun fichier sélectionné", "00:00", "*Sélectionnez un fichier WSI*",
+                empty_gallery, empty_tile, empty_tile, empty_metrics)
 
     if state.engine is None:
-        return "❌ Moteur non chargé", "00:00", "*Chargez un modèle d'abord*"
+        return ("❌ Moteur non chargé", "00:00", "*Chargez un modèle d'abord*",
+                empty_gallery, empty_tile, empty_tile, empty_metrics)
 
     slide_path = real_wsi_state.wsi_dir / filename
 
     if not slide_path.exists():
-        return f"❌ Fichier non trouvé: {slide_path}", "00:00", "*Fichier introuvable*"
+        return (f"❌ Fichier non trouvé: {slide_path}", "00:00", "*Fichier introuvable*",
+                empty_gallery, empty_tile, empty_tile, empty_metrics)
 
     # Lancer le traitement
     real_wsi_state.clear_results()
@@ -905,13 +1058,34 @@ def run_wsi_analysis(filename: str, max_tiles: int) -> Tuple[str, str, str]:
     timer_str = f"{minutes:02d}:{seconds:02d}"
 
     if not results.get("success"):
-        return f"❌ Erreur: {results.get('error')}", timer_str, "*Erreur de traitement*"
+        return (f"❌ Erreur: {results.get('error')}", timer_str, "*Erreur de traitement*",
+                empty_gallery, empty_tile, empty_tile, empty_metrics)
 
     # Formatter les résultats
     results_md = format_wsi_results(results)
     status = f"✅ Terminé: {results['tiles_processed']} tiles, {results['total_nuclei']} noyaux"
 
-    return status, timer_str, results_md
+    # Construire la galerie triée
+    gallery_items = build_tile_gallery()
+
+    # Sélectionner le premier tile (plus haute gravité)
+    if real_wsi_state.tile_results:
+        first_tile = real_wsi_state.tile_results[0]
+        real_wsi_state.selected_tile_index = 0
+
+        first_metrics = [
+            f"### Tile #1 (Top Gravité)",
+            f"**Position:** ({first_tile.x:,}, {first_tile.y:,})",
+            f"**Score:** {first_tile.severity_score:.1%} {first_tile.severity_label}",
+            f"**Noyaux:** {first_tile.total_nuclei}",
+        ]
+        first_tile_md = "\n".join(first_metrics)
+
+        return (status, timer_str, results_md,
+                gallery_items, first_tile.image, first_tile.overlay, first_tile_md)
+
+    return (status, timer_str, results_md,
+            empty_gallery, empty_tile, empty_tile, empty_metrics)
 
 
 def format_wsi_results(results: Dict[str, Any]) -> str:
@@ -1080,22 +1254,51 @@ def create_grid_ui(wsi_dir: str = DEFAULT_WSI_DIR):
                             interactive=False,
                         )
 
-                    # --- Colonne centrale: Thumbnail ---
+                    # --- Colonne centrale: Thumbnail + Résultats ---
                     with gr.Column(scale=1):
                         gr.Markdown("#### Aperçu Lame")
                         wsi_thumbnail = gr.Image(
                             label="Thumbnail",
-                            height=400,
+                            height=250,
                         )
                         wsi_info = gr.Markdown(
                             value="*Sélectionnez un fichier WSI*",
                         )
 
-                    # --- Colonne droite: Résultats ---
-                    with gr.Column(scale=1):
                         gr.Markdown("#### 📊 Résultats Diagnostic")
                         wsi_results = gr.Markdown(
                             value="*Lancez une analyse pour voir les résultats*",
+                        )
+
+                    # --- Colonne droite: Galerie Tiles triés par gravité (VERTICAL) ---
+                    with gr.Column(scale=1):
+                        gr.Markdown("#### 🔥 Tiles par Gravité")
+                        tile_gallery = gr.Gallery(
+                            label="Cliquer pour voir le détail",
+                            columns=1,  # VERTICAL: 1 colonne
+                            rows=5,
+                            height=500,
+                            object_fit="contain",
+                            allow_preview=False,
+                        )
+
+                # === LIGNE 2: Détail du tile sélectionné ===
+                with gr.Row():
+                    with gr.Column(scale=1):
+                        gr.Markdown("#### 🔍 Tile Sélectionné")
+                    with gr.Column(scale=1):
+                        selected_tile_image = gr.Image(
+                            label="Image Originale",
+                            height=224,
+                        )
+                    with gr.Column(scale=1):
+                        selected_tile_overlay = gr.Image(
+                            label="Segmentation",
+                            height=224,
+                        )
+                    with gr.Column(scale=1):
+                        selected_tile_metrics = gr.Markdown(
+                            value="*Cliquez sur un tile dans la galerie*",
                         )
 
                 # === ÉVÉNEMENTS WSI ===
@@ -1114,7 +1317,21 @@ def create_grid_ui(wsi_dir: str = DEFAULT_WSI_DIR):
                 run_wsi_btn.click(
                     fn=run_wsi_analysis,
                     inputs=[wsi_file_dropdown, max_tiles_slider],
-                    outputs=[wsi_analysis_status, timer_display, wsi_results],
+                    outputs=[
+                        wsi_analysis_status,
+                        timer_display,
+                        wsi_results,
+                        tile_gallery,
+                        selected_tile_image,
+                        selected_tile_overlay,
+                        selected_tile_metrics,
+                    ],
+                )
+
+                # Clic sur tile dans galerie
+                tile_gallery.select(
+                    fn=on_tile_select,
+                    outputs=[selected_tile_image, selected_tile_overlay, selected_tile_metrics],
                 )
 
                 # Charger le thumbnail au démarrage si un fichier est sélectionné
