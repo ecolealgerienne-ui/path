@@ -48,6 +48,10 @@ from src.ui.core import (
 # Imports: Moteur et configuration
 from src.ui.inference_engine import ORGAN_CHOICES, AnalysisResult
 
+# Imports: OrganHead pour détection automatique
+from src.models.organ_head import OrganPrediction
+from src.preprocessing import preprocess_image
+
 # Imports: Visualisations
 from src.ui.visualizations import (
     create_segmentation_overlay,
@@ -309,6 +313,104 @@ class RealWSIState:
 
 # Instance globale pour WSI réel
 real_wsi_state = RealWSIState()
+
+
+# ==============================================================================
+# DÉTECTION AUTOMATIQUE D'ORGANE VIA ORGANHEAD
+# ==============================================================================
+
+def detect_organ_from_wsi(
+    slide_path: Path,
+    n_tiles: int = 5,
+) -> Tuple[str, float, str]:
+    """
+    Détecte automatiquement l'organe à partir de tiles WSI via OrganHead.
+
+    Extrait quelques tiles, passe par le backbone H-optimus-0, puis utilise
+    OrganHead pour prédire l'organe (vote majoritaire).
+
+    Args:
+        slide_path: Chemin vers la lame WSI
+        n_tiles: Nombre de tiles à extraire pour la prédiction
+
+    Returns:
+        Tuple (organ_name, confidence, message):
+            - organ_name: Nom de l'organe prédit (ex: "Lung", "Breast")
+            - confidence: Confiance moyenne calibrée [0, 1]
+            - message: Message de statut pour l'UI
+    """
+    import torch
+
+    # Vérifier que le backbone et OrganHead sont chargés
+    if state.engine is None:
+        # Précharger le backbone si nécessaire
+        logger.info("Auto-detection: Préchargement du backbone...")
+        result = preload_backbone_core(device="cuda")
+        if not result["success"]:
+            return "Lung", 0.0, f"❌ Erreur préchargement: {result['error']}"
+
+    if state.engine.backbone is None:
+        return "Lung", 0.0, "❌ Backbone non chargé"
+
+    if state.engine.organ_head is None:
+        return "Lung", 0.0, "❌ OrganHead non chargé"
+
+    try:
+        # Extraire quelques tiles pour la prédiction
+        router = InputRouter(filter_tiles=True)
+
+        predictions = []
+        confidences = []
+
+        logger.info(f"Auto-detection: Extraction de {n_tiles} tiles pour prédiction organe...")
+
+        for i, tile in enumerate(router.process(slide_path, max_tiles=n_tiles)):
+            # Prétraiter l'image pour H-optimus-0
+            tensor = preprocess_image(tile.image, device="cuda")
+
+            # Extraction features via backbone
+            with torch.no_grad():
+                features = state.engine.backbone.forward_features(tensor)
+
+            # CLS token pour OrganHead
+            cls_token = features[:, 0, :]
+
+            # Prédiction via OrganHead
+            organ_pred: OrganPrediction = state.engine.organ_head.predict_with_ood(cls_token)
+
+            predictions.append(organ_pred.organ_name)
+            confidences.append(organ_pred.confidence_calibrated)
+
+            logger.info(f"  Tile {i+1}: {organ_pred.organ_name} ({organ_pred.confidence_calibrated:.1%})")
+
+            if i + 1 >= n_tiles:
+                break
+
+        if not predictions:
+            return "Lung", 0.0, "❌ Aucun tile extrait"
+
+        # Vote majoritaire
+        from collections import Counter
+        vote_counter = Counter(predictions)
+        predicted_organ, vote_count = vote_counter.most_common(1)[0]
+
+        # Confiance moyenne pour l'organe prédit
+        avg_confidence = np.mean([
+            conf for pred, conf in zip(predictions, confidences)
+            if pred == predicted_organ
+        ])
+
+        # Message de statut
+        consensus_pct = 100 * vote_count / len(predictions)
+        message = f"🔍 Détecté: {predicted_organ} ({consensus_pct:.0f}% consensus, confiance {avg_confidence:.1%})"
+
+        logger.info(f"Auto-detection: {predicted_organ} ({vote_count}/{len(predictions)} votes, {avg_confidence:.1%} conf)")
+
+        return predicted_organ, avg_confidence, message
+
+    except Exception as e:
+        logger.error(f"Erreur détection organe: {e}")
+        return "Lung", 0.0, f"❌ Erreur détection: {e}"
 
 
 # ==============================================================================
@@ -1011,34 +1113,68 @@ def on_tile_select(evt: gr.SelectData) -> Tuple[np.ndarray, np.ndarray, str]:
     return tile.image, tile.overlay, "\n".join(metrics_lines)
 
 
-def run_wsi_analysis(filename: str, max_tiles: int):
+def run_wsi_analysis(filename: str, max_tiles: int, auto_detect: bool = True):
     """
     Lance l'analyse WSI et retourne les résultats formatés.
 
     Args:
         filename: Nom du fichier WSI sélectionné
         max_tiles: Nombre maximum de tiles à traiter
+        auto_detect: Si True, détecte automatiquement l'organe via OrganHead
 
     Returns:
-        (status, timer_display, results_markdown, gallery_items, first_tile_image, first_tile_overlay, first_tile_metrics)
+        (status, timer_display, results_markdown, gallery_items, first_tile_image, first_tile_overlay, first_tile_metrics, detected_organ_info)
     """
     empty_tile = np.zeros((PATCH_SIZE, PATCH_SIZE, 3), dtype=np.uint8)
     empty_gallery = []
     empty_metrics = "*Aucun tile analysé*"
+    empty_organ_info = ""
 
     if not filename:
         return ("❌ Aucun fichier sélectionné", "00:00", "*Sélectionnez un fichier WSI*",
-                empty_gallery, empty_tile, empty_tile, empty_metrics)
-
-    if state.engine is None:
-        return ("❌ Moteur non chargé", "00:00", "*Chargez un modèle d'abord*",
-                empty_gallery, empty_tile, empty_tile, empty_metrics)
+                empty_gallery, empty_tile, empty_tile, empty_metrics, empty_organ_info)
 
     slide_path = real_wsi_state.wsi_dir / filename
 
+    # === DÉTECTION AUTOMATIQUE D'ORGANE ===
+    detected_organ = None
+    organ_info_msg = ""
+
+    if auto_detect:
+        # Vérifier si un modèle HoVer-Net est déjà chargé
+        hovernet_loaded = (state.engine is not None and
+                         state.engine.hovernet is not None)
+
+        if not hovernet_loaded:
+            logger.info("Mode auto-détection: Aucun modèle HoVer-Net chargé, détection en cours...")
+
+            # Détecter l'organe
+            detected_organ, confidence, detect_msg = detect_organ_from_wsi(slide_path, n_tiles=5)
+            organ_info_msg = detect_msg
+
+            # Charger le modèle correspondant
+            logger.info(f"Chargement automatique du modèle pour: {detected_organ}")
+            load_result = load_engine_core(detected_organ, device="cuda")
+
+            if not load_result["success"]:
+                return (f"❌ Erreur chargement modèle: {load_result['error']}", "00:00",
+                        "*Erreur de chargement*", empty_gallery, empty_tile, empty_tile,
+                        empty_metrics, organ_info_msg)
+
+            organ_info_msg = f"🔍 **Organe détecté:** {detected_organ} (confiance {confidence:.1%})\n\n*Modèle {load_result['model_type']} chargé automatiquement*"
+        else:
+            # Modèle déjà chargé, utiliser l'organe actuel
+            current_organ = state.engine.organ if state.engine else "Unknown"
+            organ_info_msg = f"📋 **Organe sélectionné:** {current_organ}\n\n*Modèle pré-chargé*"
+
+    # Vérification finale du moteur
+    if state.engine is None or state.engine.hovernet is None:
+        return ("❌ Moteur non chargé", "00:00", "*Chargez un modèle d'abord*",
+                empty_gallery, empty_tile, empty_tile, empty_metrics, empty_organ_info)
+
     if not slide_path.exists():
         return (f"❌ Fichier non trouvé: {slide_path}", "00:00", "*Fichier introuvable*",
-                empty_gallery, empty_tile, empty_tile, empty_metrics)
+                empty_gallery, empty_tile, empty_tile, empty_metrics, empty_organ_info)
 
     # Lancer le traitement
     real_wsi_state.clear_results()
@@ -1059,7 +1195,7 @@ def run_wsi_analysis(filename: str, max_tiles: int):
 
     if not results.get("success"):
         return (f"❌ Erreur: {results.get('error')}", timer_str, "*Erreur de traitement*",
-                empty_gallery, empty_tile, empty_tile, empty_metrics)
+                empty_gallery, empty_tile, empty_tile, empty_metrics, organ_info_msg)
 
     # Formatter les résultats
     results_md = format_wsi_results(results)
@@ -1082,10 +1218,10 @@ def run_wsi_analysis(filename: str, max_tiles: int):
         first_tile_md = "\n".join(first_metrics)
 
         return (status, timer_str, results_md,
-                gallery_items, first_tile.image, first_tile.overlay, first_tile_md)
+                gallery_items, first_tile.image, first_tile.overlay, first_tile_md, organ_info_msg)
 
     return (status, timer_str, results_md,
-            empty_gallery, empty_tile, empty_tile, empty_metrics)
+            empty_gallery, empty_tile, empty_tile, empty_metrics, organ_info_msg)
 
 
 def format_wsi_results(results: Dict[str, Any]) -> str:
@@ -1227,6 +1363,11 @@ def create_grid_ui(wsi_dir: str = DEFAULT_WSI_DIR):
                         )
 
                         gr.Markdown("#### 2. Paramètres")
+                        auto_detect_checkbox = gr.Checkbox(
+                            label="🔍 Détection automatique d'organe",
+                            value=True,
+                            info="Détecte l'organe via OrganHead et charge le modèle automatiquement",
+                        )
                         max_tiles_slider = gr.Slider(
                             minimum=10,
                             maximum=500,
@@ -1263,6 +1404,12 @@ def create_grid_ui(wsi_dir: str = DEFAULT_WSI_DIR):
                         )
                         wsi_info = gr.Markdown(
                             value="*Sélectionnez un fichier WSI*",
+                        )
+
+                        # Affichage organe détecté
+                        detected_organ_info = gr.Markdown(
+                            value="",
+                            visible=True,
                         )
 
                         gr.Markdown("#### 📊 Résultats Diagnostic")
@@ -1316,7 +1463,7 @@ def create_grid_ui(wsi_dir: str = DEFAULT_WSI_DIR):
 
                 run_wsi_btn.click(
                     fn=run_wsi_analysis,
-                    inputs=[wsi_file_dropdown, max_tiles_slider],
+                    inputs=[wsi_file_dropdown, max_tiles_slider, auto_detect_checkbox],
                     outputs=[
                         wsi_analysis_status,
                         timer_display,
@@ -1325,6 +1472,7 @@ def create_grid_ui(wsi_dir: str = DEFAULT_WSI_DIR):
                         selected_tile_image,
                         selected_tile_overlay,
                         selected_tile_metrics,
+                        detected_organ_info,
                     ],
                 )
 
@@ -1342,12 +1490,12 @@ def create_grid_ui(wsi_dir: str = DEFAULT_WSI_DIR):
                 )
 
             # =================================================================
-            # ONGLET 2: MODE PATCH (Simulation)
+            # ONGLET 2: MODE PATCH (Simulation PanNuke)
             # =================================================================
-            with gr.TabItem("📋 Patches 256×256", id="patch_tab"):
+            with gr.TabItem("📋 Test PanNuke", id="patch_tab"):
                 gr.Markdown("""
-                ### Mode Simulation (Images PanNuke)
-                Upload d'images 256×256 avec extraction de 4 patches et stitching.
+                ### Mode Simulation (Images PanNuke 256×256)
+                Upload d'images PanNuke avec extraction de 4 patches 224×224 et stitching.
                 """)
 
                 with gr.Row():
