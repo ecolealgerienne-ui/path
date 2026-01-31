@@ -29,7 +29,15 @@ PROJECT_ROOT = Path(__file__).parent.parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.wsi.tile_server import run_tile_server_background, WSI_EXTENSIONS
+from src.wsi.tile_server import run_tile_server_background, WSI_EXTENSIONS, set_annotations
+from src.wsi.input_router import InputRouter
+from src.ui.core import (
+    state,
+    preload_backbone_core,
+    load_engine_core,
+    run_analysis_core,
+)
+import requests
 
 # ==============================================================================
 # CONSTANTES
@@ -389,6 +397,133 @@ def on_slide_select(slide_name: str) -> Tuple[str, str]:
     return viewer_html, info_text
 
 
+def analyze_slide(slide_name: str, max_tiles: int = 50) -> Tuple[str, str]:
+    """
+    Analyze a WSI slide and return annotations.
+
+    Args:
+        slide_name: Name of the WSI file
+        max_tiles: Maximum number of tiles to analyze
+
+    Returns:
+        (status_message, results_summary)
+    """
+    if not slide_name:
+        return "❌ Aucune lame sélectionnée", ""
+
+    slide_path = viewer_state.wsi_dir / slide_name
+    if not slide_path.exists():
+        return f"❌ Fichier non trouvé: {slide_name}", ""
+
+    logger.info(f"Starting analysis of {slide_name}")
+
+    # Initialize engine if needed
+    if state.engine is None or state.engine.backbone is None:
+        logger.info("Loading backbone...")
+        preload_backbone_core(device="cuda")
+
+    if state.engine is None or state.engine.hovernet is None:
+        logger.info("Loading HoVer-Net model...")
+        # Default to Lung organ for now
+        load_engine_core("Lung", device="cuda")
+
+    if state.engine is None or state.engine.hovernet is None:
+        return "❌ Erreur chargement modèle", ""
+
+    # Extract and analyze tiles
+    router = InputRouter(filter_tiles=True)
+    annotations = []
+    total_nuclei = 0
+    total_neoplastic = 0
+    tile_count = 0
+
+    try:
+        for tile in router.process(slide_path, max_tiles=max_tiles):
+            result, _, error = run_analysis_core(tile.image, use_auto_params=True)
+
+            if error or result is None:
+                continue
+
+            # Count nuclei
+            instance_map = result.instance_map
+            type_map = result.type_map
+
+            unique_ids = np.unique(instance_map)
+            unique_ids = unique_ids[unique_ids > 0]
+
+            type_counts = {}
+            for nid in unique_ids:
+                mask = instance_map == nid
+                cell_type = int(np.median(type_map[mask]))
+                type_counts[cell_type] = type_counts.get(cell_type, 0) + 1
+
+            tile_nuclei = sum(type_counts.values())
+            tile_neoplastic = type_counts.get(1, 0)  # Type 1 = Neoplastic
+
+            total_nuclei += tile_nuclei
+            total_neoplastic += tile_neoplastic
+
+            # Calculate score
+            score = tile_neoplastic / tile_nuclei if tile_nuclei > 0 else 0.0
+
+            # Create annotation
+            annotations.append({
+                "x": tile.x,
+                "y": tile.y,
+                "width": 224,
+                "height": 224,
+                "score": score,
+                "nuclei": tile_nuclei,
+                "neoplastic": tile_neoplastic,
+            })
+
+            tile_count += 1
+            if tile_count >= max_tiles:
+                break
+
+    except Exception as e:
+        logger.error(f"Analysis error: {e}")
+        return f"❌ Erreur analyse: {e}", ""
+
+    # Save annotations to tile server
+    set_annotations(slide_name, annotations)
+
+    # Also send to tile server via API (for iframe refresh)
+    try:
+        requests.post(
+            f"{viewer_state.tile_server_url}/slide/{slide_name}/annotations",
+            json=annotations,
+            timeout=5
+        )
+    except Exception as e:
+        logger.warning(f"Failed to send annotations to tile server: {e}")
+
+    # Calculate global score
+    global_score = total_neoplastic / total_nuclei if total_nuclei > 0 else 0.0
+
+    # Generate results summary
+    if global_score >= 0.30:
+        emoji, status = "🔴", "SUSPECT"
+    elif global_score >= 0.10:
+        emoji, status = "🟠", "À SURVEILLER"
+    elif global_score >= 0.05:
+        emoji, status = "🟡", "FAIBLE RISQUE"
+    else:
+        emoji, status = "🟢", "NORMAL"
+
+    results = f"""### {emoji} {status}
+
+**Score global:** {global_score:.1%}
+**Noyaux totaux:** {total_nuclei:,}
+**Néoplasiques:** {total_neoplastic:,}
+**Zones analysées:** {tile_count}
+"""
+
+    logger.info(f"Analysis complete: {tile_count} tiles, {total_nuclei} nuclei, score={global_score:.2%}")
+
+    return f"✅ Analyse terminée ({tile_count} zones)", results
+
+
 def create_pro_viewer_ui(wsi_dir: str = DEFAULT_WSI_DIR, tile_server_port: int = TILE_SERVER_PORT):
     """Create the professional viewer interface."""
 
@@ -439,6 +574,28 @@ def create_pro_viewer_ui(wsi_dir: str = DEFAULT_WSI_DIR, tile_server_port: int =
 
                 gr.Markdown("---")
 
+                gr.Markdown("---")
+
+                gr.Markdown("### 🔬 Analyse")
+
+                analyze_btn = gr.Button(
+                    "▶️ Analyser la lame",
+                    variant="primary",
+                    size="lg",
+                )
+
+                analysis_status = gr.Textbox(
+                    label="Status",
+                    value="Prêt",
+                    interactive=False,
+                )
+
+                analysis_results = gr.Markdown(
+                    value="*Cliquez sur Analyser pour lancer l'analyse*"
+                )
+
+                gr.Markdown("---")
+
                 gr.Markdown("""
                 ### 📊 Légende
                 - 🔴 **Rouge** = Suspect (≥30%)
@@ -460,6 +617,12 @@ def create_pro_viewer_ui(wsi_dir: str = DEFAULT_WSI_DIR, tile_server_port: int =
             fn=on_slide_select,
             inputs=[slide_dropdown],
             outputs=[viewer_html, slide_info],
+        )
+
+        analyze_btn.click(
+            fn=analyze_slide,
+            inputs=[slide_dropdown],
+            outputs=[analysis_status, analysis_results],
         )
 
         # Load initial slide

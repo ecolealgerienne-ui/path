@@ -38,11 +38,28 @@ WSI_EXTENSIONS = {'.svs', '.ndpi', '.mrxs', '.scn', '.tiff', '.tif', '.bif'}
 _dz_cache: Dict[str, any] = {}
 _dz_lock = threading.Lock()
 
+# Cache pour les annotations (résultats d'analyse)
+_annotations_cache: Dict[str, list] = {}
+_annotations_lock = threading.Lock()
+
 # Tile format settings
 TILE_SIZE = 254  # OpenSeadragon default
 TILE_OVERLAP = 1
 TILE_FORMAT = "jpeg"
 TILE_QUALITY = 85
+
+
+def set_annotations(slide_name: str, annotations: list):
+    """Store annotations for a slide."""
+    with _annotations_lock:
+        _annotations_cache[slide_name] = annotations
+        logger.info(f"Stored {len(annotations)} annotations for {slide_name}")
+
+
+def get_annotations(slide_name: str) -> list:
+    """Get annotations for a slide."""
+    with _annotations_lock:
+        return _annotations_cache.get(slide_name, [])
 
 
 def get_deep_zoom_generator(slide_path: Path):
@@ -288,6 +305,18 @@ def create_tile_server_app(wsi_dir: str = "data/wsi_test") -> FastAPI:
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
 
+    @app.post("/slide/{slide_name}/annotations")
+    def save_annotations(slide_name: str, annotations: list):
+        """Save analysis annotations for a slide."""
+        set_annotations(slide_name, annotations)
+        return {"status": "ok", "count": len(annotations)}
+
+    @app.get("/slide/{slide_name}/annotations")
+    def get_slide_annotations(slide_name: str):
+        """Get analysis annotations for a slide."""
+        annotations = get_annotations(slide_name)
+        return {"annotations": annotations, "count": len(annotations)}
+
     @app.get("/slide/{slide_name}/viewer", response_class=Response)
     def get_viewer_page(slide_name: str):
         """
@@ -317,23 +346,29 @@ def create_tile_server_app(wsi_dir: str = "data/wsi_test") -> FastAPI:
         html, body {{ width: 100%; height: 100%; overflow: hidden; background: #1a1a2e; }}
         #viewer {{ width: 100%; height: 100%; }}
         .navigator {{ border: 2px solid #4a9eff !important; border-radius: 4px; }}
+        #overlay-canvas {{ position: absolute; top: 0; left: 0; pointer-events: none; }}
     </style>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/openseadragon/4.1.0/openseadragon.min.js"></script>
 </head>
 <body>
     <div id="viewer"></div>
     <script>
+        const slideName = "{slide_name}";
+        const slideWidth = {width};
+        const slideHeight = {height};
+        let annotations = [];
+
         const viewer = OpenSeadragon({{
             id: "viewer",
             prefixUrl: "https://cdnjs.cloudflare.com/ajax/libs/openseadragon/4.1.0/images/",
             tileSources: {{
-                width: {width},
-                height: {height},
+                width: slideWidth,
+                height: slideHeight,
                 tileSize: {TILE_SIZE},
                 tileOverlap: {TILE_OVERLAP},
                 maxLevel: {max_level},
                 getTileUrl: function(level, x, y) {{
-                    return "/slide/{slide_name}/tiles/" + level + "/" + x + "_" + y + ".jpeg";
+                    return "/slide/" + slideName + "/tiles/" + level + "/" + x + "_" + y + ".jpeg";
                 }}
             }},
             showNavigator: true,
@@ -357,9 +392,85 @@ def create_tile_server_app(wsi_dir: str = "data/wsi_test") -> FastAPI:
             }}
         }});
 
+        // Create overlay for annotations
+        const overlayCanvas = document.createElement('canvas');
+        overlayCanvas.id = 'overlay-canvas';
+        viewer.canvas.appendChild(overlayCanvas);
+        const ctx = overlayCanvas.getContext('2d');
+
+        function getColorForScore(score) {{
+            if (score >= 0.30) return 'rgba(255, 50, 50, 0.6)';  // Red
+            if (score >= 0.10) return 'rgba(255, 165, 0, 0.6)'; // Orange
+            if (score >= 0.05) return 'rgba(255, 255, 0, 0.6)'; // Yellow
+            return 'rgba(50, 255, 50, 0.4)';  // Green
+        }}
+
+        function drawAnnotations() {{
+            const viewportRect = viewer.viewport.getBounds();
+            const containerSize = viewer.viewport.getContainerSize();
+
+            overlayCanvas.width = containerSize.x;
+            overlayCanvas.height = containerSize.y;
+            ctx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
+
+            annotations.forEach(ann => {{
+                // Convert image coordinates to viewport coordinates
+                const topLeft = viewer.viewport.imageToViewerElementCoordinates(
+                    new OpenSeadragon.Point(ann.x, ann.y)
+                );
+                const bottomRight = viewer.viewport.imageToViewerElementCoordinates(
+                    new OpenSeadragon.Point(ann.x + ann.width, ann.y + ann.height)
+                );
+
+                const w = bottomRight.x - topLeft.x;
+                const h = bottomRight.y - topLeft.y;
+
+                // Skip if too small or off-screen
+                if (w < 2 || h < 2) return;
+                if (topLeft.x > containerSize.x || topLeft.y > containerSize.y) return;
+                if (bottomRight.x < 0 || bottomRight.y < 0) return;
+
+                // Draw rectangle
+                ctx.fillStyle = getColorForScore(ann.score);
+                ctx.fillRect(topLeft.x, topLeft.y, w, h);
+
+                ctx.strokeStyle = getColorForScore(ann.score).replace('0.6', '1').replace('0.4', '1');
+                ctx.lineWidth = 2;
+                ctx.strokeRect(topLeft.x, topLeft.y, w, h);
+
+                // Draw label if large enough
+                if (w > 40 && h > 30) {{
+                    ctx.fillStyle = 'white';
+                    ctx.font = 'bold 12px system-ui';
+                    ctx.fillText((ann.score * 100).toFixed(0) + '%', topLeft.x + 4, topLeft.y + 14);
+                }}
+            }});
+        }}
+
+        function loadAnnotations() {{
+            fetch('/slide/' + slideName + '/annotations')
+                .then(resp => resp.json())
+                .then(data => {{
+                    if (data.annotations && data.annotations.length > 0) {{
+                        annotations = data.annotations;
+                        console.log('Loaded', annotations.length, 'annotations');
+                        drawAnnotations();
+                    }}
+                }})
+                .catch(err => console.log('No annotations yet'));
+        }}
+
         viewer.addHandler('open', function() {{
-            console.log("Slide loaded: {slide_name}, {width}x{height}, {level_count} levels");
+            console.log("Slide loaded:", slideName, slideWidth + "x" + slideHeight);
+            loadAnnotations();
         }});
+
+        viewer.addHandler('animation', drawAnnotations);
+        viewer.addHandler('animation-finish', drawAnnotations);
+        viewer.addHandler('resize', drawAnnotations);
+
+        // Poll for new annotations every 2 seconds
+        setInterval(loadAnnotations, 2000);
 
         viewer.addHandler('tile-load-failed', function(event) {{
             console.warn("Tile failed:", event.tile.url);
