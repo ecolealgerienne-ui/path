@@ -1123,16 +1123,20 @@ def run_wsi_analysis(filename: str, max_tiles: int, auto_detect: bool = True):
         auto_detect: Si True, détecte automatiquement l'organe via OrganHead
 
     Returns:
-        (status, timer_display, results_markdown, gallery_items, first_tile_image, first_tile_overlay, first_tile_metrics, detected_organ_info)
+        (status, timer_display, results_markdown, gallery_items, first_tile_image,
+         first_tile_overlay, first_tile_metrics, detected_organ_info, model_status, organ_value)
     """
     empty_tile = np.zeros((PATCH_SIZE, PATCH_SIZE, 3), dtype=np.uint8)
     empty_gallery = []
     empty_metrics = "*Aucun tile analysé*"
     empty_organ_info = ""
+    current_model_status = gr.update()  # Pas de changement par défaut
+    current_organ_value = gr.update()   # Pas de changement par défaut
 
     if not filename:
         return ("❌ Aucun fichier sélectionné", "00:00", "*Sélectionnez un fichier WSI*",
-                empty_gallery, empty_tile, empty_tile, empty_metrics, empty_organ_info)
+                empty_gallery, empty_tile, empty_tile, empty_metrics, empty_organ_info,
+                current_model_status, current_organ_value)
 
     slide_path = real_wsi_state.wsi_dir / filename
 
@@ -1159,9 +1163,13 @@ def run_wsi_analysis(filename: str, max_tiles: int, auto_detect: bool = True):
             if not load_result["success"]:
                 return (f"❌ Erreur chargement modèle: {load_result['error']}", "00:00",
                         "*Erreur de chargement*", empty_gallery, empty_tile, empty_tile,
-                        empty_metrics, organ_info_msg)
+                        empty_metrics, organ_info_msg, current_model_status, current_organ_value)
 
             organ_info_msg = f"🔍 **Organe détecté:** {detected_organ} (confiance {confidence:.1%})\n\n*Modèle {load_result['model_type']} chargé automatiquement*"
+
+            # Mettre à jour le status du modèle et le dropdown
+            current_model_status = f"✅ Moteur chargé: {detected_organ} ({load_result['model_type']}) — Auto-détecté"
+            current_organ_value = detected_organ
         else:
             # Modèle déjà chargé, utiliser l'organe actuel
             current_organ = state.engine.organ if state.engine else "Unknown"
@@ -1170,11 +1178,13 @@ def run_wsi_analysis(filename: str, max_tiles: int, auto_detect: bool = True):
     # Vérification finale du moteur
     if state.engine is None or state.engine.hovernet is None:
         return ("❌ Moteur non chargé", "00:00", "*Chargez un modèle d'abord*",
-                empty_gallery, empty_tile, empty_tile, empty_metrics, empty_organ_info)
+                empty_gallery, empty_tile, empty_tile, empty_metrics, empty_organ_info,
+                current_model_status, current_organ_value)
 
     if not slide_path.exists():
         return (f"❌ Fichier non trouvé: {slide_path}", "00:00", "*Fichier introuvable*",
-                empty_gallery, empty_tile, empty_tile, empty_metrics, empty_organ_info)
+                empty_gallery, empty_tile, empty_tile, empty_metrics, empty_organ_info,
+                current_model_status, current_organ_value)
 
     # Lancer le traitement
     real_wsi_state.clear_results()
@@ -1195,7 +1205,8 @@ def run_wsi_analysis(filename: str, max_tiles: int, auto_detect: bool = True):
 
     if not results.get("success"):
         return (f"❌ Erreur: {results.get('error')}", timer_str, "*Erreur de traitement*",
-                empty_gallery, empty_tile, empty_tile, empty_metrics, organ_info_msg)
+                empty_gallery, empty_tile, empty_tile, empty_metrics, organ_info_msg,
+                current_model_status, current_organ_value)
 
     # Formatter les résultats
     results_md = format_wsi_results(results)
@@ -1218,10 +1229,12 @@ def run_wsi_analysis(filename: str, max_tiles: int, auto_detect: bool = True):
         first_tile_md = "\n".join(first_metrics)
 
         return (status, timer_str, results_md,
-                gallery_items, first_tile.image, first_tile.overlay, first_tile_md, organ_info_msg)
+                gallery_items, first_tile.image, first_tile.overlay, first_tile_md, organ_info_msg,
+                current_model_status, current_organ_value)
 
     return (status, timer_str, results_md,
-            empty_gallery, empty_tile, empty_tile, empty_metrics, organ_info_msg)
+            empty_gallery, empty_tile, empty_tile, empty_metrics, organ_info_msg,
+            current_model_status, current_organ_value)
 
 
 def format_wsi_results(results: Dict[str, Any]) -> str:
@@ -1473,6 +1486,8 @@ def create_grid_ui(wsi_dir: str = DEFAULT_WSI_DIR):
                         selected_tile_overlay,
                         selected_tile_metrics,
                         detected_organ_info,
+                        model_status,        # Mise à jour du status moteur
+                        organ_dropdown,      # Mise à jour du dropdown organe
                     ],
                 )
 
