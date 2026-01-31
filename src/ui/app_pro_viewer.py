@@ -16,6 +16,7 @@ from pathlib import Path
 import logging
 import time
 import threading
+import math
 from typing import Optional, List, Tuple
 
 # Configuration logging
@@ -42,13 +43,21 @@ TILE_SERVER_PORT = 8000
 # OPENSEADRAGON HTML TEMPLATE
 # ==============================================================================
 
-def create_openseadragon_html(slide_name: str, tile_server_url: str, container_id: str = "osd-viewer") -> str:
+def create_openseadragon_html(
+    slide_name: str,
+    tile_server_url: str,
+    width: int = 0,
+    height: int = 0,
+    container_id: str = "osd-viewer"
+) -> str:
     """
     Create HTML/JS for OpenSeadragon viewer.
 
     Args:
         slide_name: Name of the WSI file
         tile_server_url: URL of the tile server
+        width: Slide width in pixels
+        height: Slide height in pixels
         container_id: ID of the viewer container
 
     Returns:
@@ -65,8 +74,11 @@ def create_openseadragon_html(slide_name: str, tile_server_url: str, container_i
         </div>
         """
 
-    dzi_url = f"{tile_server_url}/slide/{slide_name}/dzi"
-    tiles_url = f"{tile_server_url}/slide/{slide_name}/tiles/"
+    tiles_url = f"{tile_server_url}/slide/{slide_name}/tiles"
+
+    # Calculate number of levels for deep zoom pyramid
+    max_dim = max(width, height) if width > 0 and height > 0 else 100000
+    max_level = int(math.ceil(math.log2(max_dim))) + 1
 
     return f"""
     <div id="{container_id}" style="width: 100%; height: 600px; background: #1a1a2e;"></div>
@@ -78,112 +90,131 @@ def create_openseadragon_html(slide_name: str, tile_server_url: str, container_i
         // Destroy existing viewer if any
         if (window.osdViewer) {{
             window.osdViewer.destroy();
+            window.osdViewer = null;
         }}
 
-        // Create new viewer
+        const slideWidth = {width};
+        const slideHeight = {height};
+        const tileSize = 254;
+        const tileOverlap = 1;
+        const tilesUrl = "{tiles_url}";
+
+        // Custom tile source for our FastAPI server
+        const customTileSource = {{
+            width: slideWidth,
+            height: slideHeight,
+            tileSize: tileSize,
+            tileOverlap: tileOverlap,
+            minLevel: 0,
+            maxLevel: {max_level},
+
+            getTileUrl: function(level, x, y) {{
+                return tilesUrl + "/" + level + "/" + x + "_" + y + ".jpeg";
+            }}
+        }};
+
+        // Create viewer
         window.osdViewer = OpenSeadragon({{
             id: "{container_id}",
             prefixUrl: "https://cdnjs.cloudflare.com/ajax/libs/openseadragon/4.1.0/images/",
+            tileSources: customTileSource,
 
-            // Tile source configuration
-            tileSources: {{
-                Image: {{
-                    xmlns: "http://schemas.microsoft.com/deepzoom/2008",
-                    Url: "{tiles_url}",
-                    Format: "jpeg",
-                    Overlap: "1",
-                    TileSize: "254",
-                    Size: {{
-                        Width: "50000",  // Will be updated from DZI
-                        Height: "50000"
-                    }}
-                }}
-            }},
-
-            // UI options
+            // Navigator (mini-map)
             showNavigator: true,
             navigatorPosition: "BOTTOM_RIGHT",
             navigatorSizeRatio: 0.15,
             navigatorMaintainSizeRatio: true,
             navigatorAutoFade: false,
 
-            // Zoom options
+            // Zoom settings
             minZoomLevel: 0.1,
             maxZoomLevel: 40,
-            defaultZoomLevel: 0.5,
+            defaultZoomLevel: 1,
             visibilityRatio: 0.5,
             constrainDuringPan: true,
 
-            // Navigation controls
+            // Controls
             showZoomControl: true,
             showHomeControl: true,
             showFullPageControl: true,
-            showRotationControl: true,
+            showRotationControl: false,
 
             // Performance
             immediateRender: true,
-            imageLoaderLimit: 5,
-            maxImageCacheCount: 200,
+            imageLoaderLimit: 10,
+            maxImageCacheCount: 500,
 
             // Animation
-            animationTime: 0.5,
+            animationTime: 0.3,
             blendTime: 0.1,
-            springStiffness: 10,
+            springStiffness: 15,
 
-            // Gestures
+            // Mouse gestures
             gestureSettingsMouse: {{
                 scrollToZoom: true,
                 clickToZoom: true,
                 dblClickToZoom: true,
                 flickEnabled: true
             }},
+
+            // Touch gestures
             gestureSettingsTouch: {{
                 scrollToZoom: false,
                 clickToZoom: false,
                 dblClickToZoom: true,
                 pinchToZoom: true,
                 flickEnabled: true
-            }}
+            }},
+
+            // Debug
+            debugMode: false
         }});
 
-        // Fetch actual dimensions from DZI
-        fetch("{dzi_url}")
-            .then(response => response.text())
-            .then(xmlText => {{
-                const parser = new DOMParser();
-                const xml = parser.parseFromString(xmlText, "application/xml");
-                const size = xml.querySelector("Size");
-                if (size) {{
-                    const width = parseInt(size.getAttribute("Width"));
-                    const height = parseInt(size.getAttribute("Height"));
-                    console.log("Slide dimensions:", width, "x", height);
-                }}
-            }})
-            .catch(err => console.error("Error loading DZI:", err));
+        // Event handlers
+        window.osdViewer.addHandler('open', function() {{
+            console.log("OpenSeadragon: Slide loaded successfully");
+        }});
 
-        // Add keyboard shortcuts
+        window.osdViewer.addHandler('open-failed', function(event) {{
+            console.error("OpenSeadragon: Failed to load slide", event);
+        }});
+
+        window.osdViewer.addHandler('tile-load-failed', function(event) {{
+            console.warn("Tile load failed:", event.tile.url);
+        }});
+
+        // Keyboard shortcuts
         document.addEventListener('keydown', function(e) {{
             if (!window.osdViewer) return;
+
+            // Ignore if typing in input
+            if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
 
             switch(e.key) {{
                 case '+':
                 case '=':
                     window.osdViewer.viewport.zoomBy(1.5);
+                    e.preventDefault();
                     break;
                 case '-':
                     window.osdViewer.viewport.zoomBy(0.67);
+                    e.preventDefault();
                     break;
                 case 'Home':
                 case 'h':
+                case 'H':
                     window.osdViewer.viewport.goHome();
+                    e.preventDefault();
                     break;
                 case 'f':
+                case 'F':
                     window.osdViewer.setFullScreen(!window.osdViewer.isFullPage());
+                    e.preventDefault();
                     break;
             }}
         }});
 
-        console.log("OpenSeadragon viewer initialized for: {slide_name}");
+        console.log("OpenSeadragon initialized:", slideWidth, "x", slideHeight, "pixels");
     }})();
     </script>
 
@@ -191,10 +222,15 @@ def create_openseadragon_html(slide_name: str, tile_server_url: str, container_i
         #{container_id} {{
             border-radius: 8px;
             overflow: hidden;
+            border: 1px solid #333;
         }}
-        .navigator {{
+        #{container_id} .navigator {{
             border: 2px solid #4a9eff !important;
             border-radius: 4px;
+            background: rgba(0,0,0,0.7) !important;
+        }}
+        #{container_id} .displayregion {{
+            border: 2px solid #ff6b6b !important;
         }}
     </style>
     """
@@ -428,28 +464,55 @@ def on_slide_select(slide_name: str) -> Tuple[str, str]:
 
     viewer_state.selected_file = slide_name
 
-    # Get slide info
+    # Get slide info from tile server
+    width, height = 0, 0
+    info_text = f"### {slide_name}\n\n*Chargement...*"
+
     try:
         import requests
-        resp = requests.get(f"{viewer_state.tile_server_url}/slide/{slide_name}/info", timeout=5)
+        resp = requests.get(f"{viewer_state.tile_server_url}/slide/{slide_name}/info", timeout=10)
         if resp.ok:
             info = resp.json()
+            width = info.get('width', 0)
+            height = info.get('height', 0)
             info_text = f"""### {slide_name}
 
-**Dimensions:** {info['width']:,} x {info['height']:,} px
+**Dimensions:** {width:,} x {height:,} px
 **MPP:** {info.get('mpp_x', 'N/A')}
 **Scanner:** {info.get('vendor', 'N/A')}
 **Niveaux:** {info.get('level_count', 'N/A')}"""
         else:
-            info_text = f"### {slide_name}\n\n*Métadonnées non disponibles*"
+            logger.error(f"Tile server returned {resp.status_code}: {resp.text}")
+            info_text = f"### {slide_name}\n\n*Erreur serveur: {resp.status_code}*"
+    except requests.exceptions.ConnectionError:
+        logger.error("Tile server not responding - attempting restart")
+        viewer_state.start_tile_server()
+        time.sleep(2)
+        # Retry once
+        try:
+            resp = requests.get(f"{viewer_state.tile_server_url}/slide/{slide_name}/info", timeout=10)
+            if resp.ok:
+                info = resp.json()
+                width = info.get('width', 0)
+                height = info.get('height', 0)
+                info_text = f"""### {slide_name}
+
+**Dimensions:** {width:,} x {height:,} px
+**MPP:** {info.get('mpp_x', 'N/A')}
+**Scanner:** {info.get('vendor', 'N/A')}
+**Niveaux:** {info.get('level_count', 'N/A')}"""
+        except Exception as e2:
+            info_text = f"### {slide_name}\n\n*Erreur connexion serveur tiles*"
     except Exception as e:
         logger.error(f"Error getting slide info: {e}")
         info_text = f"### {slide_name}\n\n*Erreur: {e}*"
 
-    # Create viewer HTML
+    # Create viewer HTML with actual dimensions
     viewer_html = create_openseadragon_html(
-        slide_name,
-        viewer_state.tile_server_url
+        slide_name=slide_name,
+        tile_server_url=viewer_state.tile_server_url,
+        width=width,
+        height=height,
     )
 
     return viewer_html, info_text
@@ -515,11 +578,9 @@ def create_pro_viewer_ui(wsi_dir: str = DEFAULT_WSI_DIR, tile_server_port: int =
 
             # Center - Viewer
             with gr.Column(scale=4):
+                # Start with placeholder, app.load() will populate
                 viewer_html = gr.HTML(
-                    value=create_openseadragon_html(
-                        viewer_state.available_files[0] if viewer_state.available_files else None,
-                        viewer_state.tile_server_url
-                    ),
+                    value=create_openseadragon_html(None, viewer_state.tile_server_url),
                     elem_classes=["viewer-container"],
                 )
 
