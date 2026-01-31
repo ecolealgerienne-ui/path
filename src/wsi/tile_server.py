@@ -16,6 +16,7 @@ Usage:
 
 import os
 import io
+import math
 import logging
 from pathlib import Path
 from typing import Dict, Optional
@@ -285,6 +286,98 @@ def create_tile_server_app(wsi_dir: str = "data/wsi_test") -> FastAPI:
         except HTTPException:
             raise
         except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e))
+
+    @app.get("/slide/{slide_name}/viewer", response_class=Response)
+    def get_viewer_page(slide_name: str):
+        """
+        Get an HTML page with OpenSeadragon viewer for the slide.
+        This page can be embedded in an iframe.
+        """
+        slide_file = wsi_path / slide_name
+
+        if not slide_file.exists():
+            raise HTTPException(status_code=404, detail="Slide not found")
+
+        try:
+            dz, slide = get_deep_zoom_generator(slide_file)
+            width, height = slide.dimensions
+            level_count = dz.level_count
+
+            # Calculate max level for OpenSeadragon
+            import math
+            max_level = int(math.ceil(math.log2(max(width, height)))) + 1
+
+            html_content = f'''<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>{slide_name}</title>
+    <style>
+        * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+        html, body {{ width: 100%; height: 100%; overflow: hidden; background: #1a1a2e; }}
+        #viewer {{ width: 100%; height: 100%; }}
+        .navigator {{ border: 2px solid #4a9eff !important; border-radius: 4px; }}
+    </style>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/openseadragon/4.1.0/openseadragon.min.js"></script>
+</head>
+<body>
+    <div id="viewer"></div>
+    <script>
+        const viewer = OpenSeadragon({{
+            id: "viewer",
+            prefixUrl: "https://cdnjs.cloudflare.com/ajax/libs/openseadragon/4.1.0/images/",
+            tileSources: {{
+                width: {width},
+                height: {height},
+                tileSize: {TILE_SIZE},
+                tileOverlap: {TILE_OVERLAP},
+                minLevel: 0,
+                maxLevel: {max_level},
+                getTileUrl: function(level, x, y) {{
+                    return "/slide/{slide_name}/tiles/" + level + "/" + x + "_" + y + ".jpeg";
+                }}
+            }},
+            showNavigator: true,
+            navigatorPosition: "BOTTOM_RIGHT",
+            navigatorSizeRatio: 0.15,
+            showZoomControl: true,
+            showHomeControl: true,
+            showFullPageControl: true,
+            minZoomLevel: 0.1,
+            maxZoomLevel: 40,
+            visibilityRatio: 0.5,
+            constrainDuringPan: true,
+            immediateRender: true,
+            animationTime: 0.3,
+            gestureSettingsMouse: {{
+                scrollToZoom: true,
+                clickToZoom: true,
+                dblClickToZoom: true,
+                flickEnabled: true
+            }}
+        }});
+
+        viewer.addHandler('open', function() {{
+            console.log("Slide loaded: {slide_name}");
+        }});
+
+        viewer.addHandler('tile-load-failed', function(event) {{
+            console.warn("Tile failed:", event.tile.url);
+        }});
+    </script>
+</body>
+</html>'''
+
+            return Response(
+                content=html_content,
+                media_type="text/html",
+            )
+
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Error creating viewer: {e}")
             raise HTTPException(status_code=500, detail=str(e))
 
     @app.on_event("shutdown")

@@ -51,22 +51,23 @@ def create_openseadragon_html(
     container_id: str = "osd-viewer"
 ) -> str:
     """
-    Create HTML/JS for OpenSeadragon viewer.
+    Create HTML with iframe pointing to the tile server's viewer endpoint.
 
     Args:
         slide_name: Name of the WSI file
         tile_server_url: URL of the tile server
-        width: Slide width in pixels
-        height: Slide height in pixels
+        width: Slide width in pixels (for info display)
+        height: Slide height in pixels (for info display)
         container_id: ID of the viewer container
 
     Returns:
-        HTML string with embedded OpenSeadragon
+        HTML string with iframe embedding the viewer
     """
     if not slide_name:
         return """
         <div style="display: flex; align-items: center; justify-content: center;
-                    height: 600px; background: #1a1a2e; color: #888; font-family: system-ui;">
+                    height: 600px; background: #1a1a2e; color: #888; font-family: system-ui;
+                    border-radius: 8px;">
             <div style="text-align: center;">
                 <div style="font-size: 48px; margin-bottom: 16px;">🔬</div>
                 <div style="font-size: 18px;">Sélectionnez une lame pour commencer</div>
@@ -74,165 +75,16 @@ def create_openseadragon_html(
         </div>
         """
 
-    tiles_url = f"{tile_server_url}/slide/{slide_name}/tiles"
-
-    # Calculate number of levels for deep zoom pyramid
-    max_dim = max(width, height) if width > 0 and height > 0 else 100000
-    max_level = int(math.ceil(math.log2(max_dim))) + 1
+    # Use iframe to embed the viewer page served by the tile server
+    viewer_url = f"{tile_server_url}/slide/{slide_name}/viewer"
 
     return f"""
-    <div id="{container_id}" style="width: 100%; height: 600px; background: #1a1a2e;"></div>
-
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/openseadragon/4.1.0/openseadragon.min.js"></script>
-
-    <script>
-    (function() {{
-        // Destroy existing viewer if any
-        if (window.osdViewer) {{
-            window.osdViewer.destroy();
-            window.osdViewer = null;
-        }}
-
-        const slideWidth = {width};
-        const slideHeight = {height};
-        const tileSize = 254;
-        const tileOverlap = 1;
-        const tilesUrl = "{tiles_url}";
-
-        // Custom tile source for our FastAPI server
-        const customTileSource = {{
-            width: slideWidth,
-            height: slideHeight,
-            tileSize: tileSize,
-            tileOverlap: tileOverlap,
-            minLevel: 0,
-            maxLevel: {max_level},
-
-            getTileUrl: function(level, x, y) {{
-                return tilesUrl + "/" + level + "/" + x + "_" + y + ".jpeg";
-            }}
-        }};
-
-        // Create viewer
-        window.osdViewer = OpenSeadragon({{
-            id: "{container_id}",
-            prefixUrl: "https://cdnjs.cloudflare.com/ajax/libs/openseadragon/4.1.0/images/",
-            tileSources: customTileSource,
-
-            // Navigator (mini-map)
-            showNavigator: true,
-            navigatorPosition: "BOTTOM_RIGHT",
-            navigatorSizeRatio: 0.15,
-            navigatorMaintainSizeRatio: true,
-            navigatorAutoFade: false,
-
-            // Zoom settings
-            minZoomLevel: 0.1,
-            maxZoomLevel: 40,
-            defaultZoomLevel: 1,
-            visibilityRatio: 0.5,
-            constrainDuringPan: true,
-
-            // Controls
-            showZoomControl: true,
-            showHomeControl: true,
-            showFullPageControl: true,
-            showRotationControl: false,
-
-            // Performance
-            immediateRender: true,
-            imageLoaderLimit: 10,
-            maxImageCacheCount: 500,
-
-            // Animation
-            animationTime: 0.3,
-            blendTime: 0.1,
-            springStiffness: 15,
-
-            // Mouse gestures
-            gestureSettingsMouse: {{
-                scrollToZoom: true,
-                clickToZoom: true,
-                dblClickToZoom: true,
-                flickEnabled: true
-            }},
-
-            // Touch gestures
-            gestureSettingsTouch: {{
-                scrollToZoom: false,
-                clickToZoom: false,
-                dblClickToZoom: true,
-                pinchToZoom: true,
-                flickEnabled: true
-            }},
-
-            // Debug
-            debugMode: false
-        }});
-
-        // Event handlers
-        window.osdViewer.addHandler('open', function() {{
-            console.log("OpenSeadragon: Slide loaded successfully");
-        }});
-
-        window.osdViewer.addHandler('open-failed', function(event) {{
-            console.error("OpenSeadragon: Failed to load slide", event);
-        }});
-
-        window.osdViewer.addHandler('tile-load-failed', function(event) {{
-            console.warn("Tile load failed:", event.tile.url);
-        }});
-
-        // Keyboard shortcuts
-        document.addEventListener('keydown', function(e) {{
-            if (!window.osdViewer) return;
-
-            // Ignore if typing in input
-            if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
-
-            switch(e.key) {{
-                case '+':
-                case '=':
-                    window.osdViewer.viewport.zoomBy(1.5);
-                    e.preventDefault();
-                    break;
-                case '-':
-                    window.osdViewer.viewport.zoomBy(0.67);
-                    e.preventDefault();
-                    break;
-                case 'Home':
-                case 'h':
-                case 'H':
-                    window.osdViewer.viewport.goHome();
-                    e.preventDefault();
-                    break;
-                case 'f':
-                case 'F':
-                    window.osdViewer.setFullScreen(!window.osdViewer.isFullPage());
-                    e.preventDefault();
-                    break;
-            }}
-        }});
-
-        console.log("OpenSeadragon initialized:", slideWidth, "x", slideHeight, "pixels");
-    }})();
-    </script>
-
-    <style>
-        #{container_id} {{
-            border-radius: 8px;
-            overflow: hidden;
-            border: 1px solid #333;
-        }}
-        #{container_id} .navigator {{
-            border: 2px solid #4a9eff !important;
-            border-radius: 4px;
-            background: rgba(0,0,0,0.7) !important;
-        }}
-        #{container_id} .displayregion {{
-            border: 2px solid #ff6b6b !important;
-        }}
-    </style>
+    <iframe
+        id="{container_id}"
+        src="{viewer_url}"
+        style="width: 100%; height: 600px; border: none; border-radius: 8px;"
+        allow="fullscreen"
+    ></iframe>
     """
 
 
