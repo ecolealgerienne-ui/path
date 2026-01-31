@@ -102,6 +102,11 @@ class AnalysisState:
     selected_file: Optional[str] = None
     thumbnail: Optional[np.ndarray] = None
 
+    # Dimensions lame (pour calcul ratio FOI/heatmap)
+    slide_width: int = 0
+    slide_height: int = 0
+    thumbnail_ratio: float = 1.0  # ratio = thumbnail_size / slide_size
+
     # Résultats
     is_analyzed: bool = False
     global_score: float = 0.0
@@ -176,8 +181,13 @@ def create_opacity_overlay(
     return cv2.addWeighted(base_image, 1 - opacity, overlay, opacity, 0)
 
 
-def get_wsi_thumbnail(slide_path: Path, max_size: int = 600) -> Optional[np.ndarray]:
-    """Extrait le thumbnail d'une lame WSI."""
+def get_wsi_thumbnail(slide_path: Path, max_size: int = 600) -> Tuple[Optional[np.ndarray], int, int, float]:
+    """
+    Extrait le thumbnail d'une lame WSI.
+
+    Returns:
+        (thumbnail, slide_width, slide_height, ratio)
+    """
     try:
         import openslide
         slide = openslide.OpenSlide(str(slide_path))
@@ -187,10 +197,200 @@ def get_wsi_thumbnail(slide_path: Path, max_size: int = 600) -> Optional[np.ndar
         thumbnail = slide.get_thumbnail(thumb_size)
         thumbnail = np.array(thumbnail.convert('RGB'))
         slide.close()
-        return thumbnail
+        return thumbnail, w, h, ratio
     except Exception as e:
         logger.error(f"Erreur thumbnail: {e}")
+        return None, 0, 0, 1.0
+
+
+def create_thumbnail_with_foi(
+    thumbnail: np.ndarray,
+    zones: List[SuspiciousZone],
+    ratio: float,
+    selected_index: int = 0,
+) -> np.ndarray:
+    """
+    Crée le thumbnail avec Focus of Interest (rectangle sur zone #1).
+
+    Style Paige FullFocus: rectangle rouge épais sur la zone la plus suspecte.
+
+    Args:
+        thumbnail: Image thumbnail RGB
+        zones: Liste des zones suspectes (triées par score)
+        ratio: Ratio thumbnail/lame pour conversion coordonnées
+        selected_index: Index de la zone à mettre en évidence
+
+    Returns:
+        Thumbnail avec FOI dessiné
+    """
+    if not zones or thumbnail is None:
+        return thumbnail
+
+    result = thumbnail.copy()
+
+    # Zone la plus suspecte (ou sélectionnée)
+    if selected_index < 0 or selected_index >= len(zones):
+        selected_index = 0
+
+    zone = zones[selected_index]
+
+    # Convertir coordonnées lame → thumbnail
+    x1 = int(zone.x * ratio)
+    y1 = int(zone.y * ratio)
+    x2 = int((zone.x + TILE_SIZE) * ratio)
+    y2 = int((zone.y + TILE_SIZE) * ratio)
+
+    # Couleur basée sur le score
+    if zone.score >= THRESHOLD_HIGH:
+        color = (255, 50, 50)  # Rouge
+        thickness = 4
+    elif zone.score >= THRESHOLD_MODERATE:
+        color = (255, 165, 0)  # Orange
+        thickness = 3
+    elif zone.score >= THRESHOLD_LOW:
+        color = (255, 255, 0)  # Jaune
+        thickness = 2
+    else:
+        color = (50, 255, 50)  # Vert
+        thickness = 2
+
+    # Dessiner le rectangle FOI
+    cv2.rectangle(result, (x1, y1), (x2, y2), color, thickness)
+
+    # Ajouter un label avec le score
+    label = f"#{selected_index + 1}: {zone.score:.0%}"
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    font_scale = 0.5
+    (text_w, text_h), _ = cv2.getTextSize(label, font, font_scale, 1)
+
+    # Background pour le texte
+    cv2.rectangle(result, (x1, y1 - text_h - 8), (x1 + text_w + 8, y1), color, -1)
+    cv2.putText(result, label, (x1 + 4, y1 - 4), font, font_scale, (255, 255, 255), 1)
+
+    return result
+
+
+def create_thumbnail_with_heatmap(
+    thumbnail: np.ndarray,
+    zones: List[SuspiciousZone],
+    ratio: float,
+    opacity: float = 0.3,
+) -> np.ndarray:
+    """
+    Crée le thumbnail avec heatmap des zones analysées.
+
+    Style Paige TissueMap: overlay semi-transparent basé sur les scores.
+
+    Args:
+        thumbnail: Image thumbnail RGB
+        zones: Liste des zones suspectes
+        ratio: Ratio thumbnail/lame
+        opacity: Opacité de la heatmap [0-1]
+
+    Returns:
+        Thumbnail avec heatmap
+    """
+    if not zones or thumbnail is None:
+        return thumbnail
+
+    result = thumbnail.copy()
+    h, w = result.shape[:2]
+
+    # Créer une heatmap vide
+    heatmap = np.zeros((h, w, 3), dtype=np.float32)
+    weight_map = np.zeros((h, w), dtype=np.float32)
+
+    for zone in zones:
+        # Coordonnées dans le thumbnail
+        x1 = int(zone.x * ratio)
+        y1 = int(zone.y * ratio)
+        x2 = min(int((zone.x + TILE_SIZE) * ratio), w)
+        y2 = min(int((zone.y + TILE_SIZE) * ratio), h)
+
+        if x2 <= x1 or y2 <= y1:
+            continue
+
+        # Couleur basée sur le score (gradient rouge)
+        if zone.score >= THRESHOLD_HIGH:
+            color = np.array([255, 0, 0], dtype=np.float32)  # Rouge
+        elif zone.score >= THRESHOLD_MODERATE:
+            color = np.array([255, 165, 0], dtype=np.float32)  # Orange
+        elif zone.score >= THRESHOLD_LOW:
+            color = np.array([255, 255, 0], dtype=np.float32)  # Jaune
+        else:
+            color = np.array([0, 255, 0], dtype=np.float32)  # Vert
+
+        # Ajouter à la heatmap avec pondération par score
+        heatmap[y1:y2, x1:x2] += color * zone.score
+        weight_map[y1:y2, x1:x2] += zone.score
+
+    # Normaliser la heatmap
+    mask = weight_map > 0
+    for c in range(3):
+        heatmap[:, :, c][mask] /= weight_map[mask]
+
+    # Convertir en uint8
+    heatmap = np.clip(heatmap, 0, 255).astype(np.uint8)
+
+    # Fusionner avec le thumbnail (seulement où il y a des données)
+    mask_3d = np.stack([mask] * 3, axis=-1)
+    result = np.where(
+        mask_3d,
+        cv2.addWeighted(result, 1 - opacity, heatmap, opacity, 0),
+        result
+    )
+
+    return result
+
+
+def create_thumbnail_with_all_zones(
+    thumbnail: np.ndarray,
+    zones: List[SuspiciousZone],
+    ratio: float,
+    selected_index: int = 0,
+    show_heatmap: bool = True,
+    show_foi: bool = True,
+) -> np.ndarray:
+    """
+    Crée le thumbnail avec heatmap ET Focus of Interest.
+
+    Args:
+        thumbnail: Image thumbnail RGB
+        zones: Liste des zones suspectes
+        ratio: Ratio thumbnail/lame
+        selected_index: Index de la zone FOI
+        show_heatmap: Afficher la heatmap
+        show_foi: Afficher le FOI
+
+    Returns:
+        Thumbnail enrichi
+    """
+    if thumbnail is None:
         return None
+
+    result = thumbnail.copy()
+
+    # 1. Appliquer la heatmap (fond)
+    if show_heatmap and zones:
+        result = create_thumbnail_with_heatmap(result, zones, ratio, opacity=0.25)
+
+    # 2. Dessiner les contours de toutes les zones (discret)
+    if zones:
+        for i, zone in enumerate(zones):
+            x1 = int(zone.x * ratio)
+            y1 = int(zone.y * ratio)
+            x2 = int((zone.x + TILE_SIZE) * ratio)
+            y2 = int((zone.y + TILE_SIZE) * ratio)
+
+            # Contour fin pour les autres zones
+            if i != selected_index:
+                cv2.rectangle(result, (x1, y1), (x2, y2), (200, 200, 200), 1)
+
+    # 3. Dessiner le FOI (au-dessus)
+    if show_foi and zones:
+        result = create_thumbnail_with_foi(result, zones, ratio, selected_index)
+
+    return result
 
 
 def detect_organ(slide_path: Path, n_tiles: int = 3) -> Tuple[str, float]:
@@ -257,11 +457,16 @@ def analyze_wsi(filename: str, max_tiles: int = 50) -> Tuple[Any, ...]:
 
     start_time = time.time()
 
-    # 1. Thumbnail
-    thumbnail = get_wsi_thumbnail(slide_path)
+    # 1. Thumbnail avec dimensions
+    thumbnail, slide_w, slide_h, ratio = get_wsi_thumbnail(slide_path)
     if thumbnail is None:
         thumbnail = empty_image.copy()
+        ratio = 1.0
+
     analysis_state.thumbnail = thumbnail
+    analysis_state.slide_width = slide_w
+    analysis_state.slide_height = slide_h
+    analysis_state.thumbnail_ratio = ratio
 
     # 2. Détection d'organe et chargement modèle
     if state.engine is None or state.engine.hovernet is None:
@@ -353,15 +558,25 @@ def analyze_wsi(filename: str, max_tiles: int = 50) -> Tuple[Any, ...]:
         label = f"{emoji} {zone.score:.0%}"
         gallery_items.append((zone.overlay, label))
 
+    # Créer le thumbnail enrichi avec FOI + heatmap
+    enriched_thumbnail = create_thumbnail_with_all_zones(
+        thumbnail=thumbnail,
+        zones=zones,
+        ratio=ratio,
+        selected_index=0,
+        show_heatmap=True,
+        show_foi=True,
+    )
+
     # Détails première zone
     if zones:
         first_zone = zones[0]
         analysis_state.selected_zone_index = 0
         detail_text = format_zone_details(first_zone)
-        return (thumbnail, score_html, gallery_items, first_zone.image,
+        return (enriched_thumbnail, score_html, gallery_items, first_zone.image,
                 first_zone.overlay, detail_text, f"✅ Analyse terminée en {analysis_state.analysis_time:.1f}s")
 
-    return (thumbnail, score_html, gallery_items, empty_tile, empty_tile,
+    return (enriched_thumbnail, score_html, gallery_items, empty_tile, empty_tile,
             "Aucune zone analysée", f"✅ Analyse terminée ({analysis_state.analysis_time:.1f}s)")
 
 
@@ -400,17 +615,35 @@ def format_zone_details(zone: SuspiciousZone) -> str:
     return "\n".join(lines)
 
 
-def on_zone_select(evt: gr.SelectData) -> Tuple[np.ndarray, np.ndarray, str]:
-    """Gère le clic sur une zone dans la galerie."""
+def on_zone_select(evt: gr.SelectData) -> Tuple[np.ndarray, np.ndarray, np.ndarray, str]:
+    """
+    Gère le clic sur une zone dans la galerie.
+
+    Met à jour le FOI sur le thumbnail pour pointer vers la zone sélectionnée.
+
+    Returns:
+        (thumbnail_updated, zone_image, zone_overlay, zone_details)
+    """
     empty = np.zeros((TILE_SIZE, TILE_SIZE, 3), dtype=np.uint8)
+    empty_thumb = analysis_state.thumbnail if analysis_state.thumbnail is not None else np.zeros((400, 600, 3), dtype=np.uint8)
 
     if evt.index < 0 or evt.index >= len(analysis_state.zones):
-        return empty, empty, "Zone non trouvée"
+        return empty_thumb, empty, empty, "Zone non trouvée"
 
     zone = analysis_state.zones[evt.index]
     analysis_state.selected_zone_index = evt.index
 
-    return zone.image, zone.overlay, format_zone_details(zone)
+    # Mettre à jour le thumbnail avec le nouveau FOI
+    updated_thumbnail = create_thumbnail_with_all_zones(
+        thumbnail=analysis_state.thumbnail,
+        zones=analysis_state.zones,
+        ratio=analysis_state.thumbnail_ratio,
+        selected_index=evt.index,
+        show_heatmap=True,
+        show_foi=True,
+    )
+
+    return updated_thumbnail, zone.image, zone.overlay, format_zone_details(zone)
 
 
 def on_file_select(filename: str) -> Tuple[np.ndarray, str]:
@@ -424,29 +657,32 @@ def on_file_select(filename: str) -> Tuple[np.ndarray, str]:
     analysis_state.selected_file = filename
     analysis_state.clear()
 
-    thumbnail = get_wsi_thumbnail(slide_path)
+    thumbnail, slide_w, slide_h, ratio = get_wsi_thumbnail(slide_path)
     if thumbnail is None:
         return empty, f"❌ Erreur lecture: {filename}"
 
     analysis_state.thumbnail = thumbnail
+    analysis_state.slide_width = slide_w
+    analysis_state.slide_height = slide_h
+    analysis_state.thumbnail_ratio = ratio
 
     # Métadonnées
+    mpp_str = "N/A"
+    vendor = "N/A"
     try:
         import openslide
         slide = openslide.OpenSlide(str(slide_path))
-        w, h = slide.dimensions
-        mpp = slide.properties.get('openslide.mpp-x', 'N/A')
+        mpp_str = slide.properties.get('openslide.mpp-x', 'N/A')
         vendor = slide.properties.get('openslide.vendor', 'N/A')
         slide.close()
+    except Exception:
+        pass
 
-        info = f"""### {filename}
+    info = f"""### {filename}
 
-**Dimensions:** {w:,} × {h:,} px
-**MPP:** {mpp}
+**Dimensions:** {slide_w:,} × {slide_h:,} px
+**MPP:** {mpp_str}
 **Scanner:** {vendor}"""
-
-    except Exception as e:
-        info = f"### {filename}\n\n*Métadonnées non disponibles*"
 
     return thumbnail, info
 
@@ -604,7 +840,7 @@ def create_viewer_ui(wsi_dir: str = DEFAULT_WSI_DIR):
 
         zones_gallery.select(
             fn=on_zone_select,
-            outputs=[zone_image, zone_overlay, zone_details],
+            outputs=[main_thumbnail, zone_image, zone_overlay, zone_details],
         )
 
         # Charger le thumbnail au démarrage
