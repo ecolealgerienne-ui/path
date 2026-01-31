@@ -304,9 +304,8 @@ def create_tile_server_app(wsi_dir: str = "data/wsi_test") -> FastAPI:
             width, height = slide.dimensions
             level_count = dz.level_count
 
-            # Calculate max level for OpenSeadragon
-            import math
-            max_level = int(math.ceil(math.log2(max(width, height)))) + 1
+            # Use OpenSlide's level_count directly (levels are 0 to level_count-1)
+            max_level = level_count - 1
 
             html_content = f'''<!DOCTYPE html>
 <html>
@@ -332,7 +331,6 @@ def create_tile_server_app(wsi_dir: str = "data/wsi_test") -> FastAPI:
                 height: {height},
                 tileSize: {TILE_SIZE},
                 tileOverlap: {TILE_OVERLAP},
-                minLevel: 0,
                 maxLevel: {max_level},
                 getTileUrl: function(level, x, y) {{
                     return "/slide/{slide_name}/tiles/" + level + "/" + x + "_" + y + ".jpeg";
@@ -344,9 +342,10 @@ def create_tile_server_app(wsi_dir: str = "data/wsi_test") -> FastAPI:
             showZoomControl: true,
             showHomeControl: true,
             showFullPageControl: true,
-            minZoomLevel: 0.1,
-            maxZoomLevel: 40,
-            visibilityRatio: 0.5,
+            minZoomLevel: 0.5,
+            maxZoomLevel: 100,
+            defaultZoomLevel: 1,
+            visibilityRatio: 0.8,
             constrainDuringPan: true,
             immediateRender: true,
             animationTime: 0.3,
@@ -359,7 +358,7 @@ def create_tile_server_app(wsi_dir: str = "data/wsi_test") -> FastAPI:
         }});
 
         viewer.addHandler('open', function() {{
-            console.log("Slide loaded: {slide_name}");
+            console.log("Slide loaded: {slide_name}, {width}x{height}, {level_count} levels");
         }});
 
         viewer.addHandler('tile-load-failed', function(event) {{
