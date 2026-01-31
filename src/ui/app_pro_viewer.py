@@ -449,8 +449,20 @@ class ProViewerState:
                 str(self.wsi_dir),
                 self.tile_server_port
             )
-            time.sleep(1)  # Wait for server to start
-            logger.info(f"Tile server running at {self.tile_server_url}")
+            # Wait for server to be ready
+            time.sleep(2)
+            # Verify server is responding
+            import requests
+            for i in range(5):
+                try:
+                    resp = requests.get(f"{self.tile_server_url}/", timeout=2)
+                    if resp.ok:
+                        logger.info(f"Tile server running at {self.tile_server_url}")
+                        return
+                except Exception:
+                    pass
+                time.sleep(1)
+            logger.warning("Tile server may not be fully ready")
 
 
 # Global state
@@ -459,6 +471,8 @@ viewer_state = ProViewerState()
 
 def on_slide_select(slide_name: str) -> Tuple[str, str]:
     """Handle slide selection."""
+    logger.info(f"on_slide_select called with: {slide_name}")
+
     if not slide_name:
         return create_openseadragon_html(None, viewer_state.tile_server_url), "Sélectionnez une lame"
 
@@ -470,11 +484,14 @@ def on_slide_select(slide_name: str) -> Tuple[str, str]:
 
     try:
         import requests
-        resp = requests.get(f"{viewer_state.tile_server_url}/slide/{slide_name}/info", timeout=10)
+        url = f"{viewer_state.tile_server_url}/slide/{slide_name}/info"
+        logger.info(f"Requesting slide info from: {url}")
+        resp = requests.get(url, timeout=10)
         if resp.ok:
             info = resp.json()
             width = info.get('width', 0)
             height = info.get('height', 0)
+            logger.info(f"Slide info received: {width}x{height}, levels={info.get('level_count')}")
             info_text = f"""### {slide_name}
 
 **Dimensions:** {width:,} x {height:,} px
@@ -508,6 +525,7 @@ def on_slide_select(slide_name: str) -> Tuple[str, str]:
         info_text = f"### {slide_name}\n\n*Erreur: {e}*"
 
     # Create viewer HTML with actual dimensions
+    logger.info(f"Creating OpenSeadragon viewer: {slide_name}, {width}x{height}")
     viewer_html = create_openseadragon_html(
         slide_name=slide_name,
         tile_server_url=viewer_state.tile_server_url,
@@ -515,6 +533,7 @@ def on_slide_select(slide_name: str) -> Tuple[str, str]:
         height=height,
     )
 
+    logger.info(f"Viewer HTML length: {len(viewer_html)} chars")
     return viewer_html, info_text
 
 
