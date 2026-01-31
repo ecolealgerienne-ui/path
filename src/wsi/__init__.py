@@ -46,6 +46,20 @@ from .input_router import (
     process_pannuke_batch,
 )
 
+from .tile_server import (
+    # Main functions
+    create_tile_server_app,
+    run_tile_server,
+    run_tile_server_background,
+    # Utilities
+    get_deep_zoom_generator,
+    close_all_slides,
+    # Constants
+    WSI_EXTENSIONS,
+    TILE_SIZE,
+    TILE_FORMAT,
+)
+
 __all__ = [
     # Constants
     'TARGET_SIZE',
@@ -62,6 +76,15 @@ __all__ = [
     'transform_pannuke_to_224',
     'transform_masks_pannuke_to_224',
     'process_pannuke_batch',
+    # Tile server
+    'create_tile_server_app',
+    'run_tile_server',
+    'run_tile_server_background',
+    'get_deep_zoom_generator',
+    'close_all_slides',
+    'WSI_EXTENSIONS',
+    'TILE_SIZE',
+    'TILE_FORMAT',
 ]
 
 __version__ = "1.0.0"
